@@ -1,0 +1,5 @@
+import { knowledgeDocuments as seed } from "./demo-data";
+import type { KnowledgeDocument } from "./types";
+let documents=[...seed];
+const normalize=(text:string)=>text.normalize("NFD").replace(/[\u0300-\u036f]/g,"").toLowerCase();
+export class KnowledgeService {list(){return documents} ingest(title:string,category:string){const document:KnowledgeDocument={id:`KB-${Date.now()}`,title,category,status:"draft",version:1,city:"Todas",plan:"Todos",equipment:"—",validUntil:"31/12/2026",chunks:Math.max(1,Math.ceil(title.length/12)),updatedAt:"agora"};documents=[document,...documents];return document} publish(id:string){documents=documents.map(d=>d.id===id?{...d,status:"published",version:d.version+1,updatedAt:"agora"}:d);return documents.find(d=>d.id===id)} search(query:string){const terms=normalize(query).split(/\s+/).filter(t=>t.length>2);return documents.filter(d=>d.status==="published").map(d=>({document:d,score:terms.filter(t=>normalize(`${d.title} ${d.category} ${d.equipment}`).includes(t)).length/Math.max(1,terms.length),evidence:`Fonte interna: ${d.title} • versão ${d.version}`})).filter(r=>r.score>0).sort((a,b)=>b.score-a.score)}}

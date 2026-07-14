@@ -1,0 +1,4 @@
+import { healthFactors } from "./demo-data";
+import type { HealthFactor, Severity } from "./types";
+export interface HealthAssessment { score:number; risk:Severity; version:string; factors:HealthFactor[]; explanation:string; recommendedActions:string[] }
+export function calculateHealth():HealthAssessment {const base=80;const delta=healthFactors.reduce((total,f)=>total+f.impact,0);const score=Math.max(0,Math.min(100,base+delta));const risk:Severity=score<45?"critical":score<65?"high":score<80?"medium":"low";return{score,risk,version:"score-rule-v3.2",factors:healthFactors,explanation:"Risco operacional estimado por regras transparentes; não é previsão científica de churn.",recommendedActions:["Priorizar resolução do chamado recorrente","Confirmar estabilidade por 7 dias","Oferecer upgrade somente após resolver a causa técnica"]}}
