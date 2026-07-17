@@ -108,3 +108,24 @@ Todas eram implementadas como resultados locais dentro de `pipeline.ts`; não ex
 6. Criar um contrato tipado de cenários e executor comum para os 60 casos.
 7. Testar propriedades estruturais, evitando snapshots frágeis de texto longo.
 8. Documentar resultados, bloqueios externos e prontidão da Issue #3.
+
+## Correção de segurança dos perfis de homologação
+
+Durante a revisão final foi identificado que a rota pública aceitava `simulationProfile`
+fornecido pelo cliente e fixava `channel: "test"`. Isso permitiria selecionar fixtures
+operacionais pela superfície pública e misturava a origem da requisição com o contexto
+de homologação.
+
+O contrato público definitivo aceita somente `message` e `history`. A rota rejeita com
+HTTP 403 qualquer tentativa de fornecer perfil, canal ou contexto operacional por corpo,
+query string ou headers e sempre deriva `channel: "web"` no servidor.
+
+Os 60 cenários foram movidos para `runTrustedAgentHomologation`, um executor de módulo
+sem transporte HTTP. O executor exige `FEATURE_AGENT_HOMOLOGATION_PROFILES=true` e só
+funciona em `local`, `test` ou `staging`; `production` bloqueia os perfis mesmo que a flag
+seja configurada incorretamente. A flag é `false` por padrão e valores inválidos falham
+fechado. Esse limite interno não usa segredo HTTP porque não existe endpoint de
+homologação exposto.
+
+As proteções de escrita IXC permanecem independentes e desligadas. Nenhum arquivo sob
+`lib/integrations/ixc/**` foi alterado por esta correção.

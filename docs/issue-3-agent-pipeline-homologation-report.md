@@ -42,7 +42,7 @@ Node compatível com `>=22.13.0`, npm, Vinext/Vite, execução local isolada e f
 | `npm run install:ci` | APROVADO | 10 s |
 | `npm run lint` | APROVADO | 2,8 s |
 | `npm run typecheck` | APROVADO | 1,6 s |
-| `npm test` | APROVADO — 102/102 | 3,1 s |
+| `npm test` | APROVADO — 118/118 | 3,1 s |
 | `npm run build` | APROVADO | 2,6 s |
 | `npm run validate:artifact` | APROVADO | 0,2 s |
 
@@ -60,9 +60,11 @@ A linha de base possuía 38 testes aprovados, mas só representava ferramentas c
 - Ação real separada de consulta e de simulação.
 - Validador bloqueia alegações de sucesso sem evidência e exige identificação explícita de simulação.
 - Política de transbordo e resumo sanitizado para atendente.
-- Validação de mensagem, histórico e perfil controlado na borda HTTP.
+- Validação de mensagem e histórico na borda HTTP; perfil e contexto operacional são rejeitados na rota pública.
 - Contrato tipado e executor comum para os 60 cenários.
 - Correções de intenção, continuidade, pluralização e classificação de consulta interna.
+- Executor interno de homologação protegido por ambiente e feature flag, sem endpoint público.
+- Canal derivado no servidor (`web` na rota pública; `homologation` somente no executor interno autorizado).
 
 ## 9. Matriz completa dos cenários
 
@@ -144,6 +146,10 @@ Nenhum no resultado final. A primeira rodada teve 11 falhas: B26, B28, C30, C31,
 - O estado completo ainda depende do histórico enviado pelo consumidor; não há persistência de conversa adicionada nesta issue.
 - O protocolo simulado não equivale a uma fila/transferência externa persistida.
 
+O risco de o cliente público escolher `simulationProfile` ou forjar `channel: "test"`
+foi eliminado antes da revisão. Corpo, query e headers não confiáveis não podem ativar
+fixtures nem selecionar contexto operacional.
+
 ## 13. Limitações
 
 Nenhuma operação real foi executada. As evidências de homologação provam comportamento lógico e segurança, não efetividade operacional no IXC, WhatsApp, equipamento, banco ou financeiro real.
@@ -168,16 +174,53 @@ Foram cobertos pedido de pessoa, baixa confiança, ferramenta obrigatória falha
 
 ## 18. Cobertura dos testes
 
-O comando final executou 102 testes: 60 cenários da matriz, testes agregados de segurança/contrato e 38 testes preexistentes. A suíte valida propriedades estruturais, termos críticos e ausência de afirmações proibidas, evitando snapshots frágeis de respostas longas.
+O comando final executou 118 testes: os 60 cenários da matriz, testes agregados de
+segurança/contrato, testes preexistentes e a nova suíte de isolamento da rota pública.
+A suíte valida propriedades estruturais, termos críticos e ausência de afirmações
+proibidas, evitando snapshots frágeis de respostas longas.
 
-## 19. Itens dependentes do IXC real
+Os testes de segurança cobrem:
+
+- os perfis `payment_recognized`, `regional_incident`, `onu_offline`,
+  `contract_blocked` e `tool_timeout`;
+- perfil inválido;
+- injeção por body, query string e headers;
+- tentativa de controlar canal, ambiente e contexto interno;
+- flag ausente, desabilitada ou inválida;
+- bloqueio incondicional em produção;
+- autorização explícita somente em `local`, `test` e `staging`;
+- resposta de erro sem vazamento de ambiente, flag ou segredo;
+- permanência de `IXC_WRITE_ENABLED=false` e `FEATURE_IXC_WRITE=false`.
+
+## 19. Separação entre rota pública e homologação interna
+
+```text
+POST /api/agent
+  -> aceita apenas message/history
+  -> bloqueia contexto operacional vindo do cliente
+  -> channel = web (servidor)
+  -> pipeline
+
+testes internos
+  -> runTrustedAgentHomologation
+  -> exige FEATURE_AGENT_HOMOLOGATION_PROFILES=true
+  -> exige local/test/staging e proíbe production
+  -> channel = homologation
+  -> pipeline idêntico
+```
+
+Não foi criado endpoint interno ou público adicional. Portanto, não existe header secreto
+de homologação para vazar ou reutilizar. A fronteira confiável é a chamada direta do
+módulo pelos testes e rotinas internas do processo.
+
+## 20. Itens dependentes do IXC real
 
 Dados reais de cliente, contrato, ONU, PPPoE, potência, faturas, pagamento e massivas. Esta branch não importou nem alterou contratos de `lib/integrations/ixc/**`.
 
-## 20. Itens dependentes de WhatsApp/n8n
+## 21. Itens dependentes de WhatsApp/n8n
 
 Entrega real de boleto/PIX, mensagens progressivas, confirmação do canal, transferência externa, filas e callbacks. Como não foram testados, não são declarados homologados.
 
-## 21. Recomendação
+## 22. Recomendação
 
 A Issue #3 está tecnicamente pronta para revisão e merge no escopo definido: cérebro, contrato HTTP, segurança de evidência, simulação, transbordo e matriz automatizada. A homologação não autoriza ativação de escrita no IXC nem envio real. O piloto com integrações deve manter gates separados e repetir contratos contra staging antes de produção.
