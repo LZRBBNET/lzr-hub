@@ -1,14 +1,37 @@
 import { NextResponse } from "next/server";
 import { runAgentPipeline } from "@/lib/agent/pipeline";
-import type { AgentContext, AgentSimulationProfile, ChatMessage } from "@/lib/agent/types";
+import type { ChatMessage } from "@/lib/agent/types";
 
-const profiles = new Set<AgentSimulationProfile>([
-  "default", "onu_offline", "pppoe_offline", "optical_critical", "regional_incident",
-  "regional_reports_unconfirmed", "diagnostic_inconclusive", "tool_unavailable", "tool_timeout",
-  "tool_empty", "tool_error", "tool_contradictory", "wifi_slow", "cable_slow",
-  "payment_recognized", "payment_unrecognized", "contract_blocked", "multiple_invoices",
-  "multiple_contracts", "ticket_failure", "schedule_unavailable", "action_disabled",
+const protectedBodyFields = new Set([
+  "simulationProfile",
+  "simulation_profile",
+  "channel",
+  "environment",
+  "agentContext",
+  "internalContext",
+  "origin",
+  "role",
 ]);
+
+const protectedQueryFields = new Set([
+  "simulationprofile",
+  "simulation_profile",
+  "channel",
+  "environment",
+  "agentcontext",
+  "internalcontext",
+  "origin",
+  "role",
+]);
+
+const protectedHeaders = [
+  "x-agent-simulation-profile",
+  "x-simulation-profile",
+  "x-agent-channel",
+  "x-internal-channel",
+  "x-lzr-channel",
+  "x-agent-context",
+];
 
 function validHistory(value: unknown): value is ChatMessage[] {
   return Array.isArray(value) && value.every((item) => {
@@ -21,18 +44,37 @@ function validHistory(value: unknown): value is ChatMessage[] {
   });
 }
 
+function hasUntrustedOperationalContext(
+  request: Request,
+  body: Record<string, unknown> | null,
+): boolean {
+  if (body && [...protectedBodyFields].some((field) => Object.hasOwn(body, field))) return true;
+  const url = new URL(request.url);
+  if ([...url.searchParams.keys()].some((key) => protectedQueryFields.has(key.toLowerCase()))) return true;
+  return protectedHeaders.some((header) => request.headers.has(header));
+}
+
 export async function POST(request: Request) {
-  const body = await request.json().catch(() => null) as { message?: unknown; history?: unknown; simulationProfile?: unknown } | null;
+  const parsed = await request.json().catch(() => null) as unknown;
+  const body = parsed && typeof parsed === "object" && !Array.isArray(parsed)
+    ? parsed as Record<string, unknown>
+    : null;
+
+  if (hasUntrustedOperationalContext(request, body)) {
+    return NextResponse.json(
+      { error: "Contexto operacional não autorizado", errorCode: "UNTRUSTED_AGENT_CONTEXT" },
+      { status: 403 },
+    );
+  }
+
   const message = typeof body?.message === "string" ? body.message.trim() : "";
   if (!message) return NextResponse.json({ error: "Mensagem inválida" }, { status: 400 });
   if (message.length > 5000) return NextResponse.json({ error: "Mensagem acima do limite" }, { status: 413 });
   if (body?.history !== undefined && !validHistory(body.history)) return NextResponse.json({ error: "Histórico inválido" }, { status: 400 });
-  if (body?.simulationProfile !== undefined && (typeof body.simulationProfile !== "string" || !profiles.has(body.simulationProfile as AgentSimulationProfile))) {
-    return NextResponse.json({ error: "Perfil de homologação inválido" }, { status: 400 });
-  }
-  const context: AgentContext = {
-    simulationProfile: (body?.simulationProfile as AgentSimulationProfile | undefined) ?? "default",
-    channel: "test",
-  };
-  return NextResponse.json(runAgentPipeline(message, (body?.history ?? []).slice(-40), context));
+
+  return NextResponse.json(runAgentPipeline(
+    message,
+    ((body?.history as ChatMessage[] | undefined) ?? []).slice(-40),
+    { channel: "web" },
+  ));
 }

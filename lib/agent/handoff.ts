@@ -1,5 +1,5 @@
-import type { ChatMessage, HandoffDecision, Intent, ToolReceipt } from "./types";
-import { isFailedReceipt } from "./tool-engine";
+import type { ChatMessage, HandoffDecision, Intent, ToolReceipt } from "./types.ts";
+import { isFailedReceipt } from "./tool-engine.ts";
 
 const normalize = (value: string) => value.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
 

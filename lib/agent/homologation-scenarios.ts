@@ -1,4 +1,4 @@
-import type { AgentFinalStatus, AgentSimulationProfile, ChatMessage, Intent, ToolOutcome } from "./types";
+import type { AgentFinalStatus, AgentSimulationProfile, ChatMessage, Intent, ToolOutcome } from "./types.ts";
 
 export type HomologationCategory = "support" | "billing" | "scheduling" | "conversation" | "input" | "security";
 export type RequestVariant = "normal" | "empty" | "oversized" | "invalid_json" | "malformed_history";

@@ -4,7 +4,7 @@ import type {
   ToolEvidence,
   ToolOutcome,
   ToolReceipt,
-} from "./types";
+} from "./types.ts";
 
 const now = () => new Date().toISOString();
 

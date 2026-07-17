@@ -1,5 +1,5 @@
-import type { ToolReceipt } from "./types";
-import { isSuccessfulReceipt } from "./tool-engine";
+import type { ToolReceipt } from "./types.ts";
+import { isSuccessfulReceipt } from "./tool-engine.ts";
 
 const successClaims = /\b(enviei|anexei|abri|desbloqueei|agendei|reiniciei|normalizei|resolvi|pagamento (?:foi |está )?reconhecido|conexão voltou)\b/i;
 const simulationDisclosure = /\b(homologa(?:ção|cao)|simulad[oa]s?|fictíci[oa]s?|fictici[oa]s?|não executei|nao executei|sem executar|nenhuma ação real|nenhuma acao real|nenhuma alteração real|nenhuma alteracao real|preparad[oa]s?)\b/i;

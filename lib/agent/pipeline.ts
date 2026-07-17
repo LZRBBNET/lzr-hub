@@ -1,6 +1,6 @@
-import { hasUnsafeSuccessClaim, simulationIsDisclosed, validEvidence } from "./evidence";
-import { decideHandoff } from "./handoff";
-import { executeAgentTools, isFailedReceipt } from "./tool-engine";
+import { hasUnsafeSuccessClaim, simulationIsDisclosed, validEvidence } from "./evidence.ts";
+import { decideHandoff } from "./handoff.ts";
+import { executeAgentTools, isFailedReceipt } from "./tool-engine.ts";
 import type {
   AgentContext,
   AgentFinalStatus,
@@ -8,8 +8,8 @@ import type {
   ChatMessage,
   Intent,
   ToolReceipt,
-} from "./types";
-import { normalizeResponse, questionCount, repetitionScore } from "./repetition";
+} from "./types.ts";
+import { normalizeResponse, questionCount, repetitionScore } from "./repetition.ts";
 
 const normalized = (value: string) =>
   value.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
@@ -184,6 +184,7 @@ export function runAgentPipeline(
   history: ChatMessage[] = [],
   context: AgentContext = {},
 ): AgentResult {
+  const channel = context.channel ?? "web";
   const analysis = resolveIntent(message, history);
   const tools = executeAgentTools(analysis.intent, message, context);
   const recentAgent = history.filter((item) => item.role === "agent").map((item) => item.content);
@@ -210,6 +211,7 @@ export function runAgentPipeline(
 
   return {
     ...analysis,
+    channel,
     state,
     finalStatus,
     response,

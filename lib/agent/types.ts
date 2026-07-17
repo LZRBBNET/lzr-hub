@@ -70,8 +70,17 @@ export type AgentSimulationProfile =
 
 export interface AgentContext {
   simulationProfile?: AgentSimulationProfile;
-  channel?: "training" | "test" | "service";
+  channel?: AgentChannel;
 }
+
+export type AgentChannel =
+  | "web"
+  | "whatsapp"
+  | "internal"
+  | "homologation"
+  | "test"
+  | "training"
+  | "service";
 
 export interface ChatMessage {
   role: "customer" | "agent";
@@ -156,6 +165,7 @@ export interface QualityEvaluation {
 }
 
 export interface AgentResult {
+  channel: AgentChannel;
   intent: Intent;
   confidence: number;
   goal: string;
