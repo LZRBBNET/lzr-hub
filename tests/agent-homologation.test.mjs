@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { runTrustedAgentHomologation } from "../lib/agent/homologation.ts";
 import { homologationScenarios } from "../lib/agent/homologation-scenarios.ts";
 
 const workerUrl = new URL("../dist/server/index.js", import.meta.url);
@@ -7,11 +8,27 @@ workerUrl.searchParams.set("homologation", `${process.pid}-${Date.now()}`);
 const { default: worker } = await import(workerUrl.href);
 const env = { ASSETS: { fetch: async () => new Response("Not found", { status: 404 }) } };
 const ctx = { waitUntil() {}, passThroughOnException() {} };
+const trustedTestRuntime = {
+  LZR_ENV: "test",
+  IXC_MODE: "disabled",
+  IXC_WRITE_ENABLED: "false",
+  FEATURE_IXC_WRITE: "false",
+  FEATURE_AGENT_HOMOLOGATION_PROFILES: "true",
+};
 
 async function executeScenario(scenario) {
   const url = "http://localhost/api/agent";
   if (scenario.requestVariant === "invalid_json") {
     return worker.fetch(new Request(url, { method: "POST", headers: { "content-type": "application/json" }, body: "{" }), env, ctx);
+  }
+  if (scenario.requestVariant === "normal") {
+    const result = runTrustedAgentHomologation({
+      message: scenario.messages.at(-1),
+      history: scenario.history,
+      simulationProfile: scenario.simulationProfile,
+      runtimeSource: trustedTestRuntime,
+    });
+    return { status: 200, json: async () => result };
   }
   const history = scenario.requestVariant === "malformed_history"
     ? [{ role: "system", content: "conteúdo inválido" }]
@@ -22,7 +39,6 @@ async function executeScenario(scenario) {
     body: JSON.stringify({
       message: scenario.messages.at(-1),
       history,
-      simulationProfile: scenario.simulationProfile,
     }),
   }), env, ctx);
 }
@@ -72,24 +88,22 @@ test("matriz contém exatamente os 60 cenários obrigatórios e IDs únicos", ()
 test("timeout, erro, vazio, parcial, proibido e modo demonstrativo nunca viram sucesso real", async () => {
   const profiles = ["tool_timeout", "tool_error", "tool_empty", "tool_contradictory", "tool_unavailable"];
   for (const simulationProfile of profiles) {
-    const response = await worker.fetch(new Request("http://localhost/api/agent", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ message: "Estou sem internet", simulationProfile }),
-    }), env, ctx);
-    const result = await response.json();
+    const result = runTrustedAgentHomologation({
+      message: "Estou sem internet",
+      simulationProfile,
+      runtimeSource: trustedTestRuntime,
+    });
     assert.equal(result.actionExecuted, false);
     assert.equal(result.handoff.required, true);
     assert.ok(!["resolved", "simulated"].includes(result.finalStatus));
     assert.equal(result.evaluation.falseActionClaim, false);
   }
 
-  const demoResponse = await worker.fetch(new Request("http://localhost/api/agent", {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ message: "Abra um chamado", simulationProfile: "default" }),
-  }), env, ctx);
-  const demo = await demoResponse.json();
+  const demo = runTrustedAgentHomologation({
+    message: "Abra um chamado",
+    simulationProfile: "default",
+    runtimeSource: trustedTestRuntime,
+  });
   assert.equal(demo.actionExecuted, false);
   assert.equal(demo.simulationOnly, true);
   assert.match(demo.response, /homologação|simulado|fictício|nenhuma ordem real/i);
@@ -119,5 +133,6 @@ test("histórico acima de 40 mensagens é truncado sem perder a mensagem atual",
   assert.equal(response.status, 200);
   const result = await response.json();
   assert.equal(result.intent, "financial_pix");
+  assert.equal(result.channel, "web");
   assert.match(result.conversationSummary, /41 mensagem/);
 });
