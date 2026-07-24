@@ -7,7 +7,8 @@ export type IxcReadOperation =
   | "listInvoices"
   | "listPayments"
   | "listServiceOrders"
-  | "getConnection";
+  | "getConnection"
+  | "getCity";
 
 export interface IxcCustomerDto { id:string; nameMasked:string; documentMasked:string; city:string; neighborhoodMasked:string; status:string; updatedAt?:string }
 export interface IxcContractDto { id:string; customerId:string; planId?:string; planName:string; status:string; dueDay?:number; monthlyValue?:number; activatedAt?:string }

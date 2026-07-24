@@ -23,7 +23,8 @@ Todos os campos inesperados são ignorados. IDs ausentes em entidades obrigatór
 ## Validado contra o IXC real (homologação, 2026-07-24)
 
 - `cliente` — validado com cadastro real (allowlist). Confirma todos os campos usados pelo `IxcCustomerMapper`, com uma ressalva:
-  - **`cliente.cidade` vem como código numérico** (ex.: `"1759"`), não como nome da cidade. O mapper atual (`mappers.ts:8`) usa esse valor direto em `city`, então hoje o Customer 360 exibiria o código, não o nome. Resolver isso exige uma chamada adicional ao endpoint `cidade` (`qtype: cidade.id`) para traduzir o código — ainda não implementado. Acompanhar na issue de ativação do IXC.
+  - **`cliente.cidade` vem como código numérico** (ex.: `"1759"`), não como nome da cidade. Resolvido (issue #28): `IxcReadonlyProvider.resolveCityName` consulta o endpoint `cidade` (`qtype: cidade.id`) e substitui o código pelo nome real no `customer.city`, com cache de 24h e sem quebrar o cadastro se a consulta falhar.
+- `cidade` — validado com o código real do cliente 21857 (`1759` → `"Campo do Brito"`, campo `nome`). Endpoint e nome de campo confirmados batendo com a suposição inicial.
 - `contrato`, `fn_areceber`, `su_oss_chamado` — endpoints alcançáveis e formato de chamada confirmado (ver seção de conectividade abaixo), mas ainda sem uma amostra de dado real validada campo a campo.
 
 ## Conectividade real do webservice IXC (descoberta em homologação)
