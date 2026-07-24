@@ -19,3 +19,20 @@ Os campos externos entram apenas pelos mappers. Payload bruto, token, CPF, telef
 | radusuarios.endereco | addressMasked | string | marcador fixo | sim | sob demanda | IXC | PII crítica |
 
 Todos os campos inesperados são ignorados. IDs ausentes em entidades obrigatórias causam erro de contrato e falha parcial, nunca coerção silenciosa.
+
+## Operações do relay
+
+O relay de egress fixo mantém o mesmo catálogo do provider e não aceita `resource`, `qtype`, `oper`, URL ou headers informados pelo Worker.
+
+| Operação | Recurso fixo | Filtro fixo |
+| --- | --- | --- |
+| `testConnection` | `cliente` | `id = 0` |
+| `getCustomer` | `cliente` | `id = customerId` |
+| `listContracts` | `cliente_contrato` | `id_cliente = customerId` |
+| `getPlan` | `vd_contratos` | `id = planId` |
+| `listInvoices` | `fn_areceber` | `id_cliente = customerId` |
+| `listPayments` | `fn_movim_finan` | `id_cliente = customerId` |
+| `listServiceOrders` | `su_oss_chamado` | `id_cliente = customerId` |
+| `getConnection` | `radusuarios` | `id_cliente = customerId` |
+
+Este mapeamento foi confirmado em `readonly-provider.ts`, nos mappers e nos testes automatizados. A Collection Postman da Issue #23 ainda não está presente na `main`; a validação cruzada com ela permanece pendente e não foi simulada.

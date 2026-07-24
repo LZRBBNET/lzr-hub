@@ -1,0 +1,14 @@
+{
+  "name": "@lzr-hub/ixc-relay",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22.13.0"
+  },
+  "scripts": {
+    "start": "node --experimental-strip-types src/server.ts",
+    "test": "node --experimental-strip-types --test tests/*.test.mjs",
+    "typecheck": "../../node_modules/.bin/tsc --noEmit -p tsconfig.json"
+  }
+}

@@ -1,0 +1,45 @@
+services:
+  ixc-relay:
+    build:
+      context: ../../services/ixc-relay
+      dockerfile: Dockerfile
+    image: lzr-hub/ixc-relay:0.1.0
+    restart: unless-stopped
+    init: true
+    user: "1000:1000"
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=16m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 128
+    mem_limit: 256m
+    cpus: 0.50
+    env_file:
+      - /etc/lzr/ixc-relay.env
+    ports:
+      - "127.0.0.1:8788:8788"
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "fetch('http://127.0.0.1:8788/healthz').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"
+      interval: 30s
+      timeout: 3s
+      retries: 3
+      start_period: 10s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+    networks:
+      - relay-egress
+
+networks:
+  relay-egress:
+    driver: bridge
+    name: lzr-ixc-relay-egress

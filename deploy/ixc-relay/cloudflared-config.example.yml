@@ -1,0 +1,10 @@
+tunnel: <TUNNEL_UUID>
+credentials-file: /etc/cloudflared/<TUNNEL_UUID>.json
+
+ingress:
+  - hostname: ixc-relay.<DOMINIO_BBNET>
+    service: http://127.0.0.1:8788
+    originRequest:
+      connectTimeout: 5s
+      noHappyEyeballs: true
+  - service: http_status:404

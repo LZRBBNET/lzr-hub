@@ -1,6 +1,6 @@
 import type { IxcReadOperation } from "./types.ts";
 
-const allowed = new Set<IxcReadOperation>(["testConnection","findCustomer","getCustomer","listContracts","getPlan","listInvoices","listPayments","listServiceOrders","getConnection"]);
+const allowed = new Set<IxcReadOperation>(["testConnection","getCustomer","listContracts","getPlan","listInvoices","listPayments","listServiceOrders","getConnection"]);
 const writeWords = /(insert|update|delete|write|unlock|unblock|change|generate|settle|open|close|send|command|alterar|inserir|excluir|desbloquear|baixar|gerar|abrir|encerrar|enviar)/i;
 
 export class ReadonlyIxcGuard {
