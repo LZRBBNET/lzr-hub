@@ -1,8 +1,10 @@
 # Relatório de validação — relay IXC
 
-Data: 2026-07-24  
-Branch: `feat/ixc-fixed-egress-relay`  
-Issue: #25  
+Data: 2026-07-24
+
+Branch: `feat/ixc-fixed-egress-relay`
+
+Issue: #25
 Base GitHub: `main` (`f8adec5`)
 
 ## Escopo validado
