@@ -1,10 +1,10 @@
 import type { AuditEvent, CollectionCampaign, CollectionRuleStep, CustomerSummary, HealthFactor, KnowledgeDocument, Lead, NetworkIncident } from "./types";
 
 export const customers: CustomerSummary[] = [
-  { id:"CLI-1042", name:"João Pereira", maskedDocument:"***.482.***-09", city:"Itabaiana", neighborhood:"Centro", plan:"600 Mega", status:"Ativo", health:64, churnRisk:"high", priority:"Alta", tags:["home office","reincidente"] },
-  { id:"CLI-2091", name:"Maria Souza", maskedDocument:"***.117.***-42", city:"Ribeirópolis", neighborhood:"Boa Vista", plan:"400 Mega", status:"Ativo", health:91, churnRisk:"low", priority:"Normal", tags:["adimplente"] },
-  { id:"CLI-3384", name:"Rafael Costa", maskedDocument:"***.904.***-21", city:"Campo do Brito", neighborhood:"Centro", plan:"300 Mega", status:"Bloqueado", health:48, churnRisk:"critical", priority:"Alta", tags:["financeiro","wifi"] },
-  { id:"CLI-4510", name:"Ana Carvalho", maskedDocument:"***.731.***-15", city:"Nossa Senhora da Glória", neighborhood:"Silos", plan:"300 Mega", status:"Ativo", health:78, churnRisk:"medium", priority:"Normal", tags:["upgrade elegível"] },
+  { id:"DEMO-CLI-001", name:"João Pereira", maskedDocument:"***.***.***-DEMO-001 (inválido)", city:"Itabaiana", neighborhood:"Centro Demo", plan:"300 Mega", status:"Ativo fictício", health:64, churnRisk:"high", priority:"Alta", tags:["sintético","ONU online"] },
+  { id:"DEMO-CLI-002", name:"Maria Souza", maskedDocument:"***.***.***-DEMO-002 (inválido)", city:"Lagarto", neighborhood:"Boa Vista Demo", plan:"600 Mega", status:"Ativo fictício", health:91, churnRisk:"low", priority:"Normal", tags:["sintético","potência normal"] },
+  { id:"DEMO-CLI-003", name:"Rafael Costa", maskedDocument:"***.***.***-DEMO-003 (inválido)", city:"Campo do Brito", neighborhood:"Centro Demo", plan:"1 Giga", status:"Bloqueado fictício", health:48, churnRisk:"critical", priority:"Alta", tags:["sintético","pagamento não reconhecido"] },
+  { id:"DEMO-CLI-004", name:"Ana Carvalho", maskedDocument:"***.***.***-DEMO-004 (inválido)", city:"São Domingos", neighborhood:"Centro Demo", plan:"300 Mega", status:"Ativo fictício", health:78, churnRisk:"medium", priority:"Normal", tags:["sintético","PPPoE offline"] },
 ];
 
 export const incidents: NetworkIncident[] = [
@@ -47,7 +47,7 @@ export const knowledgeDocuments: KnowledgeDocument[] = [
 ];
 
 export const auditEvents: AuditEvent[] = [
-  { id:"AUD-7192", actor:"LZR Agent", role:"IA", action:"billing.generate_pix", entity:"Fatura DEMO-0712", result:"success", origin:"ai", correlationId:"lzr-mrgtxny2", at:"12/07 08:31", reason:"Solicitação explícita do cliente" },
-  { id:"AUD-7191", actor:"Breno Lima", role:"Administrador", action:"training.accept_case", entity:"TrainingRecord TR-384", result:"success", origin:"human", correlationId:"adm-0712-0830", at:"12/07 08:30", reason:"Resposta aprovada" },
-  { id:"AUD-7188", actor:"LZR Agent", role:"IA", action:"ixc.unlock", entity:"Contrato mascarado", result:"blocked", origin:"ai", correlationId:"lzr-locked-22", at:"12/07 08:17", reason:"Escrita real desativada" },
+  { id:"DEMO-AUD-001", actor:"LZR Agent Demo", role:"IA", action:"billing.prepare_pix_demo", entity:"Fatura fictícia DEMO-0712", result:"simulated", origin:"ai", correlationId:"demo-pix-001", at:"24/07 08:31", reason:"Artefato fictício; nenhum PIX real" },
+  { id:"DEMO-AUD-002", actor:"Admin Demonstração", role:"Administrador", action:"training.accept_case", entity:"Caso sintético DEMO-384", result:"simulated", origin:"human", correlationId:"demo-training-002", at:"24/07 08:30", reason:"Resposta demonstrativa aprovada localmente" },
+  { id:"DEMO-AUD-003", actor:"LZR Agent Demo", role:"IA", action:"ixc.unlock", entity:"Contrato fictício", result:"blocked", origin:"ai", correlationId:"demo-blocked-003", at:"24/07 08:17", reason:"IXC e escrita externa desativados" },
 ];

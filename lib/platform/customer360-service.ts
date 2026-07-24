@@ -36,7 +36,7 @@ export class Customer360Service {
     const defaults = {
       contract:()=>delay({id:"CTR-2022-1934",plan:customer.plan,monthlyValue:89.9,dueDay:10,status:customer.status,since:"18/03/2022"}),
       finance:()=>delay({openInvoices:1,overdueAmount:customer.status==="Bloqueado"?179.8:0,lastPayment:"10/06/2026",paymentMethod:"PIX"}),
-      network:()=>delay({onu:"FiberHome AN5506",onuStatus:"Online",pppoe:customer.id==="CLI-1042"?"Offline":"Online",opticalPower:"-19,8 dBm",uptime:"2d 14h",devices:8}),
+      network:()=>delay({onu:"FiberHome AN5506",onuStatus:"Online",pppoe:customer.id==="DEMO-CLI-001"?"Offline":"Online",opticalPower:"-19,8 dBm",uptime:"2d 14h",devices:8}),
       support:()=>delay({openTickets:customer.churnRisk==="high"?2:0,lastProtocol:"LZR-260711-1842",lastReason:"Intermitência",csat:customer.health>80?5:3}),
       intelligence:()=>delay({health:customer.health,churnRisk:customer.churnRisk,upgradeEligible:customer.plan!=="600 Mega",recommendedPlan:"600 Mega",reason:"Uso e quantidade de dispositivos"}),
     };
