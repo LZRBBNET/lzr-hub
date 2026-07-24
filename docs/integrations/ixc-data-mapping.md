@@ -19,3 +19,14 @@ Os campos externos entram apenas pelos mappers. Payload bruto, token, CPF, telef
 | radusuarios.endereco | addressMasked | string | marcador fixo | sim | sob demanda | IXC | PII crítica |
 
 Todos os campos inesperados são ignorados. IDs ausentes em entidades obrigatórias causam erro de contrato e falha parcial, nunca coerção silenciosa.
+
+## Validado contra o IXC real (homologação, 2026-07-24)
+
+- `cliente` — validado com cadastro real (allowlist). Confirma todos os campos usados pelo `IxcCustomerMapper`, com uma ressalva:
+  - **`cliente.cidade` vem como código numérico** (ex.: `"1759"`), não como nome da cidade. O mapper atual (`mappers.ts:8`) usa esse valor direto em `city`, então hoje o Customer 360 exibiria o código, não o nome. Resolver isso exige uma chamada adicional ao endpoint `cidade` (`qtype: cidade.id`) para traduzir o código — ainda não implementado. Acompanhar na issue de ativação do IXC.
+- `contrato`, `fn_areceber`, `su_oss_chamado` — endpoints alcançáveis e formato de chamada confirmado (ver seção de conectividade abaixo), mas ainda sem uma amostra de dado real validada campo a campo.
+
+## Conectividade real do webservice IXC (descoberta em homologação)
+
+- O IXC exige **método GET com corpo JSON** para listagens (`qtype`/`query`/`oper`/...), não `POST` com `form-urlencoded`. Fora desse formato, a API responde com um erro genérico HTML ("Ocorreu um erro ao processar"), sem pista do motivo real.
+- O ambiente do IXC é restrito por IP (**"Redes Permitidas"**), e a Cloudflare Workers não tem IP de saída fixo — por isso o acesso real ao IXC passa por uma ponte própria (servidor Node com IP fixo dedicado), não por chamada direta do Worker. Ver `docs/integrations/ixc-staging-secrets.md` e a issue de ativação do IXC para a arquitetura da ponte.

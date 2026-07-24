@@ -16,3 +16,7 @@ Configure exclusivamente pelo gerenciador seguro do Sites, nunca em arquivo vers
 Ordem segura: cadastrar URL, token, allowlist e segredo administrativo; manter `IXC_MODE=disabled`; validar prontidão sem valores; por último alterar para `staging-readonly` e publicar nova revisão. Se qualquer validação falhar, retornar `IXC_MODE=disabled` e revogar o token.
 
 O código rejeita produção, escrita, allowlist vazia, mais de 10 IDs e IDs com formato inesperado. O nome antigo `IXC_ALLOWLIST_IDS` é lido apenas para rollback compatível; novas configurações devem usar `IXC_ALLOWED_CUSTOMER_IDS`.
+
+## Nota de arquitetura: `IXC_BASE_URL` aponta para a ponte, não para o IXC direto
+
+O Cloudflare Workers não tem IP de saída fixo, e o webservice do IXC exige IP liberado ("Redes Permitidas"). Por isso `IXC_BASE_URL`/`IXC_API_TOKEN` em staging e produção devem apontar para a ponte própria (servidor com IP fixo dedicado) que repassa a chamada ao IXC — nunca direto para `ixc.bbnetup.com.br`. Nesse caso, `IXC_API_TOKEN` é o segredo compartilhado da ponte (`BRIDGE_SHARED_SECRET`), não o token real do IXC — o token real fica só dentro da ponte. Ver `docs/integrations/ixc-data-mapping.md` para o histórico da descoberta.
