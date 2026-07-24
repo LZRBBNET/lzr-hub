@@ -4,6 +4,10 @@ import {
   AgentHomologationForbiddenError,
   runTrustedAgentHomologation,
 } from "../lib/agent/homologation.ts";
+import {
+  hasUnsafeSuccessClaim,
+  simulationIsDisclosed,
+} from "../lib/agent/evidence.ts";
 import { loadRuntimeConfig } from "../lib/runtime/environment.ts";
 
 const workerUrl = new URL("../dist/server/index.js", import.meta.url);
@@ -26,6 +30,36 @@ const enabledTestRuntime = {
   IXC_WRITE_ENABLED: "false",
   FEATURE_IXC_WRITE: "false",
   FEATURE_AGENT_HOMOLOGATION_PROFILES: "true",
+};
+
+const simulatedEvidence = {
+  id: "ev-security-test",
+  kind: "protocol",
+  source: "homologation-fixture",
+  summary: "Fixture sanitizada",
+  valid: true,
+  simulated: true,
+  confirmedAt: "2026-07-24T12:00:00.000Z",
+};
+
+const simulatedSuccessReceipt = {
+  tool: "support.prepare_ticket",
+  status: "completed",
+  outcome: "simulated",
+  summary: "Rascunho simulado",
+  evidence: simulatedEvidence,
+  realAction: false,
+  simulated: true,
+};
+
+const failedReceipt = {
+  tool: "network.diagnostics",
+  status: "failed",
+  outcome: "error",
+  summary: "Falha sanitizada",
+  realAction: false,
+  simulated: false,
+  errorCode: "TOOL_INTERNAL_ERROR",
 };
 
 test("rota pública funciona sem perfil e deriva channel web", async () => {
@@ -160,4 +194,48 @@ test("proteções de escrita permanecem desligadas", () => {
     FEATURE_IXC_WRITE: "false",
   });
   assert.equal(config.writeEnabled, false);
+});
+
+test("alegações alternativas de sucesso exigem evidência válida", () => {
+  for (const response of [
+    "Seu chamado está aberto.",
+    "O contrato foi desbloqueado.",
+    "A visita ficou agendada.",
+    "O equipamento foi reiniciado.",
+    "O problema está resolvido.",
+    "O PIX foi gerado.",
+  ]) {
+    assert.equal(hasUnsafeSuccessClaim(response, [failedReceipt]), true, response);
+  }
+});
+
+test("falha não pode ser ocultada por alegação de sucesso e texto preparado", () => {
+  const response = "Não consegui concluir o diagnóstico, mas abri seu chamado; o contexto foi preparado.";
+  assert.equal(
+    hasUnsafeSuccessClaim(response, [simulatedSuccessReceipt, failedReceipt]),
+    true,
+  );
+});
+
+test("texto preparado sozinho não identifica uma simulação", () => {
+  assert.equal(simulationIsDisclosed("O PIX está preparado.", [simulatedSuccessReceipt]), false);
+  assert.equal(
+    hasUnsafeSuccessClaim("Abri seu chamado; o contexto foi preparado.", [simulatedSuccessReceipt]),
+    true,
+  );
+  assert.equal(
+    hasUnsafeSuccessClaim("No ambiente de homologação, o chamado simulado foi preparado.", [simulatedSuccessReceipt]),
+    false,
+  );
+});
+
+test("negações legítimas não são tratadas como confirmação de sucesso", () => {
+  for (const response of [
+    "Não enviei o boleto.",
+    "Nunca abri um chamado.",
+    "Nenhuma visita foi agendada.",
+    "O equipamento não foi reiniciado.",
+  ]) {
+    assert.equal(hasUnsafeSuccessClaim(response, [failedReceipt]), false, response);
+  }
 });
