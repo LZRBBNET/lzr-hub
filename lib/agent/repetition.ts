@@ -4,4 +4,5 @@ export function jaccardSimilarity(a:string,b:string){const left=ngrams(a);const 
 export function openingSimilarity(a:string,b:string){return jaccardSimilarity(normalizeResponse(a).split(" ").slice(0,8).join(" "),normalizeResponse(b).split(" ").slice(0,8).join(" "))}
 export function questionCount(text:string){return(text.match(/\?/g)??[]).length}
 export function repetitionScore(response:string,recent:string[]){if(!recent.length)return 0;return Math.max(...recent.slice(-3).map(item=>Math.max(jaccardSimilarity(response,item),openingSimilarity(response,item)*.85)))}
+/** @deprecated Use the evidence-aware validator in evidence.ts. */
 export function hasFalseActionClaim(response:string,completedTools:number){return completedTools===0&&/\b(gerei|enviei|anexei|abri|desbloqueei|agendei|executei)\b/i.test(response)}

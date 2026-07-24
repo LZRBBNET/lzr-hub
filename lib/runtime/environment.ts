@@ -4,6 +4,7 @@ export type PilotMode = "disabled" | "internal";
 
 export interface RuntimeConfig {
   environment: LzrEnvironment;
+  agentHomologationProfilesEnabled: boolean;
   ixcMode: IxcMode;
   ixcBaseUrl?: string;
   ixcToken?: string;
@@ -21,6 +22,12 @@ export interface RuntimeConfig {
 
 const environments = new Set<LzrEnvironment>(["local", "test", "staging", "production"]);
 const ixcModes = new Set<IxcMode>(["disabled", "mock", "staging-readonly", "production-readonly"]);
+
+function featureFlag(name: string, value: string | undefined): boolean {
+  if (value === undefined || value === "false") return false;
+  if (value === "true") return true;
+  throw new Error(`${name} inválida`);
+}
 
 function integer(name: string, value: string | undefined, fallback: number, min: number, max: number) {
   const parsed = value ? Number(value) : fallback;
@@ -40,6 +47,12 @@ export function loadRuntimeConfig(source: Record<string, string | undefined> = p
   const ixcMode = (source.IXC_MODE ?? "disabled") as IxcMode;
   if (!environments.has(environment)) throw new Error("LZR_ENV inválido");
   if (!ixcModes.has(ixcMode)) throw new Error("IXC_MODE inválido");
+  const requestedAgentHomologationProfiles = featureFlag(
+    "FEATURE_AGENT_HOMOLOGATION_PROFILES",
+    source.FEATURE_AGENT_HOMOLOGATION_PROFILES,
+  );
+  const agentHomologationProfilesEnabled =
+    environment !== "production" && requestedAgentHomologationProfiles;
   if (source.IXC_WRITE_ENABLED === "true") throw new Error("Escrita no IXC é proibida na Fase 3A");
   if (ixcMode === "production-readonly") throw new Error("production-readonly não pode ser habilitado na Fase 3A");
   const ixcAllowlist = parseAllowlist(source.IXC_ALLOWED_CUSTOMER_IDS ?? source.IXC_ALLOWLIST_IDS);
@@ -52,6 +65,7 @@ export function loadRuntimeConfig(source: Record<string, string | undefined> = p
   }
   return {
     environment,
+    agentHomologationProfilesEnabled,
     ixcMode,
     ixcBaseUrl: source.IXC_BASE_URL,
     ixcToken: source.IXC_API_TOKEN,
