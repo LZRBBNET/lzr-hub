@@ -1,0 +1,26 @@
+[Unit]
+Description=Cloudflare Tunnel for LZR IXC relay
+After=network-online.target lzr-ixc-relay.service
+Wants=network-online.target
+Requires=lzr-ixc-relay.service
+
+[Service]
+Type=simple
+User=cloudflared
+Group=cloudflared
+ExecStart=/usr/local/bin/cloudflared tunnel --no-autoupdate run --token-file /etc/lzr/secrets/cloudflared-token
+Restart=on-failure
+RestartSec=5s
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+
+[Install]
+WantedBy=multi-user.target

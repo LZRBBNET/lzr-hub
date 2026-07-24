@@ -1,0 +1,23 @@
+[Unit]
+Description=LZR HUB IXC read-only relay
+Requires=docker.service
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+WorkingDirectory=/opt/lzr-hub/deploy/ixc-relay
+ExecStart=/usr/bin/docker compose up -d --build --remove-orphans
+ExecReload=/usr/bin/docker compose up -d --build --remove-orphans
+ExecStop=/usr/bin/docker compose down
+TimeoutStartSec=180
+TimeoutStopSec=30
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ReadWritePaths=/opt/lzr-hub /var/lib/docker /var/run
+
+[Install]
+WantedBy=multi-user.target
