@@ -20,3 +20,10 @@ O código rejeita produção, escrita, allowlist vazia, mais de 10 IDs e IDs com
 ## Nota de arquitetura: `IXC_BASE_URL` aponta para a ponte, não para o IXC direto
 
 O Cloudflare Workers não tem IP de saída fixo, e o webservice do IXC exige IP liberado ("Redes Permitidas"). Por isso `IXC_BASE_URL`/`IXC_API_TOKEN` em staging e produção devem apontar para a ponte própria (servidor com IP fixo dedicado) que repassa a chamada ao IXC — nunca direto para `ixc.bbnetup.com.br`. Nesse caso, `IXC_API_TOKEN` é o segredo compartilhado da ponte (`BRIDGE_SHARED_SECRET`), não o token real do IXC — o token real fica só dentro da ponte. Ver `docs/integrations/ixc-data-mapping.md` para o histórico da descoberta.
+
+## Ponte em produção: `https://ixc-bridge.bbnetup.com.br`
+
+A ponte está no ar com HTTPS (Caddy + Let's Encrypt) em `srv-ixc` (168.181.28.74), com egress fixo em `168.181.31.250`. O firewall (`ufw`) só libera a porta 443 pra faixas de IP do Cloudflare — nenhuma outra origem consegue chamar essa URL diretamente (nem de um PC de desenvolvedor). Por isso:
+
+- **Deploy real (staging/produção no Cloudflare Workers)**: configurar via `wrangler secret put IXC_BASE_URL` com o valor `https://ixc-bridge.bbnetup.com.br` e `wrangler secret put IXC_API_TOKEN` com o `BRIDGE_SHARED_SECRET` da ponte.
+- **Dev local (`.env.local`)**: continua usando um túnel SSH (`ssh -N -L 3000:localhost:3000 bbnet@168.181.28.74 -p 27977`) e `IXC_BASE_URL=http://localhost:3000`, porque o seu PC não é um IP do Cloudflare e seria bloqueado pelo firewall na porta 443 pública.

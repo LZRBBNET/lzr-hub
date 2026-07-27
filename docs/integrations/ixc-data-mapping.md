@@ -25,7 +25,10 @@ Todos os campos inesperados são ignorados. IDs ausentes em entidades obrigatór
 - `cliente` — validado com cadastro real (allowlist). Confirma todos os campos usados pelo `IxcCustomerMapper`, com uma ressalva:
   - **`cliente.cidade` vem como código numérico** (ex.: `"1759"`), não como nome da cidade. Resolvido (issue #28): `IxcReadonlyProvider.resolveCityName` consulta o endpoint `cidade` (`qtype: cidade.id`) e substitui o código pelo nome real no `customer.city`, com cache de 24h e sem quebrar o cadastro se a consulta falhar.
 - `cidade` — validado com o código real do cliente 21857 (`1759` → `"Campo do Brito"`, campo `nome`). Endpoint e nome de campo confirmados batendo com a suposição inicial.
-- `contrato`, `fn_areceber`, `su_oss_chamado` — endpoints alcançáveis e formato de chamada confirmado (ver seção de conectividade abaixo), mas ainda sem uma amostra de dado real validada campo a campo.
+- `cliente_contrato` — validado com o contrato real do cliente 21857 (id `48882`, `id_vd_contrato` `404`, `contrato: "FIBRA 1,2GB "`, `status: "A"`, `data_ativacao: "2016-04-27"`). Todos os campos usados pelo `IxcContractMapper` confirmados.
+  - **Atenção**: o nome do endpoint é `cliente_contrato`, **não** `contrato` (`/webservice/v1/contrato` retorna `"Recurso contrato não está disponível!"`). A collection do Postman tinha esse nome errado desde a criação — corrigido.
+- `fn_areceber` — validado: cliente 21857 retornou `total: 0` (sem faturas em aberto no momento). Resposta vazia é o comportamento esperado, não erro — bate com o `openInvoices: 0` já visto no Customer 360.
+- `su_oss_chamado` — validado com 48 ordens de serviço reais do cliente 21857, filtrando por **`id_cliente`** (não `id_assunto`, que era o que a collection usava antes — corrigido). Campos batem com o `IxcServiceOrderMapper`. O campo `mensagem_resposta`/`mensagem` traz texto livre do atendimento (às vezes com detalhes operacionais) — o mapper não persiste esse campo, só usa `assunto`/`mensagem` para o campo `subject`, mascarando quando ausente.
 
 ## Conectividade real do webservice IXC (descoberta em homologação)
 
