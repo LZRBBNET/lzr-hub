@@ -70,6 +70,23 @@ export const ixcSmokeResults = sqliteTable("ixc_smoke_results", {
   createdAt: text("created_at").notNull(),
 }, (table) => [index("ixc_smoke_run_idx").on(table.runId, table.createdAt), index("ixc_smoke_status_idx").on(table.status, table.createdAt)]);
 
+export const channelMessages = sqliteTable("channel_messages", {
+  id: text("id").primaryKey(),
+  channel: text("channel").notNull(),
+  externalConversationId: text("external_conversation_id").notNull(),
+  role: text("role").notNull(),
+  content: text("content").notNull(),
+  createdAt: text("created_at").notNull(),
+}, (table) => [index("channel_messages_conversation_idx").on(table.channel, table.externalConversationId, table.createdAt)]);
+
+export const channelIdempotencyKeys = sqliteTable("channel_idempotency_keys", {
+  idempotencyKey: text("idempotency_key").primaryKey(),
+  channel: text("channel").notNull(),
+  externalConversationId: text("external_conversation_id").notNull(),
+  responseJson: text("response_json", { mode: "json" }).notNull(),
+  createdAt: text("created_at").notNull(),
+});
+
 export const pilotEvents = sqliteTable("pilot_events", {
   id: text("id").primaryKey(),
   eventType: text("event_type").notNull(),

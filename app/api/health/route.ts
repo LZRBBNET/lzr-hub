@@ -19,6 +19,7 @@ export async function GET() {
       { service:"IA",status:"healthy",mode:"local",detail:"Métricas sem PII" },
       { service:"Conhecimento",status:"healthy",mode:"híbrido sem pgvector",detail:"Evidência obrigatória" },
       { service:"Meta WhatsApp",status:"disabled",mode:"mock",detail:"Nenhum envio real" },
+      { service:"Canal n8n",status:process.env.FEATURE_N8N_CHANNEL==="true"?"healthy":"disabled",mode:process.env.FEATURE_N8N_CHANNEL==="true"?"webhook":"mock",detail:process.env.FEATURE_N8N_CHANNEL==="true"?"Recebendo mensagens via /api/channels/n8n":"Canal desativado" },
       { service:"Chatwoot",status:"disabled",mode:"mock",detail:"Sem conexão externa" },
       { service:"Piloto interno",...pilot },
     ],
