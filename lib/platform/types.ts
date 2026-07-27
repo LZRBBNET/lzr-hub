@@ -10,4 +10,4 @@ export interface CollectionCampaign { id: string; name: string; segment: string;
 export interface Lead { id: string; name: string; maskedPhone: string; city: string; neighborhood: string; source: string; interest: string; coverage: string; owner: string; stage: string; score: number; nextAction: string }
 export interface HealthFactor { label: string; value: number; weight: number; impact: number; explanation: string }
 export interface KnowledgeDocument { id: string; title: string; category: string; status: "draft" | "published" | "review"; version: number; city: string; plan: string; equipment: string; validUntil: string; chunks: number; updatedAt: string }
-export interface AuditEvent { id: string; actor: string; role: string; action: string; entity: string; result: "success" | "blocked" | "failed"; origin: "human" | "ai"; correlationId: string; at: string; reason: string }
+export interface AuditEvent { id: string; actor: string; role: string; action: string; entity: string; result: "success" | "simulated" | "blocked" | "failed"; origin: "human" | "ai"; correlationId: string; at: string; reason: string }

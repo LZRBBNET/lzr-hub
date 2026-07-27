@@ -22,10 +22,11 @@ export function LzrHubApp() {
       <aside className="sidebar">
         <div className="brand"><div className="brand-mark">L</div><div className="brand-copy"><strong>LZR HUB</strong><small>BBNET Intelligence</small></div></div>
         <div className="nav-scroll">{navigation.map((item) => <div key={item.id}>{item.group ? <div className="nav-label">{item.group}</div> : null}<button className={`nav-item ${view === item.id ? "active" : ""}`} onClick={() => setView(item.id)}><span className="nav-icon">{item.icon}</span><span>{item.label}</span></button></div>)}</div>
-        <div className="sidebar-footer"><Avatar initials="BL" /><div><strong>Breno Lima</strong><span>Administrador</span></div></div>
+        <div className="sidebar-footer"><Avatar initials="AD" /><div><strong>Admin Demonstração</strong><span>Usuário sintético</span></div></div>
       </aside>
       <section className="workspace">
-        <header className="topbar"><div className="topbar-title"><strong>{viewTitles[view][0]}</strong><span>{viewTitles[view][1]}</span></div><div className="live-pill">● Homologação protegida • escrita externa bloqueada</div></header>
+        <header className="topbar"><div className="topbar-title"><strong>{viewTitles[view][0]}</strong><span>{viewTitles[view][1]}</span></div><div className="live-pill">● Homologação protegida • demo mock</div></header>
+        <div className="demo-notice" role="status"><strong>Ambiente de demonstração</strong><span>nenhuma ação real é executada</span></div>
         {view === "dashboard" && <Dashboard onOpen={() => setView("atendimento")} />}
         {view === "atendimento" && <Conversation />}
         {view === "training" && <TrainingMode />}
@@ -43,7 +44,7 @@ export function LzrHubApp() {
 
 function Dashboard({ onOpen }: { onOpen: () => void }) {
   return <main className="content">
-    <div className="page-heading"><div><h1>Boa tarde, Breno.</h1><p>A operação está estável. Nenhuma integração real está habilitada.</p></div><button className="button" onClick={onOpen}>Abrir central de atendimento</button></div>
+    <div className="page-heading"><div><h1>Olá, equipe BBNET.</h1><p>Dados sintéticos para navegação segura. Nenhuma integração real está habilitada.</p></div><button className="button" onClick={onOpen}>Abrir central de atendimento</button></div>
     <section className="metrics">
       <Metric label="Conversas ativas" value="18" detail="↑ 12% desde ontem" icon="◫" />
       <Metric label="Resolvidas pela IA" value="74%" detail="↑ 6,4% esta semana" icon="✦" />
@@ -68,7 +69,7 @@ function Progress({ label, value }: { label:string; value:number }) { return <di
 function Conversation() {
   const initial: UiMessage[] = [
     { role:"customer", content:"Oi, estou sem internet e trabalho de casa. Preciso resolver isso rápido.", time:"16:42" },
-    { role:"agent", content:"Sei que isso atrapalha bastante seu trabalho em casa. Acabei de conferir: sua ONU está online e o sinal da fibra está normal. Como o PPPoE está offline e não há falha na região, o problema parece estar na autenticação da sessão. Vou renovar essa conexão com você agora: consegue desligar o roteador da tomada por 20 segundos?", time:"16:43" },
+    { role:"agent", content:"Demonstração com dados fictícios: a ONU simulada está online e o PPPoE simulado está offline. Nenhuma consulta ou ação real foi executada. Para continuar o diagnóstico de exemplo, consegue desligar o roteador da tomada por 20 segundos?", time:"16:43" },
   ];
   return <main className="content" style={{paddingTop:18}}><ConversationWorkspace initial={initial} training={false} /></main>;
 }
@@ -103,8 +104,8 @@ function ConversationWorkspace({ initial, training, onResult }: { initial: UiMes
   if (training) return chat;
   return <div className="conversation-layout">
     <aside className="conversation-list"><input className="search" placeholder="Buscar conversa…" />{[["JP","João Pereira","Sem internet e trabalho de casa","agora"],["MS","Maria Souza","Obrigada, recebi a fatura","2m"],["RC","Rafael Costa","A internet está muito lenta","4m"],["AC","Ana Carvalho","Quero melhorar meu plano","7m"]].map(([a,n,m,t],i)=><div className={`contact ${i===0?"active":""}`} key={n}><Avatar initials={a}/><div><p>{n}</p><span>{m}</span></div><time>{t}</time></div>)}</aside>
-    <section className="conversation-main"><div className="chat-header"><div className="person"><Avatar/><div><strong>João Pereira</strong><span>● Online no WhatsApp</span></div></div><span className="badge blue">IA conduzindo</span></div>{chat}</section>
-    <aside className="customer-panel"><div className="customer-head"><Avatar/><h3>João Pereira</h3><p>Cliente desde março de 2022</p></div><Info title="Contrato" rows={[["Plano","600 Mega"],["Status","Ativo"],["Vencimento","Dia 10"],["Cidade","Itabaiana/SE"]]}/><Info title="Conexão" rows={[["ONU","Online"],["PPPoE","Offline"],["Potência","-19,8 dBm"],["Atualizado","agora"]]}/><Info title="Contexto" rows={[["Sentimento","Preocupado"],["Prioridade","Alta"],["Motivo","Home office"]]}/></aside>
+    <section className="conversation-main"><div className="chat-header"><div className="person"><Avatar/><div><strong>João Pereira</strong><span>● Canal demonstrativo</span></div></div><span className="badge blue">IA em modo mock</span></div>{chat}</section>
+    <aside className="customer-panel"><div className="customer-head"><Avatar/><h3>João Pereira</h3><p>Cliente fictício • dados sintéticos</p></div><Info title="Contrato demo" rows={[["Plano","600 Mega"],["Status","Ativo fictício"],["Vencimento","Dia 10"],["Cidade","Itabaiana/SE"]]}/><Info title="Conexão simulada" rows={[["ONU","Online"],["PPPoE","Offline"],["Potência","-19,8 dBm"],["Atualizado","agora"]]}/><Info title="Contexto demo" rows={[["Sentimento","Preocupado"],["Prioridade","Alta"],["Motivo","Home office"]]}/></aside>
   </div>;
 }
 
@@ -122,7 +123,10 @@ function TrainingMode() {
 
 function Analysis({result,accepted,onAccept}:{result:AgentResult;accepted:boolean;onAccept:()=>void}) { const e=result.evaluation; const scores=[["Naturalidade",e.naturalness],["Precisão",e.precision],["Empatia",e.empathy],["Segurança",e.safety],["Continuidade",e.continuity],["Memória",e.memory],["Novidade",e.noveltyScore*10],["Progresso",e.progressScore*10]] as const; return <>
   <div className="analysis-block"><div className="analysis-main"><div><h4>Intenção detectada</h4><strong>{result.intent}</strong><div style={{fontSize:11,color:"#64748b",marginTop:4}}>{result.goal} • confiança {Math.round(result.confidence*100)}%</div></div><div className="score"><span>{e.score}</span></div></div></div>
-  <div className="analysis-block"><h4>Estado e ferramentas</h4><div style={{fontSize:11,marginBottom:10}}><span className="badge blue">{result.state}</span> <span style={{color:"#64748b"}}>{result.correlationId}</span></div><div className="tool-list">{result.tools.map(t=><span className="tool-chip" key={t.tool}>✓ {t.tool}</span>)}</div></div>
+  <div className="analysis-block"><h4>Estado e execução</h4><div className="analysis-status"><span className="badge blue">{result.state}</span><span className={`badge ${result.actionExecuted?"amber":"green"}`}>{result.actionExecuted?"Ação externa":"Zero ação real"}</span><span className="badge">{result.finalStatus}</span></div><div className="correlation">{result.correlationId}</div></div>
+  <div className="analysis-block"><h4>Ferramentas</h4><div className="tool-list">{result.tools.length?result.tools.map(t=><span className="tool-chip" key={t.tool}>{t.status==="completed"?"✓":"!"} {t.tool} • {t.outcome}</span>):<span className="analysis-muted">Nenhuma ferramenta necessária.</span>}</div></div>
+  <div className="analysis-block"><h4>Evidências</h4>{result.evidence.length?<div className="evidence-list">{result.evidence.map((evidence)=><div className="evidence-item" key={evidence.id}><strong>{evidence.kind} • {evidence.source}</strong><span>{evidence.summary}</span><small>{evidence.simulated?"Evidência simulada e identificada":"Evidência validada"}</small></div>)}</div>:<p className="analysis-muted">Nenhuma evidência foi produzida; o agente não pode alegar sucesso.</p>}</div>
+  <div className="analysis-block"><h4>Transbordo</h4><div className={`handoff-card ${result.handoff.required?"required":""}`}><strong>{result.handoff.required?"Necessário":"Não necessário"}</strong><span>{result.handoff.reason??"O fluxo demonstrativo pode continuar com segurança."}</span>{result.handoff.summary&&<small>{result.handoff.summary}</small>}</div></div>
   <div className="analysis-block"><h4>Avaliação</h4>{scores.map(([label,value])=><div className="score-row" key={label}><div><div style={{display:"flex",justifyContent:"space-between",marginBottom:4}}><span>{label}</span><strong>{value}</strong></div><div className="mini-bar"><span style={{width:`${value*10}%`}} /></div></div><span>/10</span></div>)}</div>
   <div className="analysis-block"><h4>Resumo e próximo passo</h4><p style={{fontSize:11,lineHeight:1.55,color:"#536478"}}>{result.conversationSummary}</p><p style={{fontSize:11,lineHeight:1.55}}><strong>Próximo:</strong> {result.nextStep}</p></div>
   <div className="analysis-block"><h4>Resposta considerada perfeita</h4><div className="ideal">{e.idealResponse}</div><p style={{fontSize:10,color:"#64748b",lineHeight:1.5}}>{e.suggestion}</p><button className={`button ${accepted?"success":""}`} style={{width:"100%"}} onClick={onAccept}>{accepted?"✓ Melhoria salva como caso aprovado":"Aceitar melhoria"}</button></div>

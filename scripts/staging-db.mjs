@@ -40,6 +40,16 @@ if (command === "create") {
 } else if (command === "status") {
   migrate();
   wrangler(["d1", "execute", database, "--command", "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name;"]);
+  wrangler(["d1", "execute", database, "--command", `SELECT json_object(
+    'customers', (SELECT COUNT(*) FROM customers),
+    'network_incidents', (SELECT COUNT(*) FROM network_incidents),
+    'collection_rules', (SELECT COUNT(*) FROM collection_rules),
+    'collection_rule_steps', (SELECT COUNT(*) FROM collection_rule_steps),
+    'collection_campaigns', (SELECT COUNT(*) FROM collection_campaigns),
+    'leads', (SELECT COUNT(*) FROM leads),
+    'knowledge_documents', (SELECT COUNT(*) FROM knowledge_documents),
+    'audit_events', (SELECT COUNT(*) FROM audit_events)
+  ) AS synthetic_counts;`]);
 } else {
   throw new Error("Comando esperado: create, migrate, seed, backup, restore-test ou status");
 }
