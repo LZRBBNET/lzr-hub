@@ -31,13 +31,13 @@ Issue #27, branch `feat/staging-demo-deployment`. Este trabalho não altera o re
 - 4 ataques ao contexto operacional bloqueados com HTTP 403.
 - Nenhum CPF formatado, telefone real ou secret incluído no seed.
 - Suíte específica de staging: 25/25.
-- Suíte completa: 147/147.
+- Suíte completa inicial: 147/147.
 - Lint, typecheck, build de staging e validação do artefato aprovados.
 
 ## APROVADO LOCALMENTE
 
 - Instalação limpa, lint, typecheck, builds e artefato.
-- 147/147 testes totais e 25/25 testes específicos de staging.
+- 147/147 testes totais e 25/25 testes específicos de staging na validação inicial.
 - Ciclo D1 local, seed idempotente, backup e restauração isolada.
 - Health sanitizado e agente mock-only com zero ação real.
 - Varredura de secrets e PII nos arquivos alterados.
@@ -77,3 +77,14 @@ Pendente para execução manual autenticada após existir um fluxo de preview de
 ## Decisão provisória
 
 **CÓDIGO E PR PRONTOS, DEPLOY BLOQUEADO.**
+
+## Revalidação para publicação — 2026-07-27
+
+- A branch foi reconciliada com os quatro commits posteriores da `main`, sem incorporar o PR #26.
+- `npm run install:ci`, lint, typecheck, build staging e validação do artefato foram aprovados.
+- A suíte completa passou em 152/152 testes após a integração segura do canal n8n presente na `main`.
+- O comando `test:staging` passou a construir seu próprio artefato, permitindo execução reproduzível após instalação limpa.
+- `FEATURE_N8N_CHANNEL=false` é requisito fail-closed da demo.
+- A rota n8n foi exercitada com a flag desligada e retornou HTTP 503, sem processar mensagem ou executar ação externa.
+- O canal n8n permanece desativado porque a implementação atual ainda não comprova rate limiting e proteção temporal contra replay; nenhum `N8N_CHANNEL_SECRET` foi configurado.
+- IXC, transporte IXC e todas as escritas externas permanecem desabilitados.

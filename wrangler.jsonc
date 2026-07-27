@@ -18,7 +18,8 @@
     "FEATURE_META_WHATSAPP": "false",
     "FEATURE_QUEUES": "false",
     "FEATURE_PGVECTOR": "false",
-    "FEATURE_AGENT_HOMOLOGATION_PROFILES": "false"
+    "FEATURE_AGENT_HOMOLOGATION_PROFILES": "false",
+    "FEATURE_N8N_CHANNEL": "false"
   },
   "d1_databases": [
     {

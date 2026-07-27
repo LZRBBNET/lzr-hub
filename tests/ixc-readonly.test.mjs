@@ -11,7 +11,8 @@ import { IxcReadonlySmokeRunner, MemorySmokeRepository } from "../lib/platform/i
 
 const allowedId="IXC-AUTH-001";
 const fixtures={
-  cliente:{id:allowedId,razao:"Cliente Interno Um",cnpj_cpf:"DOC-01",cidade:"Itabaiana",bairro:"Centro",ativo:"S"},
+  cliente:{id:allowedId,razao:"Cliente Interno Um",cnpj_cpf:"DOC-01",cidade:"3502",bairro:"Centro",ativo:"S"},
+  cidade:{id:"3502",nome:"Itabaiana"},
   cliente_contrato:{id:"CTR-001",id_cliente:allowedId,id_vd_contrato:"PLAN-600",contrato:"600 Mega",status:"A",dia_vencimento:"10",valor_plano:"89,90"},
   vd_contratos:{id:"PLAN-600",nome:"600 Mega Homologado",velocidade:"600M",valor:"89,90"},
   fn_areceber:{id:"INV-001",id_cliente:allowedId,id_contrato:"CTR-001",status:"A",data_vencimento:"2026-07-20",valor:"89.90"},
@@ -65,7 +66,7 @@ test("provider monta Customer 360 somente para cadastro autorizado e usa cache",
   const fetcher=async(url)=>{calls+=1;const resource=String(url).split("/").at(-1);return Response.json({registros:fixtures[resource]?[fixtures[resource]]:[]});};
   const provider=new IxcReadonlyProvider({baseUrl:"https://ixc.invalid",token:"secret",allowedCustomerIds:[allowedId],fetcher,trace:(trace)=>traces.push(trace)});
   const first=await provider.getSnapshot(allowedId,"corr-001");
-  assert.equal(first.customer.documentMasked,"***.***.***-01");assert.equal(first.contracts.length,1);assert.equal(first.plan.name,"600 Mega Homologado");assert.equal(first.invoices.length,1);assert.equal(first.serviceOrders.length,1);assert.equal(first.connection.addressMasked,"[ENDEREÇO MASCARADO]");assert.equal(typeof first.metrics.blockLatencies.getPlan,"number");
+  assert.equal(first.customer.documentMasked,"***.***.***-01");assert.equal(first.customer.city,"Itabaiana");assert.equal(first.contracts.length,1);assert.equal(first.plan.name,"600 Mega Homologado");assert.equal(first.invoices.length,1);assert.equal(first.serviceOrders.length,1);assert.equal(first.connection.addressMasked,"[ENDEREÇO MASCARADO]");assert.equal(typeof first.metrics.blockLatencies.getPlan,"number");
   const count=calls;const second=await provider.getSnapshot(allowedId,"corr-002");assert.equal(second.cache,"hit");assert.equal(second.metrics.totalLatencyMs,0);assert.equal(calls,count);assert.equal(traces.some((item)=>item.status==="cache-hit"),true);
   await assert.rejects(()=>provider.getSnapshot("NAO-AUTORIZADO","corr-003"),IxcCustomerNotAllowedError);
 });
@@ -75,6 +76,23 @@ test("falha parcial preserva Customer 360 e identifica a fonte",async()=>{
   const provider=new IxcReadonlyProvider({baseUrl:"https://ixc.invalid",token:"secret",allowedCustomerIds:[allowedId],fetcher});
   const snapshot=await provider.getSnapshot(allowedId,"corr-partial");
   assert.equal(snapshot.customer.id,allowedId);assert.deepEqual(snapshot.invoices,[]);assert.deepEqual(snapshot.partialSources,["invoices"]);
+});
+
+test("falha ao resolver cidade preserva o Customer 360 com o código bruto",async()=>{
+  const fetcher=async(url)=>{const resource=String(url).split("/").at(-1);if(resource==="cidade")return new Response("indisponível",{status:500});return Response.json({registros:fixtures[resource]?[fixtures[resource]]:[]});};
+  const provider=new IxcReadonlyProvider({baseUrl:"https://ixc.invalid",token:"secret",allowedCustomerIds:[allowedId],fetcher});
+  const snapshot=await provider.getSnapshot(allowedId,"corr-city-fail");
+  assert.equal(snapshot.customer.city,"3502");
+});
+
+test("nome da cidade fica em cache e não gera nova chamada de rede",async()=>{
+  let cityCalls=0;
+  const fetcher=async(url)=>{const resource=String(url).split("/").at(-1);if(resource==="cidade")cityCalls+=1;return Response.json({registros:fixtures[resource]?[fixtures[resource]]:[]});};
+  const provider=new IxcReadonlyProvider({baseUrl:"https://ixc.invalid",token:"secret",allowedCustomerIds:[allowedId],fetcher});
+  await provider.getSnapshot(allowedId,"corr-city-1");
+  assert.equal(cityCalls,1);
+  await provider.getSnapshot(allowedId,"corr-city-2",true);
+  assert.equal(cityCalls,1);
 });
 
 test("sincronização registra checkpoint, auditoria e DLQ sem payload bruto",async()=>{

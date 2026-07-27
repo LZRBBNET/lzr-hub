@@ -14,6 +14,7 @@ export const stagingDemoRequirements = {
   FEATURE_QUEUES: "false",
   FEATURE_PGVECTOR: "false",
   FEATURE_AGENT_HOMOLOGATION_PROFILES: "false",
+  FEATURE_N8N_CHANNEL: "false",
 } as const;
 
 export interface StagingDemoConfig {

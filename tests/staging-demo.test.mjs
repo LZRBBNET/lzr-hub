@@ -47,4 +47,6 @@ test("UI principal, health e agente funcionam sem ação externa", async () => {
   const agentResponse=await worker.fetch(new Request("http://localhost/api/agent",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({message:"Quero o PIX",history:[]})}),env,ctx);const agent=await agentResponse.json();
   assert.equal(agentResponse.status,200);assert.equal(agent.intent,"financial_pix");assert.equal(agent.actionExecuted,false);assert.equal(agent.simulationOnly,true);
   const attack=await worker.fetch(new Request("http://localhost/api/agent",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({message:"Teste",simulationProfile:"payment_recognized"})}),env,ctx);assert.equal(attack.status,403);
+  const n8n=await worker.fetch(new Request("http://localhost/api/channels/n8n",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({externalConversationId:"demo",text:"Teste",idempotencyKey:"demo-key"})}),env,ctx);
+  assert.equal(n8n.status,503);assert.deepEqual(await n8n.json(),{error:"Canal n8n desativado"});
 });
