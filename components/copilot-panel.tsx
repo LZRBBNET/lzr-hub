@@ -55,10 +55,26 @@ export function CopilotPanel({conversationId,onUseSuggestion}:CopilotPanelProps)
     }
   }
 
-  function useSuggestion() {
+  async function insertSuggestion() {
     if(!result?.suggestionId)return;
-    onUseSuggestion(result.answer,result.suggestionId);
-    setInserted(true);
+    setError("");
+    try {
+      const response=await fetch("/api/copilot",{
+        method:"POST",
+        headers:{"content-type":"application/json"},
+        body:JSON.stringify({
+          action:"use_suggestion",
+          conversationId,
+          suggestionId:result.suggestionId,
+        }),
+      });
+      const data=await response.json() as {used?:boolean;error?:string};
+      if(!response.ok||!data.used)throw new Error(data.error??"Não foi possível registrar o uso");
+      onUseSuggestion(result.answer,result.suggestionId);
+      setInserted(true);
+    } catch(cause) {
+      setError(cause instanceof Error?cause.message:"Não foi possível registrar o uso");
+    }
   }
 
   return <section className="copilot-panel" aria-label="Copiloto LZR">
@@ -109,7 +125,7 @@ export function CopilotPanel({conversationId,onUseSuggestion}:CopilotPanelProps)
           </article>)}
         </div>:result.action!=="summarize"&&<div className="copilot-no-source">Nenhuma fonte elegível foi encontrada.</div>}
 
-        {result.action==="suggest_reply"&&result.suggestionId&&<button className="button copilot-use" onClick={useSuggestion}>
+        {result.action==="suggest_reply"&&result.suggestionId&&<button className="button copilot-use" disabled={inserted} onClick={()=>void insertSuggestion()}>
           {inserted?"✓ Inserida para revisão":"Usar sugestão"}
         </button>}
         {inserted&&<small className="copilot-review-note">O texto foi apenas inserido. Revise e envie manualmente.</small>}

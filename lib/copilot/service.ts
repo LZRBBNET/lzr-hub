@@ -1,6 +1,6 @@
-import { randomUUID } from "node:crypto";
 import { KnowledgeService } from "../platform/knowledge-service.ts";
 import { findCopilotConversation } from "./conversation-repository.ts";
+import { issueSuggestionReceipt } from "./suggestion-registry.ts";
 import type { CopilotAction, CopilotActor, CopilotConversation, CopilotResult, CopilotSource } from "./types.ts";
 
 export class CopilotConversationForbiddenError extends Error {}
@@ -80,7 +80,12 @@ export function runInternalCopilot(input:{
     action:input.action,
     answer:suggestionFromSource(sources[0]),
     sources,
-    suggestionId:randomUUID(),
+    suggestionId:issueSuggestionReceipt({
+      actor:input.actor,
+      conversationId:conversation.id,
+      sourceIds:sources.map((source)=>source.id),
+      now:input.now,
+    }),
     simulationOnly,
   };
 }

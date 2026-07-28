@@ -18,7 +18,7 @@ export interface UnauthenticatedActionEntry {
  * Registra uma ação no rastro de auditoria.
  * Nunca deve derrubar a ação principal se o banco falhar — só complementa o rastro.
  */
-export async function logUnauthenticatedAction(entry: UnauthenticatedActionEntry): Promise<void> {
+export async function logUnauthenticatedAction(entry: UnauthenticatedActionEntry): Promise<boolean> {
   const anonymous = !entry.actor;
   try {
     const db = await getDb();
@@ -38,8 +38,10 @@ export async function logUnauthenticatedAction(entry: UnauthenticatedActionEntry
       origin: anonymous ? "não verificado" : "humano",
       createdAt: new Date().toISOString(),
     });
+    return true;
   } catch {
     // Auditoria é best-effort aqui; a rota principal já respondeu ao cliente.
+    return false;
   }
 }
 
