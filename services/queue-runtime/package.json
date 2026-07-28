@@ -1,0 +1,17 @@
+{
+  "name": "@lzr-hub/queue-runtime",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22.13.0"
+  },
+  "scripts": {
+    "api": "node src/server.mjs",
+    "worker": "node src/worker.mjs",
+    "test": "node --test tests/*.test.mjs"
+  },
+  "dependencies": {
+    "bullmq": "5.81.2"
+  }
+}
