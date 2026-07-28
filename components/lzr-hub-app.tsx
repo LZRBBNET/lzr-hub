@@ -15,14 +15,55 @@ type UiMessage = ChatMessage & { time: string; result?: AgentResult };
 
 function Avatar({ initials = "JP" }: { initials?: string }) { return <div className="avatar">{initials}</div>; }
 
+type SessionState = { authenticated: boolean; authRequired: boolean; user?: { name: string; email: string; role: string } };
+
+function initialsOf(name: string) {
+  return name.trim().split(/\s+/).slice(0, 2).map((part) => part[0]?.toUpperCase() ?? "").join("") || "??";
+}
+
+/**
+ * Só redireciona depois que a sessão é consultada no cliente. A primeira
+ * renderização é sempre a aplicação normal — o HTML inicial é verificado pelos
+ * testes do ambiente de demonstração e não pode virar uma tela de carregamento.
+ */
+function useSessionRedirect() {
+  const [session, setSession] = useState<SessionState | null>(null);
+  useEffect(() => {
+    let active = true;
+    fetch("/api/auth/me", { cache: "no-store" })
+      .then((response) => response.json())
+      .then((data: SessionState) => {
+        if (!active) return;
+        setSession(data);
+        if (data.authRequired && !data.authenticated) window.location.href = "/login";
+      })
+      .catch(() => { if (active) setSession(null); });
+    return () => { active = false; };
+  }, []);
+  return session;
+}
+
 export function LzrHubApp() {
   const [view, setView] = useState<View>("dashboard");
+  const session = useSessionRedirect();
+  const user = session?.user;
+
+  function signOut() {
+    fetch("/api/auth/logout", { method: "POST" })
+      .then(() => { window.location.href = "/login"; })
+      .catch(() => { window.location.href = "/login"; });
+  }
+
   return (
     <div className="app-shell">
       <aside className="sidebar">
         <div className="brand"><div className="brand-mark">L</div><div className="brand-copy"><strong>LZR HUB</strong><small>BBNET Intelligence</small></div></div>
         <div className="nav-scroll">{navigation.map((item) => <div key={item.id}>{item.group ? <div className="nav-label">{item.group}</div> : null}<button className={`nav-item ${view === item.id ? "active" : ""}`} onClick={() => setView(item.id)}><span className="nav-icon">{item.icon}</span><span>{item.label}</span></button></div>)}</div>
-        <div className="sidebar-footer"><Avatar initials="AD" /><div><strong>Admin Demonstração</strong><span>Usuário sintético</span></div></div>
+        <div className="sidebar-footer">
+          <Avatar initials={user ? initialsOf(user.name) : "AD"} />
+          <div><strong>{user ? user.name : "Admin Demonstração"}</strong><span>{user ? user.role : "Usuário sintético"}</span></div>
+          {user && <button className="button secondary" onClick={signOut}>Sair</button>}
+        </div>
       </aside>
       <section className="workspace">
         <header className="topbar"><div className="topbar-title"><strong>{viewTitles[view][0]}</strong><span>{viewTitles[view][1]}</span></div><div className="live-pill">● Homologação protegida • demo mock</div></header>
