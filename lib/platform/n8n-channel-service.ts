@@ -58,8 +58,8 @@ export class D1ChannelRepository implements ChannelRepository {
   private readonly db: any;
   constructor(db: unknown) { this.db = db; }
   async findIdempotent(idempotencyKey: string): Promise<ChannelResponse | undefined> {
-    const row = await this.db.select().from(channelIdempotencyKeys).where(eq(channelIdempotencyKeys.idempotencyKey, idempotencyKey)).get();
-    return row?.responseJson as ChannelResponse | undefined;
+    const rows = await this.db.select().from(channelIdempotencyKeys).where(eq(channelIdempotencyKeys.idempotencyKey, idempotencyKey)).limit(1);
+    return rows[0]?.responseJson as ChannelResponse | undefined;
   }
   async getHistory(channel: string, externalConversationId: string): Promise<ChannelMessageRow[]> {
     const rows = await this.db.select().from(channelMessages)

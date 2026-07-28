@@ -1,18 +1,22 @@
-import { drizzle } from "drizzle-orm/d1";
+import { drizzle } from "drizzle-orm/node-postgres";
+import { Pool } from "pg";
 import * as schema from "./schema";
 
-export async function getDb() {
-  const binding = await getD1();
-  return drizzle(binding, { schema });
+let pool: Pool | undefined;
+
+export function getPool(): Pool {
+  if (!pool) {
+    const connectionString = process.env.DATABASE_URL;
+    if (!connectionString) {
+      throw new Error(
+        "DATABASE_URL não está definida. No Railway, conecte o plugin Postgres ao serviço para que essa variável seja injetada automaticamente."
+      );
+    }
+    pool = new Pool({ connectionString });
+  }
+  return pool;
 }
 
-export async function getD1(): Promise<D1Database> {
-  const { env } = await import("cloudflare:workers");
-  const binding = env.DB as D1Database | undefined;
-  if (!binding) {
-    throw new Error(
-      "Cloudflare D1 binding `DB` is unavailable. Set the `d1` field in .openai/hosting.json to `DB` or let your control plane inject the real binding values before using the database."
-    );
-  }
-  return binding;
+export async function getDb() {
+  return drizzle(getPool(), { schema });
 }

@@ -1,40 +1,12 @@
 {
   "version": "7",
-  "dialect": "sqlite",
+  "dialect": "postgresql",
   "entries": [
     {
       "idx": 0,
-      "version": "6",
-      "when": 1783854353481,
-      "tag": "0000_flippant_doctor_strange",
-      "breakpoints": true
-    },
-    {
-      "idx": 1,
-      "version": "6",
-      "when": 1783864788684,
-      "tag": "0001_sticky_pyro",
-      "breakpoints": true
-    },
-    {
-      "idx": 2,
-      "version": "6",
-      "when": 1783880833152,
-      "tag": "0002_broken_the_hood",
-      "breakpoints": true
-    },
-    {
-      "idx": 3,
-      "version": "6",
-      "when": 1783880968081,
-      "tag": "0003_steep_mojo",
-      "breakpoints": true
-    },
-    {
-      "idx": 4,
-      "version": "6",
-      "when": 1784924943894,
-      "tag": "0004_kind_wolf_cub",
+      "version": "7",
+      "when": 1785245384919,
+      "tag": "0000_high_star_brand",
       "breakpoints": true
     }
   ]
