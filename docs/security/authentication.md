@@ -19,6 +19,7 @@ Antes disto o LZR HUB não tinha login: nenhuma rota sabia quem estava chamando,
 | Rota | Permissão exigida |
 |---|---|
 | `GET/POST /api/agent` | `customer.read` |
+| `POST /api/copilot` fora de `mock` | `copilot.use` |
 | `GET /api/customers` | `customer.read` |
 | `POST /api/customers` (refresh) | `support.write` |
 | `GET /api/knowledge` | `customer.read` |
@@ -26,6 +27,11 @@ Antes disto o LZR HUB não tinha login: nenhuma rota sabia quem estava chamando,
 | `GET /api/audit` | `audit.read` |
 
 Sem sessão válida → `401`. Com sessão, mas papel sem a permissão → `403`.
+
+O copiloto tem uma regra adicional: em `mock` usa somente uma identidade
+demonstrativa fixa definida no servidor; fora de `mock`, ele exige a sessão
+real mesmo se `FEATURE_AUTH` estiver desligada. O navegador nunca define ator
+ou papel para esse endpoint.
 
 Isso fecha o furo mais grave apontado na revisão anterior: `POST /api/knowledge` deixava qualquer pessoa com a URL publicar conteúdo que a IA passa a citar como evidência para o cliente.
 
