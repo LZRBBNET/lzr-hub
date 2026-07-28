@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { randomUUID } from "node:crypto";
 import { getDb } from "@/db";
 import { D1ChannelRepository, MAX_MESSAGE_LENGTH, processChannelMessage } from "@/lib/platform/n8n-channel-service";
+import { DbSupportMetricsRepository } from "@/lib/platform/support-metrics";
 
 export async function POST(request: Request) {
   if (process.env.FEATURE_N8N_CHANNEL !== "true") {
@@ -24,7 +25,11 @@ export async function POST(request: Request) {
   }
   if (text.length > MAX_MESSAGE_LENGTH) return NextResponse.json({ error: "Mensagem acima do limite" }, { status: 413 });
 
-  const repository = new D1ChannelRepository(await getDb());
-  const result = await processChannelMessage(repository, { externalConversationId, text, idempotencyKey, correlationId });
+  const db = await getDb();
+  const result = await processChannelMessage(
+    new D1ChannelRepository(db),
+    { externalConversationId, text, idempotencyKey, correlationId },
+    new DbSupportMetricsRepository(db),
+  );
   return NextResponse.json(result);
 }

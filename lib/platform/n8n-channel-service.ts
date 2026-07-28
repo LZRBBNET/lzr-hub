@@ -3,6 +3,14 @@ import { and, asc, eq } from "drizzle-orm";
 import { auditEvents, channelIdempotencyKeys, channelMessages } from "../../db/schema.ts";
 import { runAgentPipeline } from "../agent/pipeline.ts";
 import type { ChatMessage } from "../agent/types.ts";
+import {
+  CSAT_QUESTION,
+  CSAT_THANKS,
+  isAwaitingCsat,
+  parseCsatScore,
+  shouldAskCsat,
+  type SupportMetricsRepository,
+} from "./support-metrics.ts";
 
 export const CHANNEL_NAME = "n8n-whatsapp";
 export const MAX_MESSAGE_LENGTH = 5000;
@@ -21,22 +29,59 @@ export interface ChannelRepository {
 
 export interface ChannelMessageInput { externalConversationId: string; text: string; idempotencyKey: string; correlationId: string }
 
-export async function processChannelMessage(repository: ChannelRepository, input: ChannelMessageInput): Promise<ChannelResponse> {
+export async function processChannelMessage(
+  repository: ChannelRepository,
+  input: ChannelMessageInput,
+  metrics?: SupportMetricsRepository,
+): Promise<ChannelResponse> {
   const existing = await repository.findIdempotent(input.idempotencyKey);
   if (existing) return existing;
 
   const historyRows = await repository.getHistory(CHANNEL_NAME, input.externalConversationId);
   const history: ChatMessage[] = historyRows.slice(-MAX_HISTORY);
 
+  const lastAgentMessage = [...historyRows].reverse().find((row) => row.role === "agent")?.content;
+  const csatScore = isAwaitingCsat(lastAgentMessage) ? parseCsatScore(input.text) : null;
+
+  // Resposta à pergunta de avaliação: registra a nota e encerra, sem acionar o pipeline.
+  if (csatScore !== null) {
+    await metrics?.saveRating({
+      channel: CHANNEL_NAME,
+      externalConversationId: input.externalConversationId,
+      score: csatScore,
+    });
+    await repository.saveMessages(CHANNEL_NAME, input.externalConversationId, [
+      { role: "customer", content: input.text },
+      { role: "agent", content: CSAT_THANKS },
+    ]);
+    const rated: ChannelResponse = {
+      response: CSAT_THANKS,
+      status: "rated",
+      handoff: false,
+      correlationId: input.correlationId,
+    };
+    await repository.saveIdempotency(input.idempotencyKey, CHANNEL_NAME, input.externalConversationId, rated);
+    await repository.audit({
+      correlationId: input.correlationId,
+      entity: `conversation:${input.externalConversationId}`,
+      result: `csat:${csatScore}`,
+      reason: "Avaliação de atendimento recebida via canal n8n/WhatsApp",
+    });
+    return rated;
+  }
+
   const result = runAgentPipeline(input.text, history, { channel: "whatsapp" });
+
+  const askCsat = shouldAskCsat(result.finalStatus, result.handoff.required);
+  const reply = askCsat ? `${result.response}\n\n${CSAT_QUESTION}` : result.response;
 
   await repository.saveMessages(CHANNEL_NAME, input.externalConversationId, [
     { role: "customer", content: input.text },
-    { role: "agent", content: result.response },
+    { role: "agent", content: reply },
   ]);
 
   const response: ChannelResponse = {
-    response: result.response,
+    response: reply,
     status: result.finalStatus,
     handoff: result.handoff.required,
     correlationId: input.correlationId,
@@ -48,6 +93,15 @@ export async function processChannelMessage(repository: ChannelRepository, input
     entity: `conversation:${input.externalConversationId}`,
     result: result.finalStatus,
     reason: "Mensagem recebida via canal n8n/WhatsApp",
+  });
+  await metrics?.saveOutcome({
+    channel: CHANNEL_NAME,
+    externalConversationId: input.externalConversationId,
+    intent: result.intent,
+    finalStatus: result.finalStatus,
+    handoff: result.handoff.required,
+    handoffReason: result.handoff.reason,
+    correlationId: input.correlationId,
   });
 
   return response;

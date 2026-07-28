@@ -34,15 +34,10 @@ function Queues() {
   const [snapshot, setSnapshot] = useState<QueueSnapshot | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const load = useCallback(async () => {
-    try {
-      const response = await fetch("/api/queues", { cache: "no-store" });
-      setSnapshot(await response.json() as QueueSnapshot);
-      setError(null);
-    } catch {
-      setError("Não foi possível consultar o serviço de filas.");
-    }
-  }, []);
+  const load = useCallback(() => fetch("/api/queues", { cache: "no-store" })
+    .then((response) => response.json())
+    .then((data) => { setSnapshot(data as QueueSnapshot); setError(null); })
+    .catch(() => { setError("Não foi possível consultar o serviço de filas."); }), []);
   useEffect(() => { void load(); }, [load]);
 
   async function act(action: QueueAction) {

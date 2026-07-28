@@ -87,6 +87,27 @@ export const channelIdempotencyKeys = pgTable("channel_idempotency_keys", {
   createdAt: text("created_at").notNull(),
 });
 
+export const conversationOutcomes = pgTable("conversation_outcomes", {
+  id: text("id").primaryKey(),
+  channel: text("channel").notNull(),
+  externalConversationId: text("external_conversation_id").notNull(),
+  intent: text("intent").notNull(),
+  finalStatus: text("final_status").notNull(),
+  handoff: boolean("handoff").notNull().default(false),
+  handoffReason: text("handoff_reason"),
+  correlationId: text("correlation_id").notNull(),
+  createdAt: text("created_at").notNull(),
+}, (table) => [index("conversation_outcomes_created_idx").on(table.createdAt), index("conversation_outcomes_conversation_idx").on(table.channel, table.externalConversationId)]);
+
+export const csatRatings = pgTable("csat_ratings", {
+  id: text("id").primaryKey(),
+  channel: text("channel").notNull(),
+  externalConversationId: text("external_conversation_id").notNull(),
+  score: integer("score").notNull(),
+  comment: text("comment"),
+  createdAt: text("created_at").notNull(),
+}, (table) => [uniqueIndex("csat_ratings_conversation_idx").on(table.channel, table.externalConversationId), index("csat_ratings_created_idx").on(table.createdAt)]);
+
 export const pilotEvents = pgTable("pilot_events", {
   id: text("id").primaryKey(),
   eventType: text("event_type").notNull(),
