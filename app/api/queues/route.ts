@@ -4,10 +4,15 @@ import {
   getQueueSnapshot,
   queueNames,
   type QueueAction,
+  type QueueName,
 } from "@/lib/platform/queue-service";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === "object" && !Array.isArray(value);
+}
+
+function isQueueName(value: string): value is QueueName {
+  return (queueNames as readonly string[]).includes(value);
 }
 
 function validAction(value: unknown): value is QueueAction {
@@ -15,13 +20,13 @@ function validAction(value: unknown): value is QueueAction {
   if (value.action === "retry" || value.action === "cancel") {
     return typeof value.id === "string"
       && typeof value.queue === "string"
-      && queueNames.includes(value.queue as never);
+      && isQueueName(value.queue);
   }
   if (value.action !== "enqueue" || !isRecord(value.job)) return false;
   const job = value.job;
   return typeof job.queue === "string"
     && job.queue !== "dead-letter"
-    && queueNames.includes(job.queue as never)
+    && isQueueName(job.queue)
     && typeof job.name === "string"
     && job.name.length > 0
     && job.name.length <= 80
@@ -32,7 +37,7 @@ function validAction(value: unknown): value is QueueAction {
     && job.correlationId.length >= 8
     && job.correlationId.length <= 128
     && (job.payload === undefined || isRecord(job.payload))
-    && (job.maxAttempts === undefined || (Number.isInteger(job.maxAttempts) && Number(job.maxAttempts) >= 1 && Number(job.maxAttempts) <= 10));
+    && (job.maxAttempts === undefined || (typeof job.maxAttempts === "number" && Number.isInteger(job.maxAttempts) && job.maxAttempts >= 1 && job.maxAttempts <= 10));
 }
 
 export async function GET() {
