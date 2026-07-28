@@ -16,5 +16,7 @@ export FEATURE_META_WHATSAPP=false
 export FEATURE_QUEUES=false
 export FEATURE_PGVECTOR=false
 export FEATURE_AGENT_HOMOLOGATION_PROFILES=false
+export FEATURE_N8N_CHANNEL=false
+export FEATURE_INTERNAL_COPILOT=false
 
 exec "$@"

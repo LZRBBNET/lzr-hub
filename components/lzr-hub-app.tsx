@@ -10,6 +10,7 @@ import { BillingModule } from "@/components/modules/billing";
 import { SalesModule } from "@/components/modules/sales";
 import { IntelligenceModule } from "@/components/modules/intelligence";
 import { AdminModule } from "@/components/modules/admin";
+import { CopilotPanel } from "@/components/copilot-panel";
 
 type UiMessage = ChatMessage & { time: string; result?: AgentResult };
 
@@ -119,7 +120,9 @@ function ConversationWorkspace({ initial, training, onResult }: { initial: UiMes
   const [messages, setMessages] = useState<UiMessage[]>(initial);
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
+  const [sidePanel,setSidePanel]=useState<"customer"|"copilot"|null>("copilot");
   const endRef = useRef<HTMLDivElement>(null);
+  const composerRef=useRef<HTMLTextAreaElement>(null);
   useEffect(() => endRef.current?.scrollIntoView({ behavior:"smooth" }), [messages, busy]);
   async function send() {
     const value = input.trim(); if (!value || busy) return;
@@ -140,13 +143,26 @@ function ConversationWorkspace({ initial, training, onResult }: { initial: UiMes
       {busy && <div className="message agent">Estou consultando isso aqui para você…</div>}
       <div ref={endRef} />
     </div>
-    <div className="composer"><textarea value={input} onChange={(e)=>setInput(e.target.value)} onKeyDown={(e)=>{if(e.key==="Enter"&&!e.shiftKey){e.preventDefault();void send();}}} placeholder={training?"Digite qualquer mensagem como um cliente…":"Responder ao cliente…"}/><button aria-label="Enviar" onClick={()=>void send()}>➤</button></div>
+    <div className="composer"><textarea ref={composerRef} value={input} onChange={(e)=>setInput(e.target.value)} onKeyDown={(e)=>{if(e.key==="Enter"&&!e.shiftKey){e.preventDefault();void send();}}} placeholder={training?"Digite qualquer mensagem como um cliente…":"Responder ao cliente…"}/><button aria-label="Enviar" onClick={()=>void send()}>➤</button></div>
   </>;
   if (training) return chat;
-  return <div className="conversation-layout">
+  function insertCopilotSuggestion(text:string) {
+    setInput(text);
+    requestAnimationFrame(()=>composerRef.current?.focus());
+  }
+  return <div className={`conversation-layout ${sidePanel?"side-open":"side-closed"}`}>
     <aside className="conversation-list"><input className="search" placeholder="Buscar conversa…" />{[["JP","João Pereira","Sem internet e trabalho de casa","agora"],["MS","Maria Souza","Obrigada, recebi a fatura","2m"],["RC","Rafael Costa","A internet está muito lenta","4m"],["AC","Ana Carvalho","Quero melhorar meu plano","7m"]].map(([a,n,m,t],i)=><div className={`contact ${i===0?"active":""}`} key={n}><Avatar initials={a}/><div><p>{n}</p><span>{m}</span></div><time>{t}</time></div>)}</aside>
-    <section className="conversation-main"><div className="chat-header"><div className="person"><Avatar/><div><strong>João Pereira</strong><span>● Canal demonstrativo</span></div></div><span className="badge blue">IA em modo mock</span></div>{chat}</section>
-    <aside className="customer-panel"><div className="customer-head"><Avatar/><h3>João Pereira</h3><p>Cliente fictício • dados sintéticos</p></div><Info title="Contrato demo" rows={[["Plano","600 Mega"],["Status","Ativo fictício"],["Vencimento","Dia 10"],["Cidade","Itabaiana/SE"]]}/><Info title="Conexão simulada" rows={[["ONU","Online"],["PPPoE","Offline"],["Potência","-19,8 dBm"],["Atualizado","agora"]]}/><Info title="Contexto demo" rows={[["Sentimento","Preocupado"],["Prioridade","Alta"],["Motivo","Home office"]]}/></aside>
+    <section className="conversation-main"><div className="chat-header"><div className="person"><Avatar/><div><strong>João Pereira</strong><span>● Canal demonstrativo</span></div></div><div className="chat-header-actions"><span className="badge blue">IA em modo mock</span><button className="button secondary" onClick={()=>setSidePanel(sidePanel==="copilot"?null:"copilot")}>✦ Copiloto LZR</button></div></div>{chat}</section>
+    {sidePanel&&<aside className="conversation-tools">
+      <div className="conversation-tool-tabs">
+        <button className={sidePanel==="copilot"?"active":""} onClick={()=>setSidePanel("copilot")}>✦ Copiloto</button>
+        <button className={sidePanel==="customer"?"active":""} onClick={()=>setSidePanel("customer")}>Cliente</button>
+        <button className="tool-close" aria-label="Fechar painel lateral" onClick={()=>setSidePanel(null)}>×</button>
+      </div>
+      {sidePanel==="copilot"
+        ?<CopilotPanel conversationId="DEMO-CONV-001" onUseSuggestion={(text)=>insertCopilotSuggestion(text)} />
+        :<div className="customer-panel"><div className="customer-head"><Avatar/><h3>João Pereira</h3><p>Cliente fictício • dados sintéticos</p></div><Info title="Contrato demo" rows={[["Plano","600 Mega"],["Status","Ativo fictício"],["Vencimento","Dia 10"],["Cidade","Itabaiana/SE"]]}/><Info title="Conexão simulada" rows={[["ONU","Online"],["PPPoE","Offline"],["Potência","-19,8 dBm"],["Atualizado","agora"]]}/><Info title="Contexto demo" rows={[["Sentimento","Preocupado"],["Prioridade","Alta"],["Motivo","Home office"]]}/></div>}
+    </aside>}
   </div>;
 }
 
