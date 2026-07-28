@@ -15,6 +15,13 @@
       "when": 1785266406795,
       "tag": "0001_numerous_shocker",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1785267466751,
+      "tag": "0002_broken_lethal_legion",
+      "breakpoints": true
     }
   ]
 }

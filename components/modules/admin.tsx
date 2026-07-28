@@ -65,8 +65,27 @@ function Users() {
   return <main className="content"><Heading title="Usuários e Permissões" text="RBAC por perfil, menor privilégio e alterações auditadas." /><div className="support-grid"><section className="data-card"><div className="card-header"><strong>Perfis</strong></div>{roles.map((item) => <button className={`role-row ${item === role ? "active" : ""}`} onClick={() => setRole(item)} key={item}><span>{item}</span><b>{rolePermissions[item].length} permissões</b></button>)}</section><section className="data-card"><div className="card-header"><strong>Permissões de {role}</strong><span className="badge blue">RBAC</span></div>{permissions.map((permission) => <div className="permission-row" key={permission}><span>{permission}</span><i className={`badge ${rolePermissions[role].includes(permission) ? "green" : ""}`}>{rolePermissions[role].includes(permission) ? "Permitido" : "Negado"}</i></div>)}</section></div></main>;
 }
 
+type AuditPayload = { available: boolean; events: Array<{ id: string; actorId: string; role: string; action: string; entity: string; reason: string; correlationId: string; result: string; origin: string; createdAt: string }>; detail?: string };
+
 function Audit() {
-  return <main className="content"><Heading title="Auditoria" text="Ações humanas e da IA com antes/depois mascarado e correlação." /><section className="data-card"><div className="audit-row header"><span>Ator / origem</span><span>Ação</span><span>Entidade</span><span>Resultado</span><span>Correlação / data</span></div>{auditEvents.map((event) => <div className="audit-row" key={event.id}><span><strong>{event.actor}</strong><small>{event.role} • {event.origin}</small></span><span>{event.action}<small>{event.reason}</small></span><span>{event.entity}</span><span><i className={`badge ${event.result === "success" ? "green" : event.result === "blocked" ? "amber" : ""}`}>{event.result}</i></span><span><code>{event.correlationId}</code><small>{event.at}</small></span></div>)}</section></main>;
+  const [payload, setPayload] = useState<AuditPayload | null>(null);
+  useEffect(() => {
+    fetch("/api/audit", { cache: "no-store" })
+      .then((response) => response.json())
+      .then((data) => setPayload(data as AuditPayload))
+      .catch(() => setPayload({ available: false, events: [], detail: "Falha ao consultar a auditoria" }));
+  }, []);
+
+  const rows = payload?.events ?? [];
+  return <main className="content"><Heading title="Auditoria" text="Ações humanas e da IA com antes/depois mascarado e correlação." />
+    {payload && !payload.available && <div className="protected-banner"><strong>Rastro indisponível:</strong> {payload.detail ?? "banco não configurado"}. Os registros abaixo são apenas exemplos de demonstração.</div>}
+    <section className="data-card"><div className="audit-row header"><span>Ator / origem</span><span>Ação</span><span>Entidade</span><span>Resultado</span><span>Correlação / data</span></div>
+      {payload === null && <div className="audit-row"><span>Carregando auditoria…</span></div>}
+      {payload?.available && rows.length === 0 && <div className="audit-row"><span><strong>Nenhuma ação registrada ainda</strong><small>As ações reais aparecerão aqui conforme forem executadas.</small></span></div>}
+      {payload?.available
+        ? rows.map((event) => <div className="audit-row" key={event.id}><span><strong>{event.actorId}</strong><small>{event.role} • {event.origin}</small></span><span>{event.action}<small>{event.reason}</small></span><span>{event.entity}</span><span><i className={`badge ${event.result === "success" ? "green" : event.result === "blocked" ? "amber" : ""}`}>{event.result}</i></span><span><code>{event.correlationId}</code><small>{event.createdAt}</small></span></div>)
+        : payload !== null && auditEvents.map((event) => <div className="audit-row" key={event.id}><span><strong>{event.actor}</strong><small>{event.role} • {event.origin}</small></span><span>{event.action}<small>{event.reason}</small></span><span>{event.entity}</span><span><i className={`badge ${event.result === "success" ? "green" : event.result === "blocked" ? "amber" : ""}`}>{event.result}</i></span><span><code>{event.correlationId}</code><small>{event.at}</small></span></div>)}
+    </section></main>;
 }
 
 function Settings() {

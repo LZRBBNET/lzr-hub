@@ -1,5 +1,7 @@
 # Revisão de RBAC e auditoria (2026-07-27)
 
+> **Atualização (2026-07-28):** o sistema de autenticação recomendado nesta revisão foi implementado na issue #30 — ver [`authentication.md`](authentication.md). O RBAC agora é aplicado de verdade nas rotas, atrás da flag `FEATURE_AUTH` (que nasce desligada para não derrubar a demo publicada). O texto abaixo descreve o estado anterior e continua válido como registro do que foi encontrado.
+
 ## Resumo executivo
 
 O LZR HUB tem as **peças** de RBAC e auditoria (`lib/platform/rbac.ts`, tabela `audit_events` no D1), mas **nenhuma delas está de fato conectada às ações do sistema**. Isso acontece porque **não existe um sistema de autenticação/sessão de usuário** no produto ainda — nenhuma rota sabe "quem" está chamando, então não há como aplicar RBAC de verdade (só simular numa tela de demonstração).

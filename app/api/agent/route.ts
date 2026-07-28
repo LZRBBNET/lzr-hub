@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { runAgentPipeline } from "@/lib/agent/pipeline";
 import type { ChatMessage } from "@/lib/agent/types";
+import { authorize } from "@/lib/platform/session-guard";
 
 const protectedBodyFields = new Set([
   "simulationProfile",
@@ -55,6 +56,9 @@ function hasUntrustedOperationalContext(
 }
 
 export async function POST(request: Request) {
+  const guard = await authorize(request, "customer.read");
+  if (!guard.allowed) return NextResponse.json({ error: guard.error }, { status: guard.status });
+
   const parsed = await request.json().catch(() => null) as unknown;
   const body = parsed && typeof parsed === "object" && !Array.isArray(parsed)
     ? parsed as Record<string, unknown>

@@ -87,6 +87,27 @@ export const channelIdempotencyKeys = pgTable("channel_idempotency_keys", {
   createdAt: text("created_at").notNull(),
 });
 
+export const users = pgTable("users", {
+  id: text("id").primaryKey(),
+  email: text("email").notNull().unique(),
+  name: text("name").notNull(),
+  role: text("role").notNull(),
+  passwordHash: text("password_hash").notNull(),
+  passwordSalt: text("password_salt").notNull(),
+  active: boolean("active").notNull().default(true),
+  lastLoginAt: text("last_login_at"),
+  createdAt: text("created_at").notNull(),
+  updatedAt: text("updated_at").notNull(),
+});
+
+/** Guardamos só o hash do token: vazamento do banco não concede sessão a ninguém. */
+export const sessions = pgTable("sessions", {
+  tokenHash: text("token_hash").primaryKey(),
+  userId: text("user_id").notNull(),
+  expiresAt: text("expires_at").notNull(),
+  createdAt: text("created_at").notNull(),
+}, (table) => [index("sessions_user_idx").on(table.userId), index("sessions_expiry_idx").on(table.expiresAt)]);
+
 export const conversationOutcomes = pgTable("conversation_outcomes", {
   id: text("id").primaryKey(),
   channel: text("channel").notNull(),
