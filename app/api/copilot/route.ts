@@ -1,27 +1,11 @@
 import { NextResponse } from "next/server";
 import { CopilotConversationForbiddenError, runInternalCopilot } from "@/lib/copilot/service";
-import { copilotEnabled, resolveCopilotActor } from "@/lib/copilot/security";
+import { containsCopilotInstructionInjection, copilotEnabled, hasUntrustedCopilotContext, resolveCopilotActor } from "@/lib/copilot/security";
 import type { CopilotAction } from "@/lib/copilot/types";
 import { consumeSuggestionReceipt, CopilotSuggestionReceiptError } from "@/lib/copilot/suggestion-registry";
 
 const actions=new Set<CopilotAction>(["suggest_reply","ask","summarize"]);
 const requestActions=new Set([...actions,"use_suggestion"]);
-const allowedFields=new Set(["action","conversationId","question","suggestionId"]);
-const forbiddenQueryFields=new Set(["role","actorid","actor_id","identity","context","history","messages"]);
-const forbiddenHeaders=["x-role","x-actor-id","x-user-id","x-user-role","x-copilot-context"];
-
-function invalidClientContext(request:Request,body:Record<string,unknown>):boolean {
-  if(Object.keys(body).some((field)=>!allowedFields.has(field)))return true;
-  const url=new URL(request.url);
-  if([...url.searchParams.keys()].some((key)=>forbiddenQueryFields.has(key.toLowerCase())))return true;
-  return forbiddenHeaders.some((header)=>request.headers.has(header));
-}
-
-function containsInstructionInjection(question:string):boolean {
-  const normalized=question.normalize("NFD").replace(/[\u0300-\u036f]/g,"").toLowerCase();
-  return /ignore.{0,40}(regra|instrucao|sistema)|finja que|atue como|revele.{0,30}prompt|assuma.{0,30}papel/.test(normalized);
-}
-
 export async function GET() {
   return NextResponse.json({enabled:copilotEnabled()});
 }
@@ -37,7 +21,7 @@ export async function POST(request:Request) {
     ? parsed as Record<string,unknown>
     : null;
   if(!body)return NextResponse.json({error:"Corpo inválido"},{status:400});
-  if(invalidClientContext(request,body)){
+  if(hasUntrustedCopilotContext(request,body)){
     return NextResponse.json(
       {error:"Identidade ou contexto não autorizado",errorCode:"UNTRUSTED_COPILOT_CONTEXT"},
       {status:403},
@@ -55,7 +39,7 @@ export async function POST(request:Request) {
   if(action==="ask"&&(!question||question.length>1000)){
     return NextResponse.json({error:"Pergunta inválida"},{status:400});
   }
-  if(question&&containsInstructionInjection(question)){
+  if(question&&containsCopilotInstructionInjection(question)){
     return NextResponse.json(
       {error:"Instrução operacional não autorizada",errorCode:"UNTRUSTED_COPILOT_INSTRUCTION"},
       {status:403},

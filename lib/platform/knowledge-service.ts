@@ -1,7 +1,8 @@
-import { knowledgeDocuments as seed } from "./demo-data";
-import type { KnowledgeDocument } from "./types";
+import { knowledgeDocuments as seed } from "./demo-data.ts";
+import type { KnowledgeDocument } from "./types.ts";
 let documents=[...seed];
 const normalize=(text:string)=>text.normalize("NFD").replace(/[\u0300-\u036f]/g,"").toLowerCase();
+const stopTerms=new Set(["ainda","algum","alguma","como","com","das","dos","ela","ele","essa","esse","esta","este","isso","mais","mas","nao","não","numa","para","pela","pelo","por","que","real","sem","ser","uma"]);
 
 const contentByDocumentId:Record<string,string>={
   "KB-001":"Quando a ONU estiver online e a sessão PPPoE estiver offline, confirme se existe massiva na região. Sem massiva, oriente um único reinício elétrico do roteador por 20 segundos. Se o cliente já reiniciou e a sessão não voltou, não repita a etapa: encaminhe o diagnóstico para o suporte técnico.",
@@ -39,7 +40,7 @@ export class KnowledgeService {
   ingest(title:string,category:string){const document:KnowledgeDocument={id:`KB-${Date.now()}`,title,category,status:"draft",version:1,city:"Todas",plan:"Todos",equipment:"—",validUntil:"31/12/2026",chunks:Math.max(1,Math.ceil(title.length/12)),updatedAt:"agora"};documents=[document,...documents];return document}
   publish(id:string){documents=documents.map(d=>d.id===id?{...d,status:"published",version:d.version+1,updatedAt:"agora"}:d);return documents.find(d=>d.id===id)}
   searchPublished(query:string,now=new Date()):KnowledgeSource[]{
-    const terms=normalize(query).split(/[^a-z0-9]+/).filter((term)=>term.length>2);
+    const terms=normalize(query).split(/[^a-z0-9]+/).filter((term)=>term.length>2&&!stopTerms.has(term));
     return documents
       .filter((document)=>document.status==="published")
       .filter((document)=>{
@@ -52,7 +53,7 @@ export class KnowledgeService {
         const hits=terms.filter((term)=>searchable.includes(term)).length;
         return {document,content,hits,score:hits/Math.max(1,terms.length)};
       })
-      .filter((result)=>result.hits>0&&result.content.length>0)
+      .filter((result)=>result.content.length>0&&(result.hits>=3||result.score>=0.12))
       .sort((a,b)=>b.score-a.score||b.hits-a.hits)
       .slice(0,3)
       .map(({document,content})=>({
@@ -62,5 +63,16 @@ export class KnowledgeService {
         excerpt:excerptFor(content,terms),
       }));
   }
-  search(query:string){return this.searchPublished(query).map(source=>({document:documents.find(item=>item.id===source.id)!,score:1,evidence:`Fonte interna: ${source.title} • versão ${source.version}`}))}
+  search(query:string){
+    const terms=normalize(query).split(/\s+/).filter((term)=>term.length>2);
+    return documents
+      .filter((document)=>document.status==="published")
+      .map((document)=>({
+        document,
+        score:terms.filter((term)=>normalize(`${document.title} ${document.category} ${document.equipment}`).includes(term)).length/Math.max(1,terms.length),
+        evidence:`Fonte interna: ${document.title} • versão ${document.version}`,
+      }))
+      .filter((result)=>result.score>0)
+      .sort((a,b)=>b.score-a.score);
+  }
 }

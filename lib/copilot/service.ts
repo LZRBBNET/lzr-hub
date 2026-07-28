@@ -63,8 +63,11 @@ export function runInternalCopilot(input:{
   const simulationOnly=input.runtimeMode==="mock";
   if(input.action==="summarize")return summarize(conversation,simulationOnly);
 
+  const query=input.action==="ask"
+    ? input.question??""
+    : conversationQuery(conversation);
   const sources=(input.knowledgeService??new KnowledgeService())
-    .searchPublished(conversationQuery(conversation,input.question),input.now);
+    .searchPublished(query,input.now);
   if(sources.length===0)return insufficientEvidence(input.action,simulationOnly);
 
   if(input.action==="ask"){
