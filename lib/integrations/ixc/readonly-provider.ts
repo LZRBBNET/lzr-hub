@@ -31,7 +31,7 @@ function apiError(body:IxcListResponse){
   return new IxcReadonlyError("IXC_API_ERROR");
 }
 
-function basicCredential(token:string){
+export function basicCredential(token:string){
   const value=token.trim();
   return /^\d+:[A-Fa-f0-9]{32,}$/.test(value)?btoa(value):value;
 }
