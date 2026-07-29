@@ -1,3 +1,4 @@
+import { createIxcFetcher, resolveIxcHttpMethod } from "./http.ts";
 import { basicCredential } from "./readonly-provider.ts";
 
 /**
@@ -49,7 +50,7 @@ function toSystemUser(row: Record<string, unknown>): IxcSystemUser | undefined {
 }
 
 export async function fetchIxcSystemUsers(options: IxcSystemUsersOptions): Promise<IxcSystemUser[]> {
-  const fetcher = options.fetcher ?? fetch;
+  const fetcher = options.fetcher ?? createIxcFetcher(resolveIxcHttpMethod(process.env.IXC_HTTP_METHOD));
   const timeoutMs = options.timeoutMs ?? 8000;
   const pageSize = options.pageSize ?? 100;
   const maxPages = options.maxPages ?? 20;
