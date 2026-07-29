@@ -41,7 +41,8 @@ export async function logUnauthenticatedAction(entry: UnauthenticatedActionEntry
         : entry.reason,
       correlationId: entry.correlationId ?? randomUUID(),
       result: entry.result,
-      origin: anonymous ? "não verificado" : "humano",
+      // Só é "humano" com sessão resolvida; sem autor verificado a origem fica em aberto.
+      origin: entry.actor ? "humano" : "não verificado",
       createdAt: new Date().toISOString(),
     });
   } catch {
