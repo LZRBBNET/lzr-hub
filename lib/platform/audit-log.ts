@@ -12,6 +12,12 @@ export interface UnauthenticatedActionEntry {
   correlationId?: string;
   /** Quando há sessão, o rastro deixa de ser anônimo. */
   actor?: AuthenticatedUser;
+  /**
+   * Marque nas ações em que não existir autor é o esperado — por exemplo, uma
+   * tentativa de login que falhou nunca terá sessão. Sem isso, o registro
+   * ganharia uma ressalva sobre autenticação ausente que não faz sentido ali.
+   */
+  actorNotApplicable?: boolean;
 }
 
 /**
@@ -19,7 +25,7 @@ export interface UnauthenticatedActionEntry {
  * Nunca deve derrubar a ação principal se o banco falhar — só complementa o rastro.
  */
 export async function logUnauthenticatedAction(entry: UnauthenticatedActionEntry): Promise<void> {
-  const anonymous = !entry.actor;
+  const anonymous = !entry.actor && !entry.actorNotApplicable;
   try {
     const db = await getDb();
     await db.insert(auditEvents).values({

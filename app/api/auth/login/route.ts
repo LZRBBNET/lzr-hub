@@ -20,7 +20,7 @@ export async function POST(request: Request) {
 
   if (!result) {
     // Mensagem única: não revela se o e-mail existe nem se a conta está inativa.
-    await logUnauthenticatedAction({ action: "auth.login", entity: "session", result: "failed", reason: "Tentativa de login sem sucesso" });
+    await logUnauthenticatedAction({ action: "auth.login", entity: "session", result: "failed", reason: "Tentativa de login sem sucesso", actorNotApplicable: true });
     return NextResponse.json({ error: "E-mail ou senha inválidos" }, { status: 401 });
   }
 
