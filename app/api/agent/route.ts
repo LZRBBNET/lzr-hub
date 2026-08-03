@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { runAgentPipeline } from "@/lib/agent/pipeline";
 import type { ChatMessage } from "@/lib/agent/types";
+import { logUnauthenticatedAction } from "@/lib/platform/audit-log";
 import { authorize } from "@/lib/platform/session-guard";
 
 const protectedBodyFields = new Set([
@@ -76,9 +77,21 @@ export async function POST(request: Request) {
   if (message.length > 5000) return NextResponse.json({ error: "Mensagem acima do limite" }, { status: 413 });
   if (body?.history !== undefined && !validHistory(body.history)) return NextResponse.json({ error: "Histórico inválido" }, { status: 400 });
 
-  return NextResponse.json(runAgentPipeline(
+  const result = runAgentPipeline(
     message,
     ((body?.history as ChatMessage[] | undefined) ?? []).slice(-40),
     { channel: "web" },
-  ));
+  );
+
+  // A mensagem em si não entra no rastro: só intenção e desfecho, já sem dado pessoal.
+  await logUnauthenticatedAction({
+    action: "agent.message.processed",
+    entity: "conversation:web",
+    result: result.finalStatus,
+    reason: `Intenção: ${result.intent}. ${result.handoff.required ? "Transbordo solicitado." : "Resolvido pela IA."}`,
+    correlationId: result.correlationId,
+    actor: guard.user,
+  });
+
+  return NextResponse.json(result);
 }
