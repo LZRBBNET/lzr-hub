@@ -1,5 +1,5 @@
-import { customers } from "./demo-data";
-import type { CustomerSummary, DataSource } from "./types";
+import { customers } from "./demo-data.ts";
+import type { CustomerSummary, DataSource } from "./types.ts";
 import type { IxcReadonlyProvider } from "../integrations/ixc/readonly-provider.ts";
 
 export interface Customer360 {
@@ -24,11 +24,31 @@ export class Customer360Service {
   private readonly loaders?:Partial<Record<"contract"|"finance"|"network"|"support"|"intelligence",Loader<unknown>>>; private readonly ixc?:IxcReadonlyProvider; private readonly allowedIds:string[];
   constructor(loaders?: Partial<Record<"contract"|"finance"|"network"|"support"|"intelligence",Loader<unknown>>>,ixc?:IxcReadonlyProvider,allowedIds:string[]=[]){this.loaders=loaders;this.ixc=ixc;this.allowedIds=allowedIds;}
 
-  list(query="",risk="all",page=1,pageSize=10) {
-    if(this.ixc){const term=query.trim().toLocaleLowerCase("pt-BR");const authorized=this.allowedIds.map((id,index):CustomerSummary=>({id,name:`Cliente autorizado ${String(index+1).padStart(2,"0")}`,maskedDocument:`***.***.***-${id.slice(-2).padStart(2,"*")}`,city:"Homologação",neighborhood:"Mascarado",plan:"Consultar IXC",status:"Somente leitura",health:0,churnRisk:"low",priority:"Controlada",tags:["IXC somente leitura"]})).filter((item)=>!term||item.id.toLowerCase().includes(term)||item.name.toLowerCase().includes(term));return{items:authorized.slice((page-1)*pageSize,page*pageSize),total:authorized.length,page,pageSize,mode:"staging-readonly" as const};}
+  async list(query="",risk="all",page=1,pageSize=10) {
+    if(this.ixc)return this.listIxc(query,page,pageSize);
     const term=query.trim().toLocaleLowerCase("pt-BR");
     const filtered=customers.filter((customer)=>(!term||[customer.name,customer.city,customer.neighborhood,customer.id].some((value)=>value.toLocaleLowerCase("pt-BR").includes(term)))&&(risk==="all"||customer.churnRisk===risk));
     return { items:filtered.slice((page-1)*pageSize,page*pageSize), total:filtered.length, page, pageSize, mode:"demo" as const };
+  }
+
+  /**
+   * O IXC não expõe uma listagem segura de toda a base, então a lista é a
+   * allowlist — mas com o cadastro real de cada um, buscado do próprio ERP
+   * (o snapshot é cacheado, então abrir o detalhe depois não consulta de novo).
+   * Se a consulta de um cadastro falhar, ele aparece marcado como indisponível;
+   * nunca com nome ou plano inventado.
+   */
+  private async listIxc(query:string,page:number,pageSize:number){
+    const settled=await Promise.allSettled(this.allowedIds.map((id)=>this.ixc!.getSnapshot(id,crypto.randomUUID())));
+    const items=settled.map((result,index):CustomerSummary=>{
+      const id=this.allowedIds[index];
+      if(result.status!=="fulfilled")return{id,name:`Cadastro ${id}`,maskedDocument:"Consulta indisponível",city:"—",neighborhood:"—",plan:"—",status:"Fonte indisponível",health:0,churnRisk:"low",priority:"Indisponível",tags:["IXC indisponível"]};
+      const snapshot=result.value;const contract=snapshot.contracts[0];
+      return{id,name:snapshot.customer.name,maskedDocument:snapshot.customer.document,city:snapshot.customer.city,neighborhood:snapshot.customer.neighborhood,plan:contract?.planName??"Sem contrato",status:contract?.status??snapshot.customer.status,health:0,churnRisk:"low",priority:"Controlada",tags:["IXC somente leitura"]};
+    });
+    const term=query.trim().toLocaleLowerCase("pt-BR");
+    const filtered=term?items.filter((item)=>[item.id,item.name,item.maskedDocument,item.city,item.neighborhood].some((value)=>value.toLocaleLowerCase("pt-BR").includes(term))):items;
+    return{items:filtered.slice((page-1)*pageSize,page*pageSize),total:filtered.length,page,pageSize,mode:"staging-readonly" as const};
   }
 
   async get(customerId:string):Promise<Customer360|null> {

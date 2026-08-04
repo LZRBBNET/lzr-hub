@@ -26,7 +26,7 @@ export interface CsatRow { channel: string; externalConversationId: string; scor
 export interface SupportMetricsRepository {
   saveOutcome(outcome: ConversationOutcomeRow): Promise<void>;
   saveRating(rating: CsatRow): Promise<void>;
-  listOutcomes(sinceIso: string): Promise<Array<{ finalStatus: string; handoff: boolean; handoffReason: string | null }>>;
+  listOutcomes(sinceIso: string): Promise<Array<{ intent: string; finalStatus: string; handoff: boolean; handoffReason: string | null }>>;
   listRatings(sinceIso: string): Promise<Array<{ score: number }>>;
 }
 
@@ -36,6 +36,8 @@ export interface SupportMetrics {
   resolutionRate: number | null;
   handoffs: number;
   handoffReasons: Record<string, number>;
+  /** Quantas conversas por intenção detectada — é o que a Visão geral mostra no lugar de barras fixas. */
+  intents: Record<string, number>;
   csatAverage: number | null;
   csatCount: number;
   csatDistribution: Record<string, number>;
@@ -74,7 +76,10 @@ export async function getSupportMetrics(
 
   const resolvedWithoutHuman = outcomes.filter((item) => !item.handoff && RESOLVED_WITHOUT_HUMAN.has(item.finalStatus)).length;
   const handoffReasons: Record<string, number> = {};
+  const intents: Record<string, number> = {};
   for (const item of outcomes) {
+    const intent = item.intent || "não classificada";
+    intents[intent] = (intents[intent] ?? 0) + 1;
     if (!item.handoff) continue;
     const reason = item.handoffReason ?? "não informado";
     handoffReasons[reason] = (handoffReasons[reason] ?? 0) + 1;
@@ -92,6 +97,7 @@ export async function getSupportMetrics(
     resolutionRate: outcomes.length ? resolvedWithoutHuman / outcomes.length : null,
     handoffs: outcomes.filter((item) => item.handoff).length,
     handoffReasons,
+    intents,
     csatAverage: ratings.length ? ratings.reduce((sum, item) => sum + item.score, 0) / ratings.length : null,
     csatCount: ratings.length,
     csatDistribution,
@@ -118,6 +124,7 @@ export class DbSupportMetricsRepository implements SupportMetricsRepository {
 
   async listOutcomes(sinceIso: string) {
     return this.db.select({
+      intent: conversationOutcomes.intent,
       finalStatus: conversationOutcomes.finalStatus,
       handoff: conversationOutcomes.handoff,
       handoffReason: conversationOutcomes.handoffReason,
@@ -146,7 +153,7 @@ export class MemorySupportMetricsRepository implements SupportMetricsRepository 
   }
   async listOutcomes(sinceIso: string) {
     return this.outcomes.filter((item) => item.createdAt >= sinceIso)
-      .map(({ finalStatus, handoff, handoffReason }) => ({ finalStatus, handoff, handoffReason }));
+      .map(({ intent, finalStatus, handoff, handoffReason }) => ({ intent, finalStatus, handoff, handoffReason }));
   }
   async listRatings(sinceIso: string) {
     return this.ratings.filter((item) => item.createdAt >= sinceIso).map(({ score }) => ({ score }));

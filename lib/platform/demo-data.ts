@@ -1,4 +1,4 @@
-import type { AuditEvent, CollectionCampaign, CollectionRuleStep, CustomerSummary, HealthFactor, KnowledgeDocument, Lead, NetworkIncident } from "./types";
+import type { AuditEvent, CollectionCampaign, CollectionRuleStep, CustomerSummary, HealthFactor, KnowledgeDocument, Lead, NetworkIncident } from "./types.ts";
 
 export const customers: CustomerSummary[] = [
   { id:"DEMO-CLI-001", name:"João Pereira", maskedDocument:"***.***.***-DEMO-001 (inválido)", city:"Itabaiana", neighborhood:"Centro Demo", plan:"300 Mega", status:"Ativo fictício", health:64, churnRisk:"high", priority:"Alta", tags:["sintético","ONU online"] },

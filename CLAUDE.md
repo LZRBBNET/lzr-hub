@@ -110,7 +110,7 @@ Ver [`docs/integrations/ixc-data-mapping.md`](docs/integrations/ixc-data-mapping
 npm run typecheck && npm run lint && npm test
 ```
 
-Os três precisam passar. Hoje a suíte tem **174 testes**.
+Os três precisam passar. Hoje a suíte tem **210 testes**.
 
 ## Segurança — pontos já decididos
 
@@ -126,6 +126,10 @@ Ver [`docs/security/authentication.md`](docs/security/authentication.md).
 - Sem rate limit no login
 - Sem tela de gestão de usuários nem troca de senha — usuários são criados por `scripts/create-user.mjs`
 - Custo por atendimento não é medido (depende do Langfuse, issue #6)
+- Tempo médio de atendimento também não é medido — a Visão geral escreve isso em vez de estimar
+- Responder pela tela de Atendimentos ainda não existe: quem responde é o fluxo do n8n, então o campo fica desabilitado
+- Conversa do canal não é associada ao cadastro do IXC (faltaria casar o telefone do WhatsApp com o cliente)
+- A lista de Clientes é a allowlist do IXC — o ERP não expõe busca aberta da base
 - O runtime de filas tem apenas um teste, e ele é pulado sem um Redis disponível
 
 ## Trabalhando em paralelo

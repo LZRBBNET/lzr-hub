@@ -43,10 +43,13 @@ function useSessionRedirect() {
   return session;
 }
 
-export function LzrHubApp() {
+export function LzrHubApp({ ixcMode = "disabled" }: { ixcMode?: string }) {
   const [view, setView] = useState<View>("dashboard");
   const session = useSessionRedirect();
   const user = session?.user;
+  // Só existe dado real quando o IXC está de fato ligado. Fora disso a tela
+  // continua avisando que é demonstração, que é a verdade nesse modo.
+  const live = ixcMode === "staging-readonly" || ixcMode === "production-readonly";
 
   function signOut() {
     fetch("/api/auth/logout", { method: "POST" })
@@ -66,8 +69,10 @@ export function LzrHubApp() {
         </div>
       </aside>
       <section className="workspace">
-        <header className="topbar"><div className="topbar-title"><strong>{viewTitles[view][0]}</strong><span>{viewTitles[view][1]}</span></div><div className="live-pill">● Homologação protegida • demo mock</div></header>
-        <div className="demo-notice" role="status"><strong>Ambiente de demonstração</strong><span>nenhuma ação real é executada</span></div>
+        <header className="topbar"><div className="topbar-title"><strong>{viewTitles[view][0]}</strong><span>{live ? "Dados reais de produção • somente leitura" : viewTitles[view][1]}</span></div><div className="live-pill">{live ? "● IXC conectado • somente leitura" : "● Homologação protegida • demo mock"}</div></header>
+        {live
+          ? <div className="demo-notice" role="status"><strong>Leitura de produção</strong><span>o cadastro vem do IXC; nenhuma escrita é executada no ERP</span></div>
+          : <div className="demo-notice" role="status"><strong>Ambiente de demonstração</strong><span>nenhuma ação real é executada</span></div>}
         {view === "dashboard" && <Dashboard onOpen={() => setView("atendimento")} />}
         {view === "atendimento" && <Conversation />}
         {view === "training" && <TrainingMode />}
@@ -83,39 +88,164 @@ export function LzrHubApp() {
   );
 }
 
+type OverviewMetrics = { conversations:number; resolvedWithoutHuman:number; resolutionRate:number|null; handoffs:number; handoffReasons:Record<string,number>; intents:Record<string,number>; csatAverage:number|null; csatCount:number; csatDistribution:Record<string,number>; costPerConversation:null };
+type ConversationSummary = { channel:string; externalConversationId:string; lastMessage:string; lastRole:"customer"|"agent"; lastAt:string; messages:number; finalStatus?:string; intent?:string; handoff?:boolean };
+type Overview = { period:string; available:boolean; detail?:string; metrics:OverviewMetrics|null; queue:ConversationSummary[]; averageHandlingSeconds:number|null; integrations:{ ixc:{mode:string;state:string}; channel:{enabled:boolean;configured:boolean} } };
+
+const INTENT_LABELS: Record<string,string> = {
+  technical_no_connection:"Sem conexão", technical_slow:"Lentidão", technical_wifi:"Wi-Fi", technical_restart:"Reinício de equipamento",
+  technical_ticket:"Abertura de chamado", technical_visit:"Visita técnica", financial_invoice:"Fatura / segunda via", financial_pix:"PIX",
+  financial_payment:"Pagamento", financial_unlock:"Desbloqueio", complaint:"Reclamação", cancellation_risk:"Risco de cancelamento",
+  human_handoff:"Pedido de atendente", unauthorized_request:"Pedido não autorizado", out_of_scope:"Fora de escopo", general_information:"Informação geral",
+};
+const HANDOFF_LABELS: Record<string,string> = {
+  low_intent_confidence:"Baixa confiança na intenção", customer_requested_human:"Cliente pediu atendente", customer_irritated:"Cliente irritado",
+  unauthorized_request:"Pedido não autorizado", cancellation_risk:"Risco de cancelamento", "não informado":"Não informado",
+};
+const intentLabel = (key:string) => INTENT_LABELS[key] ?? key;
+const handoffLabel = (key:string) => HANDOFF_LABELS[key] ?? key;
+
+/** Telefone do WhatsApp: mostra em formato legível, sem esconder dígito de quem atende. */
+function conversationLabel(id:string) {
+  const digits = id.replace(/\D/g,"");
+  if (digits.length < 12 || digits.length > 13) return id;
+  const ddd = digits.slice(2,4); const rest = digits.slice(4);
+  return `(${ddd}) ${rest.slice(0,rest.length-4)}-${rest.slice(-4)}`;
+}
+function relativeTime(iso:string) {
+  const diff = Date.now() - new Date(iso).getTime();
+  if (!Number.isFinite(diff)) return "—";
+  const minutes = Math.round(diff/60000);
+  if (minutes < 1) return "agora";
+  if (minutes < 60) return `${minutes} min`;
+  const hours = Math.round(minutes/60);
+  if (hours < 24) return `${hours} h`;
+  return `${Math.round(hours/24)} d`;
+}
+
+const PERIOD_LABELS: [string,string][] = [["24h","24 horas"],["7d","7 dias"],["30d","30 dias"]];
+
 function Dashboard({ onOpen }: { onOpen: () => void }) {
+  const [period,setPeriod] = useState("7d");
+  const [data,setData] = useState<Overview|null>(null);
+  const [state,setState] = useState<"loading"|"ready"|"error">("loading");
+  useEffect(() => {
+    let active = true;
+    fetch(`/api/operation/overview?period=${period}`)
+      .then((response) => response.ok ? response.json() : Promise.reject(new Error("falhou")))
+      .then((payload: Overview) => { if (active) { setData(payload); setState("ready"); } })
+      .catch(() => { if (active) setState("error"); });
+    return () => { active = false; };
+  }, [period]);
+
+  const metrics = data?.metrics ?? null;
+  const percent = (value:number|null) => value===null ? "—" : `${Math.round(value*100)}%`;
   return <main className="content">
-    <div className="page-heading"><div><h1>Olá, equipe BBNET.</h1><p>Dados sintéticos para navegação segura. Nenhuma integração real está habilitada.</p></div><button className="button" onClick={onOpen}>Abrir central de atendimento</button></div>
-    <section className="metrics">
-      <Metric label="Conversas ativas" value="18" detail="↑ 12% desde ontem" icon="◫" />
-      <Metric label="Resolvidas pela IA" value="74%" detail="↑ 6,4% esta semana" icon="✦" />
-      <Metric label="Tempo médio" value="1m 42s" detail="↓ 18s esta semana" icon="◷" />
-      <Metric label="Qualidade média" value="9,4" detail="35 avaliações aprovadas" icon="✓" />
-    </section>
-    <section className="dashboard-grid">
-      <div className="card"><div className="card-header"><strong>Fila de atendimento</strong><span className="badge green">● Operação normal</span></div><div className="card-body">
-        {[["JP","João Pereira","Sem internet • IA diagnosticando","Agora","blue"],["MS","Maria Souza","Segunda via entregue","2 min","green"],["RC","Rafael Costa","Lentidão no Wi-Fi","4 min","amber"],["AC","Ana Carvalho","Upgrade de plano","7 min",""]].map(([a,n,s,t,c]) => <div className="queue-row" key={n}><Avatar initials={a} /><div><p>{n}</p><span>{s}</span></div><span className={`badge ${c}`}>{t}</span></div>)}
-      </div></div>
-      <div className="card"><div className="card-header"><strong>Resolução por tema</strong><span className="badge blue">Hoje</span></div><div className="card-body">
-        <Progress label="Financeiro" value={91} /><Progress label="Suporte técnico" value={76} /><Progress label="Comercial" value={68} /><Progress label="Retenção" value={54} />
-        <div style={{marginTop:22,padding:14,background:"#f2f7ff",borderRadius:10,fontSize:11,color:"#40566d",lineHeight:1.6}}><strong style={{display:"block",fontSize:12,color:"#1267e8",marginBottom:4}}>Regra de segurança ativa</strong>Nenhuma ação é confirmada sem comprovante técnico de execução.</div>
-      </div></div>
-    </section>
+    <div className="page-heading"><div><h1>Olá, equipe BBNET.</h1><p>Números medidos nos atendimentos registrados. O que não é medido aparece como não medido.</p></div><button className="button" onClick={onOpen}>Abrir central de atendimento</button></div>
+    <section className="filter-bar"><select value={period} onChange={(e)=>{setState("loading");setPeriod(e.target.value)}}>{PERIOD_LABELS.map(([value,label])=><option key={value} value={value}>Últimos {label}</option>)}</select></section>
+    {state==="loading" && <div className="state-card">Carregando indicadores…</div>}
+    {state==="error" && <div className="state-card error">Não foi possível carregar os indicadores.</div>}
+    {state==="ready" && data && !data.available && <div className="state-card error">{data.detail ?? "Fonte de indicadores indisponível"} — nenhum número é exibido para não induzir a erro.</div>}
+    {state==="ready" && data?.available && metrics && <>
+      <section className="metrics">
+        <Metric label="Conversas no período" value={String(metrics.conversations)} detail={metrics.conversations?`Canal ${data.integrations.channel.enabled?"ativo":"desligado"}`:"Nenhuma conversa registrada"} icon="◫" />
+        <Metric label="Resolvidas sem humano" value={percent(metrics.resolutionRate)} detail={metrics.conversations?`${metrics.resolvedWithoutHuman} de ${metrics.conversations}`:"Sem base para calcular"} icon="✦" />
+        <Metric label="Transbordos" value={String(metrics.handoffs)} detail={metrics.handoffs?"Passaram para humano":"Nenhum no período"} icon="⇄" />
+        <Metric label="CSAT médio" value={metrics.csatAverage===null?"—":metrics.csatAverage.toFixed(1).replace(".",",")} detail={metrics.csatCount?`${metrics.csatCount} avaliação(ões)`:"Nenhuma avaliação recebida"} icon="✓" />
+      </section>
+      <section className="dashboard-grid">
+        <div className="card"><div className="card-header"><strong>Últimas conversas</strong><span className={`badge ${data.integrations.channel.enabled?"green":"amber"}`}>{data.integrations.channel.enabled?"● Canal ativo":"● Canal desligado"}</span></div><div className="card-body">
+          {data.queue.length===0
+            ? <p style={{fontSize:12,color:"#64748b",lineHeight:1.6}}>Nenhuma conversa registrada. {data.integrations.channel.enabled?"O canal está ligado e aguardando mensagens.":"O canal do WhatsApp está desligado (FEATURE_N8N_CHANNEL)."}</p>
+            : data.queue.map((item)=><button className="queue-row" key={`${item.channel}:${item.externalConversationId}`} onClick={onOpen} style={{width:"100%",textAlign:"left",background:"none",border:"none",cursor:"pointer"}}>
+                <Avatar initials={conversationLabel(item.externalConversationId).slice(-2)} />
+                <div><p>{conversationLabel(item.externalConversationId)}</p><span>{item.intent?intentLabel(item.intent):"Sem desfecho registrado"} • {item.messages} mensagens</span></div>
+                <span className={`badge ${item.handoff?"amber":"green"}`}>{relativeTime(item.lastAt)}</span>
+              </button>)}
+        </div></div>
+        <div className="card"><div className="card-header"><strong>Conversas por intenção</strong><span className="badge blue">Últimos {PERIOD_LABELS.find(([v])=>v===period)?.[1]}</span></div><div className="card-body">
+          {metrics.conversations===0
+            ? <p style={{fontSize:12,color:"#64748b"}}>Sem conversas no período — nada a distribuir.</p>
+            : Object.entries(metrics.intents).sort((a,b)=>b[1]-a[1]).slice(0,6).map(([intent,count])=><Progress key={intent} label={`${intentLabel(intent)} (${count})`} value={Math.round(count/metrics.conversations*100)} />)}
+          {metrics.handoffs>0 && <div style={{marginTop:22,padding:14,background:"#fff7ed",borderRadius:10,fontSize:11,color:"#7c4a18",lineHeight:1.6}}><strong style={{display:"block",fontSize:12,color:"#b45309",marginBottom:4}}>Por que passou para humano</strong>{Object.entries(metrics.handoffReasons).sort((a,b)=>b[1]-a[1]).map(([reason,count])=>`${handoffLabel(reason)}: ${count}`).join(" • ")}</div>}
+          <div style={{marginTop:14,padding:14,background:"#f2f7ff",borderRadius:10,fontSize:11,color:"#40566d",lineHeight:1.6}}><strong style={{display:"block",fontSize:12,color:"#1267e8",marginBottom:4}}>Ainda não medimos</strong>Tempo médio de atendimento e custo por conversa dependem da instrumentação do Langfuse. Em vez de estimar, ficam de fora.</div>
+        </div></div>
+      </section>
+    </>}
   </main>;
 }
 
 function Metric({ label, value, detail, icon }: { label:string; value:string; detail:string; icon:string }) { return <article className="metric"><div className="metric-top"><span>{label}</span><span className="metric-icon">{icon}</span></div><strong>{value}</strong><small>{detail}</small></article>; }
 function Progress({ label, value }: { label:string; value:number }) { return <div className="bar-row"><div className="bar-label"><span>{label}</span><strong>{value}%</strong></div><div className="bar"><span style={{width:`${value}%`}} /></div></div>; }
 
+type ConversationMessage = { role:"customer"|"agent"; content:string; createdAt:string };
+
+/**
+ * Atendimentos mostra o que realmente entrou pelos canais. Não há conversa de
+ * exemplo: sem histórico gravado, a tela explica por quê. O envio pela tela
+ * ainda não existe — quem responde é o fluxo do n8n — então o campo fica
+ * desabilitado em vez de fingir que mandou.
+ */
 function Conversation() {
-  const initial: UiMessage[] = [
-    { role:"customer", content:"Oi, estou sem internet e trabalho de casa. Preciso resolver isso rápido.", time:"16:42" },
-    { role:"agent", content:"Demonstração com dados fictícios: a ONU simulada está online e o PPPoE simulado está offline. Nenhuma consulta ou ação real foi executada. Para continuar o diagnóstico de exemplo, consegue desligar o roteador da tomada por 20 segundos?", time:"16:43" },
-  ];
-  return <main className="content" style={{paddingTop:18}}><ConversationWorkspace initial={initial} training={false} /></main>;
+  const [items,setItems] = useState<ConversationSummary[]>([]);
+  const [available,setAvailable] = useState(true);
+  const [state,setState] = useState<"loading"|"ready"|"error">("loading");
+  const [selected,setSelected] = useState<ConversationSummary|null>(null);
+  const [messages,setMessages] = useState<ConversationMessage[]>([]);
+  const [messagesState,setMessagesState] = useState<"idle"|"loading"|"ready">("idle");
+
+  useEffect(() => {
+    let active = true;
+    fetch("/api/conversations")
+      .then((response) => response.ok ? response.json() : Promise.reject(new Error("falhou")))
+      .then((payload:{available:boolean;items:ConversationSummary[]}) => {
+        if (!active) return;
+        setAvailable(payload.available); setItems(payload.items ?? []); setState("ready");
+        if (payload.items?.length) void open(payload.items[0]);
+      })
+      .catch(() => { if (active) setState("error"); });
+    return () => { active = false; };
+  }, []);
+
+  async function open(item:ConversationSummary) {
+    setSelected(item); setMessagesState("loading"); setMessages([]);
+    const response = await fetch(`/api/conversations?channel=${encodeURIComponent(item.channel)}&id=${encodeURIComponent(item.externalConversationId)}`);
+    if (response.ok) { const payload = await response.json() as {messages:ConversationMessage[]}; setMessages(payload.messages ?? []); }
+    setMessagesState("ready");
+  }
+
+  if (state==="loading") return <main className="content"><div className="state-card">Carregando conversas…</div></main>;
+  if (state==="error") return <main className="content"><div className="state-card error">Não foi possível carregar as conversas.</div></main>;
+  if (!available) return <main className="content"><div className="state-card error">Histórico de conversas indisponível. Nenhuma conversa de exemplo é exibida no lugar.</div></main>;
+  if (items.length===0) return <main className="content"><div className="state-card"><strong>Nenhuma conversa registrada.</strong><p style={{marginTop:6,lineHeight:1.6}}>As conversas aparecem aqui assim que o canal do WhatsApp receber mensagens. Nada fictício é mostrado enquanto isso.</p></div></main>;
+
+  return <main className="content" style={{paddingTop:18}}><div className="conversation-layout">
+    <aside className="conversation-list">
+      {items.map((item)=><div className={`contact ${selected?.externalConversationId===item.externalConversationId?"active":""}`} key={`${item.channel}:${item.externalConversationId}`} onClick={()=>void open(item)} role="button" tabIndex={0} onKeyDown={(e)=>{if(e.key==="Enter")void open(item)}}>
+        <Avatar initials={conversationLabel(item.externalConversationId).slice(-2)} />
+        <div><p>{conversationLabel(item.externalConversationId)}</p><span>{item.lastRole==="agent"?"IA: ":""}{item.lastMessage.slice(0,48)}</span></div>
+        <time>{relativeTime(item.lastAt)}</time>
+      </div>)}
+    </aside>
+    <section className="conversation-main">
+      <div className="chat-header"><div className="person"><Avatar initials={selected?conversationLabel(selected.externalConversationId).slice(-2):"—"} /><div><strong>{selected?conversationLabel(selected.externalConversationId):"—"}</strong><span>● {selected?.channel ?? "canal"}</span></div></div><span className={`badge ${selected?.handoff?"amber":"blue"}`}>{selected?.handoff?"Transbordo":selected?.finalStatus ?? "Sem desfecho"}</span></div>
+      <div className="messages">
+        {messagesState==="loading" && <div className="message agent">Carregando histórico…</div>}
+        {messagesState==="ready" && messages.length===0 && <div className="message agent">Conversa sem mensagens gravadas.</div>}
+        {messages.map((message,index)=><div className={`message ${message.role==="agent"?"agent":""}`} key={index}>{message.content}<time>{new Date(message.createdAt).toLocaleString("pt-BR",{day:"2-digit",month:"2-digit",hour:"2-digit",minute:"2-digit"})}</time></div>)}
+      </div>
+      <div className="composer"><textarea disabled placeholder="Responder pela tela ainda não está ligado — a resposta sai pelo fluxo do n8n." /><button aria-label="Enviar" disabled>➤</button></div>
+    </section>
+    <aside className="customer-panel">
+      <div className="customer-head"><Avatar initials={selected?conversationLabel(selected.externalConversationId).slice(-2):"—"} /><h3>{selected?conversationLabel(selected.externalConversationId):"—"}</h3><p>Identificador do canal • {selected?.channel}</p></div>
+      <Info title="Conversa" rows={[["Mensagens",String(selected?.messages ?? 0)],["Última",selected?relativeTime(selected.lastAt):"—"],["Intenção",selected?.intent?intentLabel(selected.intent):"Não registrada"],["Desfecho",selected?.finalStatus ?? "Não registrado"]]} />
+      <Info title="Cadastro" rows={[["Vínculo com o IXC","Não associado"],["Como associar","Depende de casar o telefone do canal com o cadastro do IXC — ainda não implementado"]]} />
+    </aside>
+  </div></main>;
 }
 
-function ConversationWorkspace({ initial, training, onResult }: { initial: UiMessage[]; training: boolean; onResult?: (result: AgentResult) => void }) {
+/** Usado só pelo AI Training Mode: conversa de treino, sem cliente real do outro lado. */
+function ConversationWorkspace({ initial, onResult }: { initial: UiMessage[]; onResult?: (result: AgentResult) => void }) {
   const [messages, setMessages] = useState<UiMessage[]>(initial);
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
@@ -134,20 +264,14 @@ function ConversationWorkspace({ initial, training, onResult }: { initial: UiMes
     } catch { setMessages((current) => [...current,{role:"agent",content:"Tive uma falha ao consultar as ferramentas. Registrei o contexto e não vou confirmar nenhuma ação que não tenha sido concluída.",time:"agora"}]); }
     finally { setBusy(false); }
   }
-  const chat = <>
-    <div className={training ? "training-messages" : "messages"}>
+  return <>
+    <div className="training-messages">
       {messages.map((message,index) => <Message key={index} message={message} />)}
       {busy && <div className="message agent">Estou consultando isso aqui para você…</div>}
       <div ref={endRef} />
     </div>
-    <div className="composer"><textarea value={input} onChange={(e)=>setInput(e.target.value)} onKeyDown={(e)=>{if(e.key==="Enter"&&!e.shiftKey){e.preventDefault();void send();}}} placeholder={training?"Digite qualquer mensagem como um cliente…":"Responder ao cliente…"}/><button aria-label="Enviar" onClick={()=>void send()}>➤</button></div>
+    <div className="composer"><textarea value={input} onChange={(e)=>setInput(e.target.value)} onKeyDown={(e)=>{if(e.key==="Enter"&&!e.shiftKey){e.preventDefault();void send();}}} placeholder="Digite qualquer mensagem como um cliente…"/><button aria-label="Enviar" onClick={()=>void send()}>➤</button></div>
   </>;
-  if (training) return chat;
-  return <div className="conversation-layout">
-    <aside className="conversation-list"><input className="search" placeholder="Buscar conversa…" />{[["JP","João Pereira","Sem internet e trabalho de casa","agora"],["MS","Maria Souza","Obrigada, recebi a fatura","2m"],["RC","Rafael Costa","A internet está muito lenta","4m"],["AC","Ana Carvalho","Quero melhorar meu plano","7m"]].map(([a,n,m,t],i)=><div className={`contact ${i===0?"active":""}`} key={n}><Avatar initials={a}/><div><p>{n}</p><span>{m}</span></div><time>{t}</time></div>)}</aside>
-    <section className="conversation-main"><div className="chat-header"><div className="person"><Avatar/><div><strong>João Pereira</strong><span>● Canal demonstrativo</span></div></div><span className="badge blue">IA em modo mock</span></div>{chat}</section>
-    <aside className="customer-panel"><div className="customer-head"><Avatar/><h3>João Pereira</h3><p>Cliente fictício • dados sintéticos</p></div><Info title="Contrato demo" rows={[["Plano","600 Mega"],["Status","Ativo fictício"],["Vencimento","Dia 10"],["Cidade","Itabaiana/SE"]]}/><Info title="Conexão simulada" rows={[["ONU","Online"],["PPPoE","Offline"],["Potência","-19,8 dBm"],["Atualizado","agora"]]}/><Info title="Contexto demo" rows={[["Sentimento","Preocupado"],["Prioridade","Alta"],["Motivo","Home office"]]}/></aside>
-  </div>;
 }
 
 function Message({ message }: { message: UiMessage }) { const artifacts=message.result?.tools.flatMap(t=>t.artifact?[t.artifact]:[])??[]; return <div className={`message ${message.role==="agent"?"agent":""}`}>{message.content}{artifacts.map((a,i)=><div className="artifact" key={i}><strong>✓ {a.label}</strong><code>{a.value}</code></div>)}<time>{message.time} {message.role==="agent"?"✓✓":""}</time></div>; }
@@ -157,7 +281,7 @@ function TrainingMode() {
   const [result,setResult]=useState<AgentResult|null>(null);
   const [accepted,setAccepted]=useState(false);
   return <main className="content"><div className="page-heading"><div><h1>AI Training Mode</h1><p>Converse livremente. A análise é posterior e não muda o pipeline operacional.</p></div><span className="badge blue">Mesmo pipeline da produção</span></div><div className="training-grid">
-    <section className="training-chat"><div className="training-header"><div><strong>Cliente de treinamento</strong><p>Gírias, erros, ironia e mudança de assunto são aceitos.</p></div><button className="button secondary" onClick={()=>location.reload()}>Nova conversa</button></div><ConversationWorkspace training initial={[]} onResult={(r)=>{setResult(r);setAccepted(false)}} /></section>
+    <section className="training-chat"><div className="training-header"><div><strong>Cliente de treinamento</strong><p>Gírias, erros, ironia e mudança de assunto são aceitos.</p></div><button className="button secondary" onClick={()=>location.reload()}>Nova conversa</button></div><ConversationWorkspace initial={[]} onResult={(r)=>{setResult(r);setAccepted(false)}} /></section>
     <aside className="analysis-panel"><div className="card-header"><strong>Supervisor de Qualidade</strong><span className="badge green">Automático</span></div>{!result?<div className="analysis-empty">Envie uma mensagem para visualizar intenção, execução, qualidade e a melhor resposta possível.</div>:<Analysis result={result} accepted={accepted} onAccept={()=>setAccepted(true)} />}</aside>
   </div></main>;
 }
