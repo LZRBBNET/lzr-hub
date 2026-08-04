@@ -88,9 +88,9 @@ export function LzrHubApp({ ixcMode = "disabled" }: { ixcMode?: string }) {
   );
 }
 
-type OverviewMetrics = { conversations:number; resolvedWithoutHuman:number; resolutionRate:number|null; handoffs:number; handoffReasons:Record<string,number>; intents:Record<string,number>; csatAverage:number|null; csatCount:number; csatDistribution:Record<string,number>; costPerConversation:null };
-type ConversationSummary = { channel:string; externalConversationId:string; lastMessage:string; lastRole:"customer"|"agent"; lastAt:string; messages:number; finalStatus?:string; intent?:string; handoff?:boolean };
-type Overview = { period:string; available:boolean; detail?:string; metrics:OverviewMetrics|null; queue:ConversationSummary[]; averageHandlingSeconds:number|null; integrations:{ ixc:{mode:string;state:string}; channel:{enabled:boolean;configured:boolean} } };
+type OverviewMetrics = { conversations:number; resolvedWithoutHuman:number; resolutionRate:number|null; handoffs:number; suggestionsOnly:number; handoffReasons:Record<string,number>; intents:Record<string,number>; csatAverage:number|null; csatCount:number; csatDistribution:Record<string,number>; costPerConversation:null };
+type ConversationSummary = { channel:string; externalConversationId:string; lastMessage:string; lastRole:"customer"|"agent"|"suggestion"; lastAt:string; messages:number; finalStatus?:string; intent?:string; handoff?:boolean };
+type Overview = { period:string; available:boolean; detail?:string; metrics:OverviewMetrics|null; queue:ConversationSummary[]; averageHandlingSeconds:number|null; integrations:{ ixc:{mode:string;state:string}; channel:{enabled:boolean;configured:boolean;autoReply:boolean} } };
 
 const INTENT_LABELS: Record<string,string> = {
   technical_no_connection:"Sem conexão", technical_slow:"Lentidão", technical_wifi:"Wi-Fi", technical_restart:"Reinício de equipamento",
@@ -147,10 +147,13 @@ function Dashboard({ onOpen }: { onOpen: () => void }) {
     {state==="error" && <div className="state-card error">Não foi possível carregar os indicadores.</div>}
     {state==="ready" && data && !data.available && <div className="state-card error">{data.detail ?? "Fonte de indicadores indisponível"} — nenhum número é exibido para não induzir a erro.</div>}
     {state==="ready" && data?.available && metrics && <>
+      {data.integrations.channel.enabled && !data.integrations.channel.autoReply && <div className="state-card" style={{marginBottom:14}}><strong>Canal em modo observação.</strong> As mensagens são recebidas e classificadas, mas a IA não responde ao cliente. Por isso a taxa de resolução fica em zero: sugestão não é atendimento resolvido.</div>}
       <section className="metrics">
-        <Metric label="Conversas no período" value={String(metrics.conversations)} detail={metrics.conversations?`Canal ${data.integrations.channel.enabled?"ativo":"desligado"}`:"Nenhuma conversa registrada"} icon="◫" />
+        <Metric label="Conversas no período" value={String(metrics.conversations)} detail={metrics.conversations?`Canal ${data.integrations.channel.enabled?(data.integrations.channel.autoReply?"respondendo":"em observação"):"desligado"}`:"Nenhuma conversa registrada"} icon="◫" />
         <Metric label="Resolvidas sem humano" value={percent(metrics.resolutionRate)} detail={metrics.conversations?`${metrics.resolvedWithoutHuman} de ${metrics.conversations}`:"Sem base para calcular"} icon="✦" />
-        <Metric label="Transbordos" value={String(metrics.handoffs)} detail={metrics.handoffs?"Passaram para humano":"Nenhum no período"} icon="⇄" />
+        {data.integrations.channel.autoReply
+          ? <Metric label="Transbordos" value={String(metrics.handoffs)} detail={metrics.handoffs?"Passaram para humano":"Nenhum no período"} icon="⇄" />
+          : <Metric label="Sugestões sem envio" value={String(metrics.suggestionsOnly)} detail={metrics.handoffs?`${metrics.handoffs} recomendariam transbordo`:"Nenhuma recomendação de transbordo"} icon="◐" />}
         <Metric label="CSAT médio" value={metrics.csatAverage===null?"—":metrics.csatAverage.toFixed(1).replace(".",",")} detail={metrics.csatCount?`${metrics.csatCount} avaliação(ões)`:"Nenhuma avaliação recebida"} icon="✓" />
       </section>
       <section className="dashboard-grid">
@@ -178,7 +181,7 @@ function Dashboard({ onOpen }: { onOpen: () => void }) {
 function Metric({ label, value, detail, icon }: { label:string; value:string; detail:string; icon:string }) { return <article className="metric"><div className="metric-top"><span>{label}</span><span className="metric-icon">{icon}</span></div><strong>{value}</strong><small>{detail}</small></article>; }
 function Progress({ label, value }: { label:string; value:number }) { return <div className="bar-row"><div className="bar-label"><span>{label}</span><strong>{value}%</strong></div><div className="bar"><span style={{width:`${value}%`}} /></div></div>; }
 
-type ConversationMessage = { role:"customer"|"agent"; content:string; createdAt:string };
+type ConversationMessage = { role:"customer"|"agent"|"suggestion"; content:string; createdAt:string };
 
 /**
  * Atendimentos mostra o que realmente entrou pelos canais. Não há conversa de
@@ -188,6 +191,7 @@ type ConversationMessage = { role:"customer"|"agent"; content:string; createdAt:
  */
 function Conversation() {
   const [items,setItems] = useState<ConversationSummary[]>([]);
+  const [channelState,setChannelState] = useState<{enabled:boolean;autoReply:boolean}>({enabled:false,autoReply:false});
   const [available,setAvailable] = useState(true);
   const [state,setState] = useState<"loading"|"ready"|"error">("loading");
   const [selected,setSelected] = useState<ConversationSummary|null>(null);
@@ -198,9 +202,9 @@ function Conversation() {
     let active = true;
     fetch("/api/conversations")
       .then((response) => response.ok ? response.json() : Promise.reject(new Error("falhou")))
-      .then((payload:{available:boolean;items:ConversationSummary[]}) => {
+      .then((payload:{available:boolean;items:ConversationSummary[];channelState:{enabled:boolean;autoReply:boolean}}) => {
         if (!active) return;
-        setAvailable(payload.available); setItems(payload.items ?? []); setState("ready");
+        setAvailable(payload.available); setItems(payload.items ?? []); setChannelState(payload.channelState ?? {enabled:false,autoReply:false}); setState("ready");
         if (payload.items?.length) void open(payload.items[0]);
       })
       .catch(() => { if (active) setState("error"); });
@@ -219,11 +223,13 @@ function Conversation() {
   if (!available) return <main className="content"><div className="state-card error">Histórico de conversas indisponível. Nenhuma conversa de exemplo é exibida no lugar.</div></main>;
   if (items.length===0) return <main className="content"><div className="state-card"><strong>Nenhuma conversa registrada.</strong><p style={{marginTop:6,lineHeight:1.6}}>As conversas aparecem aqui assim que o canal do WhatsApp receber mensagens. Nada fictício é mostrado enquanto isso.</p></div></main>;
 
-  return <main className="content" style={{paddingTop:18}}><div className="conversation-layout">
+  return <main className="content" style={{paddingTop:18}}>
+    {channelState.enabled && !channelState.autoReply && <div className="state-card" style={{marginBottom:14}}><strong>Modo observação.</strong> O canal recebe e registra as mensagens, e a IA propõe a resposta — mas nada é enviado ao cliente. As sugestões aparecem marcadas no histórico.</div>}
+    <div className="conversation-layout">
     <aside className="conversation-list">
       {items.map((item)=><div className={`contact ${selected?.externalConversationId===item.externalConversationId?"active":""}`} key={`${item.channel}:${item.externalConversationId}`} onClick={()=>void open(item)} role="button" tabIndex={0} onKeyDown={(e)=>{if(e.key==="Enter")void open(item)}}>
         <Avatar initials={conversationLabel(item.externalConversationId).slice(-2)} />
-        <div><p>{conversationLabel(item.externalConversationId)}</p><span>{item.lastRole==="agent"?"IA: ":""}{item.lastMessage.slice(0,48)}</span></div>
+        <div><p>{conversationLabel(item.externalConversationId)}</p><span>{item.lastRole==="agent"?"IA: ":item.lastRole==="suggestion"?"Sugestão: ":""}{item.lastMessage.slice(0,48)}</span></div>
         <time>{relativeTime(item.lastAt)}</time>
       </div>)}
     </aside>
@@ -232,7 +238,11 @@ function Conversation() {
       <div className="messages">
         {messagesState==="loading" && <div className="message agent">Carregando histórico…</div>}
         {messagesState==="ready" && messages.length===0 && <div className="message agent">Conversa sem mensagens gravadas.</div>}
-        {messages.map((message,index)=><div className={`message ${message.role==="agent"?"agent":""}`} key={index}>{message.content}<time>{new Date(message.createdAt).toLocaleString("pt-BR",{day:"2-digit",month:"2-digit",hour:"2-digit",minute:"2-digit"})}</time></div>)}
+        {messages.map((message,index)=><div className={`message ${message.role==="customer"?"":"agent"}`} key={index} style={message.role==="suggestion"?{opacity:0.72,borderLeft:"3px solid #b45309"}:undefined}>
+          {message.role==="suggestion" && <strong style={{display:"block",fontSize:10,color:"#b45309",textTransform:"uppercase",letterSpacing:0.4,marginBottom:4}}>Sugestão da IA — não enviada ao cliente</strong>}
+          {message.content}
+          <time>{new Date(message.createdAt).toLocaleString("pt-BR",{day:"2-digit",month:"2-digit",hour:"2-digit",minute:"2-digit"})}</time>
+        </div>)}
       </div>
       <div className="composer"><textarea disabled placeholder="Responder pela tela ainda não está ligado — a resposta sai pelo fluxo do n8n." /><button aria-label="Enviar" disabled>➤</button></div>
     </section>

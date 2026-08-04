@@ -4,12 +4,18 @@ import { channelMessages, conversationOutcomes } from "../../db/schema.ts";
 /**
  * Conversas reais recebidas pelos canais (hoje só o n8n/WhatsApp). Nada aqui é
  * sintético: se não houver conversa gravada, a lista volta vazia e a tela diz isso.
+ *
+ * `suggestion` é resposta que a IA produziu com a resposta automática desligada
+ * e que ninguém enviou ao cliente — a tela precisa distinguir isso de mensagem
+ * entregue, senão o histórico mente sobre o que o cliente recebeu.
  */
+export type ConversationRole = "customer" | "agent" | "suggestion";
+
 export interface ConversationSummary {
   channel: string;
   externalConversationId: string;
   lastMessage: string;
-  lastRole: "customer" | "agent";
+  lastRole: ConversationRole;
   lastAt: string;
   messages: number;
   /** Último desfecho registrado pelo pipeline, quando existe. */
@@ -18,14 +24,15 @@ export interface ConversationSummary {
   handoff?: boolean;
 }
 
-export interface ConversationMessage { role: "customer" | "agent"; content: string; createdAt: string }
+export interface ConversationMessage { role: ConversationRole; content: string; createdAt: string }
 
 export interface ConversationsRepository {
   listConversations(limit: number): Promise<ConversationSummary[]>;
   getMessages(channel: string, externalConversationId: string, limit: number): Promise<ConversationMessage[]>;
 }
 
-const role = (value: string): "customer" | "agent" => (value === "agent" ? "agent" : "customer");
+const role = (value: string): ConversationRole =>
+  value === "agent" ? "agent" : value === "suggestion" ? "suggestion" : "customer";
 
 export class DbConversationsRepository implements ConversationsRepository {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -105,8 +112,8 @@ export class DbConversationsRepository implements ConversationsRepository {
 }
 
 export class MemoryConversationsRepository implements ConversationsRepository {
-  readonly rows: Array<{ channel: string; externalConversationId: string; role: "customer" | "agent"; content: string; createdAt: string }> = [];
-  add(row: { channel: string; externalConversationId: string; role: "customer" | "agent"; content: string; createdAt: string }) { this.rows.push(row); }
+  readonly rows: Array<{ channel: string; externalConversationId: string; role: ConversationRole; content: string; createdAt: string }> = [];
+  add(row: { channel: string; externalConversationId: string; role: ConversationRole; content: string; createdAt: string }) { this.rows.push(row); }
   async listConversations(limit: number): Promise<ConversationSummary[]> {
     const byId = new Map<string, ConversationSummary>();
     for (const row of [...this.rows].sort((a, b) => a.createdAt.localeCompare(b.createdAt))) {

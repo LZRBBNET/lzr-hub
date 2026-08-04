@@ -18,15 +18,19 @@ export async function GET(request: Request) {
   const url = new URL(request.url);
   const id = url.searchParams.get("id");
   const channel = url.searchParams.get("channel") ?? CHANNEL_NAME;
+  const channelEnabled = process.env.FEATURE_N8N_CHANNEL === "true";
+  // A tela precisa saber se a IA está respondendo sozinha para não deixar o
+  // atendente supor que a sugestão que ele lê já foi entregue.
+  const channelState = { enabled: channelEnabled, autoReply: channelEnabled && process.env.FEATURE_N8N_AUTOREPLY === "true" };
 
   try {
     const repository = new DbConversationsRepository(await getDb());
     if (id) {
       const messages = await repository.getMessages(channel, id, MESSAGE_LIMIT);
-      return NextResponse.json({ available: true, channel, id, messages });
+      return NextResponse.json({ available: true, channel, id, messages, channelState });
     }
-    return NextResponse.json({ available: true, items: await repository.listConversations(LIST_LIMIT) });
+    return NextResponse.json({ available: true, items: await repository.listConversations(LIST_LIMIT), channelState });
   } catch {
-    return NextResponse.json({ available: false, detail: "Histórico de conversas indisponível", items: [], messages: [] });
+    return NextResponse.json({ available: false, detail: "Histórico de conversas indisponível", items: [], messages: [], channelState });
   }
 }

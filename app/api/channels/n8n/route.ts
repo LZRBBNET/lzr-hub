@@ -4,11 +4,17 @@ import { getDb } from "@/db";
 import { D1ChannelRepository, MAX_MESSAGE_LENGTH, processChannelMessage } from "@/lib/platform/n8n-channel-service";
 import { DbSupportMetricsRepository } from "@/lib/platform/support-metrics";
 
+/**
+ * Resposta automática nasce desligada, como toda flag que produz efeito no
+ * mundo real: ligada, a IA fala com o cliente sem ninguém no meio.
+ */
+const autoReplyEnabled = () => process.env.FEATURE_N8N_AUTOREPLY === "true";
+
 /** Estado do canal, sem nada sensível — usado pelo painel de integrações para não mentir sobre o status real. */
 export async function GET() {
   const enabled = process.env.FEATURE_N8N_CHANNEL === "true";
   const configured = enabled && !!process.env.N8N_CHANNEL_SECRET;
-  return NextResponse.json({ enabled, configured });
+  return NextResponse.json({ enabled, configured, autoReply: enabled && autoReplyEnabled() });
 }
 
 export async function POST(request: Request) {
@@ -37,6 +43,7 @@ export async function POST(request: Request) {
     new D1ChannelRepository(db),
     { externalConversationId, text, idempotencyKey, correlationId },
     new DbSupportMetricsRepository(db),
+    { autoReply: autoReplyEnabled() },
   );
   return NextResponse.json(result);
 }

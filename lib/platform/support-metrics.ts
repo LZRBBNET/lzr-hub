@@ -10,6 +10,8 @@ export const CSAT_MAX = 5;
 
 /** Desfechos em que a IA concluiu sozinha, sem passar para humano. */
 const RESOLVED_WITHOUT_HUMAN = new Set(["resolved", "simulated"]);
+/** Modo observação: a IA propôs uma resposta que ninguém enviou ao cliente. */
+const SUGGESTED = "suggested";
 
 export interface ConversationOutcomeRow {
   channel: string;
@@ -35,6 +37,8 @@ export interface SupportMetrics {
   resolvedWithoutHuman: number;
   resolutionRate: number | null;
   handoffs: number;
+  /** Conversas em que a IA só sugeriu, sem responder ao cliente (resposta automática desligada). */
+  suggestionsOnly: number;
   handoffReasons: Record<string, number>;
   /** Quantas conversas por intenção detectada — é o que a Visão geral mostra no lugar de barras fixas. */
   intents: Record<string, number>;
@@ -96,6 +100,7 @@ export async function getSupportMetrics(
     resolvedWithoutHuman,
     resolutionRate: outcomes.length ? resolvedWithoutHuman / outcomes.length : null,
     handoffs: outcomes.filter((item) => item.handoff).length,
+    suggestionsOnly: outcomes.filter((item) => item.finalStatus === SUGGESTED).length,
     handoffReasons,
     intents,
     csatAverage: ratings.length ? ratings.reduce((sum, item) => sum + item.score, 0) / ratings.length : null,

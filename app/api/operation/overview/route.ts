@@ -22,7 +22,8 @@ export async function GET(request: Request) {
   if (!days) return NextResponse.json({ error: "Período inválido. Use 24h, 7d ou 30d." }, { status: 400 });
   const since = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
 
-  const channel = { enabled: process.env.FEATURE_N8N_CHANNEL === "true", configured: !!process.env.N8N_CHANNEL_SECRET };
+  const channelEnabled = process.env.FEATURE_N8N_CHANNEL === "true";
+  const channel = { enabled: channelEnabled, configured: !!process.env.N8N_CHANNEL_SECRET, autoReply: channelEnabled && process.env.FEATURE_N8N_AUTOREPLY === "true" };
   let ixc: { mode: string; state: string } = { mode: "disabled", state: "off" };
   try { const runtime = getIxcRuntime(); ixc = { mode: runtime.config.ixcMode, state: runtime.provider ? runtime.provider.health().state : "off" }; }
   catch { ixc = { mode: "indisponível", state: "error" }; }

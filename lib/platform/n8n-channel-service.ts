@@ -17,8 +17,23 @@ export const CHANNEL_NAME = "n8n-whatsapp";
 export const MAX_MESSAGE_LENGTH = 5000;
 export const MAX_HISTORY = 40;
 
-export interface ChannelMessageRow { role: "customer" | "agent"; content: string }
-export interface ChannelResponse { response: string; status: string; handoff: boolean; correlationId: string }
+/**
+ * Resposta que a IA produziu mas que ninguém enviou ao cliente. Fica gravada
+ * com papel próprio para que a tela não a mostre como mensagem entregue e para
+ * que o histórico do pipeline não a trate como turno da conversa.
+ */
+export const SUGGESTION_ROLE = "suggestion";
+/** Desfecho de quem só sugeriu: nunca conta como atendimento resolvido. */
+export const SUGGESTED_STATUS = "suggested";
+
+export type ChannelRole = "customer" | "agent" | "suggestion";
+export interface ChannelMessageRow { role: ChannelRole; content: string }
+/**
+ * `response` vem `null` quando a resposta automática está desligada — o fluxo do
+ * n8n precisa checar `autoReply` antes de enviar qualquer coisa ao cliente.
+ */
+export interface ChannelResponse { response: string | null; autoReply: boolean; suggestion?: string; status: string; handoff: boolean; correlationId: string }
+export interface ChannelOptions { autoReply: boolean }
 
 export interface ChannelRepository {
   findIdempotent(idempotencyKey: string): Promise<ChannelResponse | undefined>;
@@ -34,12 +49,15 @@ export async function processChannelMessage(
   repository: ChannelRepository,
   input: ChannelMessageInput,
   metrics?: SupportMetricsRepository,
+  options: ChannelOptions = { autoReply: false },
 ): Promise<ChannelResponse> {
   const existing = await repository.findIdempotent(input.idempotencyKey);
   if (existing) return existing;
 
   const historyRows = await repository.getHistory(CHANNEL_NAME, input.externalConversationId);
-  const history: ChatMessage[] = historyRows.slice(-MAX_HISTORY);
+  // Sugestão não é turno de conversa: o cliente nunca a viu, então ela não entra
+  // no histórico que a IA usa para decidir o próximo passo.
+  const history: ChatMessage[] = historyRows.filter((row) => row.role !== SUGGESTION_ROLE).slice(-MAX_HISTORY) as ChatMessage[];
 
   const lastAgentMessage = [...historyRows].reverse().find((row) => row.role === "agent")?.content;
   const csatScore = isAwaitingCsat(lastAgentMessage) ? parseCsatScore(input.text) : null;
@@ -51,12 +69,16 @@ export async function processChannelMessage(
       externalConversationId: input.externalConversationId,
       score: csatScore,
     });
+    // Mesmo o agradecimento é mensagem enviada ao cliente: com resposta
+    // automática desligada, a nota é registrada e nada sai daqui.
     await repository.saveMessages(CHANNEL_NAME, input.externalConversationId, [
       { role: "customer", content: input.text },
-      { role: "agent", content: CSAT_THANKS },
+      { role: options.autoReply ? "agent" : SUGGESTION_ROLE, content: CSAT_THANKS },
     ]);
     const rated: ChannelResponse = {
-      response: CSAT_THANKS,
+      response: options.autoReply ? CSAT_THANKS : null,
+      autoReply: options.autoReply,
+      suggestion: options.autoReply ? undefined : CSAT_THANKS,
       status: "rated",
       handoff: false,
       correlationId: input.correlationId,
@@ -74,17 +96,21 @@ export async function processChannelMessage(
   const result = runAgentPipeline(input.text, history, { channel: "whatsapp" });
   await traceAgentResult(result, { channel: CHANNEL_NAME, correlationId: input.correlationId });
 
-  const askCsat = shouldAskCsat(result.finalStatus, result.handoff.required);
+  // Só pede nota quando a resposta é de fato entregue — não dá para avaliar
+  // um atendimento que o cliente não recebeu.
+  const askCsat = options.autoReply && shouldAskCsat(result.finalStatus, result.handoff.required);
   const reply = askCsat ? `${result.response}\n\n${CSAT_QUESTION}` : result.response;
 
   await repository.saveMessages(CHANNEL_NAME, input.externalConversationId, [
     { role: "customer", content: input.text },
-    { role: "agent", content: reply },
+    { role: options.autoReply ? "agent" : SUGGESTION_ROLE, content: reply },
   ]);
 
   const response: ChannelResponse = {
-    response: reply,
-    status: result.finalStatus,
+    response: options.autoReply ? reply : null,
+    autoReply: options.autoReply,
+    suggestion: options.autoReply ? undefined : reply,
+    status: options.autoReply ? result.finalStatus : SUGGESTED_STATUS,
     handoff: result.handoff.required,
     correlationId: input.correlationId,
   };
@@ -93,14 +119,17 @@ export async function processChannelMessage(
   await repository.audit({
     correlationId: input.correlationId,
     entity: `conversation:${input.externalConversationId}`,
-    result: result.finalStatus,
-    reason: "Mensagem recebida via canal n8n/WhatsApp",
+    result: response.status,
+    reason: options.autoReply
+      ? "Mensagem recebida via canal n8n/WhatsApp"
+      : "Mensagem recebida via canal n8n/WhatsApp; resposta apenas sugerida, não enviada",
   });
   await metrics?.saveOutcome({
     channel: CHANNEL_NAME,
     externalConversationId: input.externalConversationId,
     intent: result.intent,
-    finalStatus: result.finalStatus,
+    // Sem envio, o desfecho é "sugerido": não pode entrar na conta de resolvidos.
+    finalStatus: response.status,
     handoff: result.handoff.required,
     handoffReason: result.handoff.reason,
     correlationId: input.correlationId,
@@ -121,7 +150,10 @@ export class D1ChannelRepository implements ChannelRepository {
     const rows = await this.db.select().from(channelMessages)
       .where(and(eq(channelMessages.channel, channel), eq(channelMessages.externalConversationId, externalConversationId)))
       .orderBy(asc(channelMessages.createdAt));
-    return rows.map((row: { role: string; content: string }) => ({ role: row.role === "agent" ? "agent" : "customer", content: row.content }));
+    return rows.map((row: { role: string; content: string }) => ({
+      role: row.role === "agent" ? "agent" : row.role === SUGGESTION_ROLE ? SUGGESTION_ROLE : "customer",
+      content: row.content,
+    }));
   }
   async saveMessages(channel: string, externalConversationId: string, messages: ChannelMessageRow[]): Promise<void> {
     const now = new Date().toISOString();

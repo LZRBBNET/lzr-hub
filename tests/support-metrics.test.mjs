@@ -83,7 +83,7 @@ test("canal registra desfecho e coleta a nota do cliente", async () => {
   const first = await processChannelMessage(channel, {
     externalConversationId: conversation, text: "quero a segunda via do boleto",
     idempotencyKey: "k1", correlationId: "corr-1",
-  }, metrics);
+  }, metrics, { autoReply: true });
 
   assert.equal(first.handoff, false);
   assert.equal(first.status, "simulated");
@@ -93,7 +93,7 @@ test("canal registra desfecho e coleta a nota do cliente", async () => {
   const rated = await processChannelMessage(channel, {
     externalConversationId: conversation, text: "5",
     idempotencyKey: "k2", correlationId: "corr-2",
-  }, metrics);
+  }, metrics, { autoReply: true });
 
   assert.equal(rated.response, CSAT_THANKS);
   assert.equal(rated.status, "rated");
@@ -108,7 +108,7 @@ test("transbordo não pede avaliação ao cliente", async () => {
   const result = await processChannelMessage(channel, {
     externalConversationId: "5579999990002", text: "quero falar com atendente",
     idempotencyKey: "k1", correlationId: "corr-1",
-  }, metrics);
+  }, metrics, { autoReply: true });
 
   assert.equal(result.handoff, true);
   assert.ok(!result.response.includes(CSAT_QUESTION));
@@ -122,7 +122,7 @@ test("conversa ainda em andamento não pede avaliação", async () => {
   const result = await processChannelMessage(channel, {
     externalConversationId: "5579999990003", text: "minha internet está lenta",
     idempotencyKey: "k1", correlationId: "corr-1",
-  }, metrics);
+  }, metrics, { autoReply: true });
 
   assert.equal(result.status, "waiting_customer");
   assert.ok(!result.response.includes(CSAT_QUESTION), "não pede nota no meio do atendimento");
@@ -134,7 +134,7 @@ test("número solto fora do contexto de avaliação continua indo para a IA", as
   const result = await processChannelMessage(channel, {
     externalConversationId: "5579999990001", text: "5",
     idempotencyKey: "k1", correlationId: "corr-1",
-  }, metrics);
+  }, metrics, { autoReply: true });
   assert.notEqual(result.status, "rated");
   assert.equal(metrics.ratings.length, 0);
   assert.equal(metrics.outcomes.length, 1);

@@ -66,12 +66,19 @@ Flags relevantes:
 | Flag | O que libera | Estado hoje |
 |---|---|---|
 | `FEATURE_AUTH` | Exige login e aplica RBAC nas rotas | **desligada** |
-| `FEATURE_N8N_CHANNEL` | Canal WhatsApp via n8n | desligada |
+| `FEATURE_N8N_CHANNEL` | Canal WhatsApp via n8n recebe e registra mensagem | desligada |
+| `FEATURE_N8N_AUTOREPLY` | A IA **responde ao cliente** pelo canal | desligada |
 | `FEATURE_QUEUES` | Filas reais (Redis/BullMQ) | desligada |
 | `FEATURE_IXC_WRITE` | Escrita no ERP | desligada |
 | `IXC_MODE` | `disabled` / `staging-readonly` | `disabled` |
 
 ⚠️ **`FEATURE_AUTH=true` é obrigatório antes de qualquer dado real** (milestone M4: escrita no IXC, cobrança, venda). Enquanto desligada, nenhuma rota sabe quem está agindo.
+
+### Modo observação do canal (`FEATURE_N8N_CHANNEL` ligada, `FEATURE_N8N_AUTOREPLY` desligada)
+
+Esse é o estado atual em produção e é deliberado: o canal recebe a mensagem do cliente, classifica a intenção e a IA **produz** a resposta — mas ninguém a envia. Ela fica gravada em `channel_messages` com `role = "suggestion"`, aparece na tela marcada como não enviada, e o desfecho é registrado como `suggested`, que **não** entra na conta de "resolvido sem humano". A pergunta de CSAT também não é feita: não dá para avaliar um atendimento que o cliente não recebeu.
+
+⚠️ O fluxo do n8n precisa checar o campo `autoReply` da resposta antes de enviar qualquer coisa. Com a flag desligada, `response` volta `null` justamente para que um fluxo que ignore `autoReply` falhe em vez de mandar mensagem vazia ao cliente.
 
 ### Antes de ligar qualquer flag
 
@@ -110,7 +117,7 @@ Ver [`docs/integrations/ixc-data-mapping.md`](docs/integrations/ixc-data-mapping
 npm run typecheck && npm run lint && npm test
 ```
 
-Os três precisam passar. Hoje a suíte tem **210 testes**.
+Os três precisam passar. Hoje a suíte tem **215 testes**.
 
 ## Segurança — pontos já decididos
 
