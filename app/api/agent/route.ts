@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { runAgentPipeline } from "@/lib/agent/pipeline";
 import type { ChatMessage } from "@/lib/agent/types";
+import { traceAgentResult } from "@/lib/observability/trace-agent-result";
 import { logUnauthenticatedAction } from "@/lib/platform/audit-log";
 import { authorize } from "@/lib/platform/session-guard";
 
@@ -92,6 +93,7 @@ export async function POST(request: Request) {
     correlationId: result.correlationId,
     actor: guard.user,
   });
+  await traceAgentResult(result, { channel: "web", correlationId: result.correlationId });
 
   return NextResponse.json(result);
 }

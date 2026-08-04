@@ -3,6 +3,7 @@ import { and, asc, eq } from "drizzle-orm";
 import { auditEvents, channelIdempotencyKeys, channelMessages } from "../../db/schema.ts";
 import { runAgentPipeline } from "../agent/pipeline.ts";
 import type { ChatMessage } from "../agent/types.ts";
+import { traceAgentResult } from "../observability/trace-agent-result.ts";
 import {
   CSAT_QUESTION,
   CSAT_THANKS,
@@ -71,6 +72,7 @@ export async function processChannelMessage(
   }
 
   const result = runAgentPipeline(input.text, history, { channel: "whatsapp" });
+  await traceAgentResult(result, { channel: CHANNEL_NAME, correlationId: input.correlationId });
 
   const askCsat = shouldAskCsat(result.finalStatus, result.handoff.required);
   const reply = askCsat ? `${result.response}\n\n${CSAT_QUESTION}` : result.response;
