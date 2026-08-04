@@ -1,16 +1,10 @@
-import type { AuditEvent, CollectionCampaign, CollectionRuleStep, CustomerSummary, HealthFactor, KnowledgeDocument, Lead, NetworkIncident } from "./types.ts";
+import type { AuditEvent, CollectionCampaign, CollectionRuleStep, CustomerSummary, HealthFactor, KnowledgeDocument, Lead } from "./types.ts";
 
 export const customers: CustomerSummary[] = [
   { id:"DEMO-CLI-001", name:"João Pereira", maskedDocument:"***.***.***-DEMO-001 (inválido)", city:"Itabaiana", neighborhood:"Centro Demo", plan:"300 Mega", status:"Ativo fictício", health:64, churnRisk:"high", priority:"Alta", tags:["sintético","ONU online"] },
   { id:"DEMO-CLI-002", name:"Maria Souza", maskedDocument:"***.***.***-DEMO-002 (inválido)", city:"Lagarto", neighborhood:"Boa Vista Demo", plan:"600 Mega", status:"Ativo fictício", health:91, churnRisk:"low", priority:"Normal", tags:["sintético","potência normal"] },
   { id:"DEMO-CLI-003", name:"Rafael Costa", maskedDocument:"***.***.***-DEMO-003 (inválido)", city:"Campo do Brito", neighborhood:"Centro Demo", plan:"1 Giga", status:"Bloqueado fictício", health:48, churnRisk:"critical", priority:"Alta", tags:["sintético","pagamento não reconhecido"] },
   { id:"DEMO-CLI-004", name:"Ana Carvalho", maskedDocument:"***.***.***-DEMO-004 (inválido)", city:"São Domingos", neighborhood:"Centro Demo", plan:"300 Mega", status:"Ativo fictício", health:78, churnRisk:"medium", priority:"Normal", tags:["sintético","PPPoE offline"] },
-];
-
-export const incidents: NetworkIncident[] = [
-  { id:"INC-2407", title:"Perda óptica elevada", city:"Itabaiana", neighborhood:"Queimadas", equipment:"OLT-ITA-02 / PON 7", severity:"critical", status:"investigating", startedAt:"12/07 07:18", affectedCustomers:184, probableCause:"Rompimento de fibra em análise", source:"LibreNMS Mock" },
-  { id:"INC-2406", title:"Oscilação de energia", city:"Ribeirópolis", neighborhood:"Centro", equipment:"POP-RIB-01", severity:"high", status:"monitoring", startedAt:"12/07 06:42", affectedCustomers:76, probableCause:"Retorno instável da concessionária", source:"Monitoramento Mock" },
-  { id:"INC-2405", title:"Autenticações intermitentes", city:"Campo do Brito", neighborhood:"São José", equipment:"BRAS-CDB-01", severity:"medium", status:"resolved", startedAt:"11/07 22:10", affectedCustomers:31, probableCause:"Sessões PPPoE normalizadas", source:"IXC Mock" },
 ];
 
 export const collectionSteps: CollectionRuleStep[] = [

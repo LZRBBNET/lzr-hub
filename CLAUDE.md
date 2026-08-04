@@ -117,7 +117,7 @@ Ver [`docs/integrations/ixc-data-mapping.md`](docs/integrations/ixc-data-mapping
 npm run typecheck && npm run lint && npm test
 ```
 
-Os três precisam passar. Hoje a suíte tem **215 testes**.
+Os três precisam passar. Hoje a suíte tem **221 testes**.
 
 ## Segurança — pontos já decididos
 
@@ -137,6 +137,8 @@ Ver [`docs/security/authentication.md`](docs/security/authentication.md).
 - Responder pela tela de Atendimentos ainda não existe: quem responde é o fluxo do n8n, então o campo fica desabilitado
 - Conversa do canal não é associada ao cadastro do IXC (faltaria casar o telefone do WhatsApp com o cliente)
 - A lista de Clientes é a allowlist do IXC — o ERP não expõe busca aberta da base
+- Chamados mostra as OS do IXC só dos cadastros da allowlist, pelo mesmo motivo
+- Não há integração de monitoramento de rede (alerta, potência em massa, correlação geográfica). Massivas são registradas por uma pessoa, na tela; o Mapa de Alertas agrupa só o que foi registrado
 - O runtime de filas tem apenas um teste, e ele é pulado sem um Redis disponível
 
 ## Trabalhando em paralelo
