@@ -9,6 +9,8 @@ export interface RuntimeConfig {
   ixcBaseUrl?: string;
   ixcToken?: string;
   ixcAllowlist: string[];
+  /** Leitura liberada para a base inteira, em vez de só os cadastros da allowlist. */
+  ixcFullBase: boolean;
   ixcTimeoutMs: number;
   ixcRetryLimit: number;
   ixcCacheTtlSeconds: number;
@@ -56,12 +58,16 @@ export function loadRuntimeConfig(source: Record<string, string | undefined> = p
   if (source.IXC_WRITE_ENABLED === "true") throw new Error("Escrita no IXC é proibida na Fase 3A");
   if (ixcMode === "production-readonly") throw new Error("production-readonly não pode ser habilitado na Fase 3A");
   const ixcAllowlist = parseAllowlist(source.IXC_ALLOWED_CUSTOMER_IDS ?? source.IXC_ALLOWLIST_IDS);
+  const ixcFullBase = featureFlag("FEATURE_IXC_FULL_BASE", source.FEATURE_IXC_FULL_BASE);
+  // Ler a base inteira sem saber quem está lendo seria expor o cadastro de todo
+  // cliente da BBNET a qualquer visitante da URL publicada.
+  if (ixcFullBase && source.FEATURE_AUTH !== "true") throw new Error("FEATURE_IXC_FULL_BASE exige FEATURE_AUTH=true");
   const pilotMode=(source.PILOT_MODE??"disabled") as PilotMode;if(!["disabled","internal"].includes(pilotMode))throw new Error("PILOT_MODE inválido");
   const pilotAllowedUserIds=[...new Set((source.PILOT_ALLOWED_USER_IDS??"").split(",").map((item)=>item.trim()).filter(Boolean))];if(pilotAllowedUserIds.length>3)throw new Error("Piloto aceita no máximo 3 usuários");if(pilotMode==="internal"&&(pilotAllowedUserIds.length<2||!source.STAGING_JOB_SECRET))throw new Error("Piloto interno exige 2 a 3 usuários e segredo administrativo");
   if (ixcMode === "staging-readonly") {
     if (environment !== "staging") throw new Error("staging-readonly exige LZR_ENV=staging");
     if (!source.IXC_BASE_URL || !source.IXC_API_TOKEN) throw new Error("IXC staging exige URL e token em secrets");
-    if (ixcAllowlist.length === 0) throw new Error("IXC staging exige allowlist explícita");
+    if (ixcAllowlist.length === 0 && !ixcFullBase) throw new Error("IXC staging exige allowlist explícita");
   }
   return {
     environment,
@@ -70,6 +76,7 @@ export function loadRuntimeConfig(source: Record<string, string | undefined> = p
     ixcBaseUrl: source.IXC_BASE_URL,
     ixcToken: source.IXC_API_TOKEN,
     ixcAllowlist,
+    ixcFullBase,
     ixcTimeoutMs: integer("IXC_TIMEOUT_MS", source.IXC_TIMEOUT_MS, 3500, 500, 10000),
     ixcRetryLimit: integer("IXC_RETRY_LIMIT", source.IXC_RETRY_LIMIT, 1, 0, 1),
     ixcCacheTtlSeconds: integer("IXC_CACHE_TTL_SECONDS", source.IXC_CACHE_TTL_SECONDS, 300, 30, 3600),

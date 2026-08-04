@@ -70,6 +70,7 @@ Flags relevantes:
 | `FEATURE_N8N_AUTOREPLY` | A IA **responde ao cliente** pelo canal | desligada |
 | `FEATURE_QUEUES` | Filas reais (Redis/BullMQ) | desligada |
 | `FEATURE_IXC_WRITE` | Escrita no ERP | desligada |
+| `FEATURE_IXC_FULL_BASE` | Leitura da **base inteira** do IXC, não só da allowlist | desligada |
 | `IXC_MODE` | `disabled` / `staging-readonly` | `disabled` |
 
 ⚠️ **`FEATURE_AUTH=true` é obrigatório antes de qualquer dado real** (milestone M4: escrita no IXC, cobrança, venda). Enquanto desligada, nenhuma rota sabe quem está agindo.
@@ -136,7 +137,7 @@ Ver [`docs/security/authentication.md`](docs/security/authentication.md).
 - Tempo médio de atendimento também não é medido — a Visão geral escreve isso em vez de estimar
 - Responder pela tela de Atendimentos ainda não existe: quem responde é o fluxo do n8n, então o campo fica desabilitado
 - Conversa do canal não é associada ao cadastro do IXC (faltaria casar o telefone do WhatsApp com o cliente)
-- A lista de Clientes é a allowlist do IXC — o ERP não expõe busca aberta da base
+- A lista de Clientes é a allowlist do IXC enquanto `FEATURE_IXC_FULL_BASE` estiver desligada. A trava é **nossa**, de homologação, não do ERP: `scripts/ixc-probe-listing.mjs` pergunta ao IXC se a listagem paginada funciona. Ligar a flag exige `FEATURE_AUTH=true` (o código recusa a subir sem isso)
 - Chamados mostra as OS do IXC só dos cadastros da allowlist, pelo mesmo motivo
 - Não há integração de monitoramento de rede (alerta, potência em massa, correlação geográfica). Massivas são registradas por uma pessoa, na tela; o Mapa de Alertas agrupa só o que foi registrado
 - O runtime de filas tem apenas um teste, e ele é pulado sem um Redis disponível

@@ -2,11 +2,31 @@ import { IxcConnectionMapper, IxcContractMapper, IxcCustomerMapper, IxcInvoiceMa
 import { sanitizeTelemetry } from "./masking.ts";
 import { ReadonlyIxcGuard } from "./guard.ts";
 import { CircuitBreaker, SlidingWindowRateLimiter, TtlCache } from "./resilience.ts";
-import type { IxcCustomerSnapshot, IxcListResponse, IxcReadOperation } from "./types.ts";
+import type { IxcCustomerPage, IxcCustomerSnapshot, IxcListResponse, IxcReadOperation } from "./types.ts";
 
-const endpoints:Record<Exclude<IxcReadOperation,"testConnection"|"findCustomer"|"getCustomer">,string>={listContracts:"cliente_contrato",getPlan:"vd_contratos",listInvoices:"fn_areceber",listPayments:"fn_movim_finan",listServiceOrders:"su_oss_chamado",getConnection:"radusuarios",getCity:"cidade"};
+const endpoints:Record<Exclude<IxcReadOperation,"testConnection"|"findCustomer"|"getCustomer"|"listCustomers">,string>={listContracts:"cliente_contrato",getPlan:"vd_contratos",listInvoices:"fn_areceber",listPayments:"fn_movim_finan",listServiceOrders:"su_oss_chamado",getConnection:"radusuarios",getCity:"cidade"};
 export interface IxcTrace { event:string; correlationId:string; durationMs:number; status:"success"|"failed"|"cache-hit"|"blocked"; attributes:Record<string,unknown> }
-export interface IxcReadonlyOptions { baseUrl:string; token:string; allowedCustomerIds:string[]; timeoutMs?:number; retryLimit?:0|1; cacheTtlMs?:number; cityCacheTtlMs?:number; rateLimitPerMinute?:number; fetcher?:typeof fetch; trace?:(event:IxcTrace)=>void; now?:()=>number }
+export interface IxcReadonlyOptions { baseUrl:string; token:string; allowedCustomerIds:string[]; fullBase?:boolean; timeoutMs?:number; retryLimit?:0|1; cacheTtlMs?:number; cityCacheTtlMs?:number; rateLimitPerMinute?:number; fetcher?:typeof fetch; trace?:(event:IxcTrace)=>void; now?:()=>number }
+interface ReadOptions { oper?:string; page?:number; sortname?:string; sortorder?:"asc"|"desc" }
+/** Operações que não são de um cliente específico — não passam pela checagem de allowlist. */
+const GLOBAL_SCOPE_OPERATIONS = new Set<IxcReadOperation>(["testConnection","listCustomers"]);
+
+/**
+ * Traduz o que a pessoa digitou na busca para o filtro do IXC.
+ *
+ * Termo vazio lista a base (`id > 0`, que é como o IXC devolve tudo). Só dígitos
+ * com 11 ou 14 posições é CPF/CNPJ; dígitos curtos são id; o resto é nome.
+ * A busca por nome usa o operador `L` (LIKE) — confirmado por
+ * `scripts/ixc-probe-listing.mjs` antes de a base inteira ser liberada.
+ */
+export function customerQuery(term:string){
+  const value=term.trim();
+  if(!value)return{qtype:"cliente.id",query:"0",oper:">"};
+  const digits=value.replace(/\D/g,"");
+  if(digits.length===11||digits.length===14)return{qtype:"cliente.cnpj_cpf",query:digits,oper:"="};
+  if(/^\d+$/.test(value))return{qtype:"cliente.id",query:value,oper:"="};
+  return{qtype:"cliente.razao",query:value,oper:"L"};
+}
 
 export class IxcReadonlyError extends Error {
   readonly code:string;
@@ -39,8 +59,28 @@ export function basicCredential(token:string){
 export class IxcReadonlyProvider {
   readonly mode="staging-readonly" as const;
   private readonly guard:ReadonlyIxcGuard; private readonly fetcher:typeof fetch; private readonly timeoutMs:number; private readonly cache:TtlCache<IxcCustomerSnapshot>; private readonly cityCache:TtlCache<string>; private readonly breaker:CircuitBreaker; private readonly limiter:SlidingWindowRateLimiter; private readonly now:()=>number; private readonly options:IxcReadonlyOptions;private readonly durations=new Map<string,Record<string,number>>();
-  constructor(options:IxcReadonlyOptions){this.options=options;this.guard=new ReadonlyIxcGuard(options.allowedCustomerIds);this.fetcher=options.fetcher??fetch;this.timeoutMs=options.timeoutMs??3500;this.now=options.now??(()=>Date.now());this.cache=new TtlCache<IxcCustomerSnapshot>(options.cacheTtlMs??300000,this.now);this.cityCache=new TtlCache<string>(options.cityCacheTtlMs??86400000,this.now);this.breaker=new CircuitBreaker(3,30000,this.now);this.limiter=new SlidingWindowRateLimiter(options.rateLimitPerMinute??30,60000,this.now);}
+  constructor(options:IxcReadonlyOptions){this.options=options;this.guard=new ReadonlyIxcGuard(options.allowedCustomerIds,options.fullBase??false);this.fetcher=options.fetcher??fetch;this.timeoutMs=options.timeoutMs??3500;this.now=options.now??(()=>Date.now());this.cache=new TtlCache<IxcCustomerSnapshot>(options.cacheTtlMs??300000,this.now);this.cityCache=new TtlCache<string>(options.cityCacheTtlMs??86400000,this.now);this.breaker=new CircuitBreaker(3,30000,this.now);this.limiter=new SlidingWindowRateLimiter(options.rateLimitPerMinute??30,60000,this.now);}
   async testConnection(correlationId:string){await this.read("testConnection","cliente","id","0",correlationId,1);return true;}
+  /**
+   * Página da base de clientes. Existe para a lista de Clientes não precisar do
+   * snapshot completo (7 consultas por cadastro) só para montar uma linha da
+   * tabela — o snapshot continua sendo buscado quando alguém abre o cliente.
+   *
+   * Só funciona com a base liberada (`FEATURE_IXC_FULL_BASE`); com allowlist a
+   * lista continua sendo os cadastros autorizados.
+   */
+  async listCustomers(term:string,page:number,pageSize:number,correlationId:string):Promise<IxcCustomerPage>{
+    const filter=customerQuery(term);
+    const size=Math.min(Math.max(pageSize,1),100);
+    const {records,total}=await this.readPage("listCustomers","cliente",filter.qtype,filter.query,correlationId,size,"",{oper:filter.oper,page:Math.max(page,1),sortname:"cliente.id"});
+    const items=records.map(IxcCustomerMapper.map);
+    // A cidade vem como código numérico; resolve os códigos distintos da página
+    // (cache de 24h) em vez de uma consulta por linha.
+    const codes=[...new Set(records.map((raw)=>String(raw.cidade??"").trim()).filter(Boolean))];
+    const names=new Map<string,string>();
+    await Promise.all(codes.map(async(code)=>{const name=await this.resolveCityName(code,correlationId,"");if(name)names.set(code,name);}));
+    return{items:items.map((item,index)=>{const code=String(records[index].cidade??"").trim();const name=names.get(code);return name?{...item,city:name}:item;}),total,page:Math.max(page,1),pageSize:size};
+  }
   async getSnapshot(customerId:string,correlationId:string,force=false):Promise<IxcCustomerSnapshot>{
     this.guard.assertCustomer(customerId); const cached=!force?this.cache.get(customerId):undefined;if(cached){this.emit("ixc.snapshot",correlationId,0,"cache-hit",{customerId:"[MASKED]"});return{...cached,cache:"hit",metrics:{...cached.metrics,totalLatencyMs:0}};}this.durations.set(correlationId,{});
     const started=this.now();
@@ -87,11 +127,15 @@ export class IxcReadonlyProvider {
       const value=String(name).trim();this.cityCache.set(cityCode,value);return value;
     }catch{return undefined;}
   }
-  health(){return{service:"IXC",mode:this.mode,state:this.breaker.state()==="open"?"degraded":"healthy",detail:"Somente leitura; allowlist ativa",allowlist:this.guard.listMasked()};}
-  private async read(operation:IxcReadOperation,resource:string,qtype:string,query:string,correlationId:string,rp=20,authorizedCustomerId=query):Promise<Record<string,unknown>[]>{
-    this.guard.assertOperation(operation);if(operation!=="testConnection")this.guard.assertCustomer(authorizedCustomerId);if(!this.breaker.canRequest())throw new Error("IXC_CIRCUIT_OPEN");this.limiter.assert();
+  health(){return{service:"IXC",mode:this.mode,state:this.breaker.state()==="open"?"degraded":"healthy",detail:this.guard.scope()==="full-base"?"Somente leitura; base inteira liberada":"Somente leitura; allowlist ativa",scope:this.guard.scope(),allowlist:this.guard.listMasked()};}
+  private async read(operation:IxcReadOperation,resource:string,qtype:string,query:string,correlationId:string,rp=20,authorizedCustomerId=query,options?:ReadOptions):Promise<Record<string,unknown>[]>{
+    return (await this.readPage(operation,resource,qtype,query,correlationId,rp,authorizedCustomerId,options)).records;
+  }
+  private async readPage(operation:IxcReadOperation,resource:string,qtype:string,query:string,correlationId:string,rp=20,authorizedCustomerId=query,options?:ReadOptions):Promise<{records:Record<string,unknown>[];total:number}>{
+    this.guard.assertOperation(operation);if(!GLOBAL_SCOPE_OPERATIONS.has(operation))this.guard.assertCustomer(authorizedCustomerId);if(!this.breaker.canRequest())throw new Error("IXC_CIRCUIT_OPEN");this.limiter.assert();
     const url=`${this.options.baseUrl.replace(/\/$/,"")}/webservice/v1/${resource}`;let last:unknown;
-    const maxAttempts=1+(this.options.retryLimit??1);for(let attempt=0;attempt<maxAttempts;attempt+=1){const controller=new AbortController();const timer=setTimeout(()=>controller.abort(),this.timeoutMs);const started=this.now();try{const response=await this.fetcher(url,{method:"POST",headers:{Authorization:`Basic ${basicCredential(this.options.token)}`,"Content-Type":"application/json","ixcsoft":"listar","x-correlation-id":correlationId},body:JSON.stringify({qtype,query,oper:"=",page:"1",rp:String(rp),sortname:"id",sortorder:"asc"}),signal:controller.signal});clearTimeout(timer);if(!response.ok){const retry=response.status===429||response.status>=500;if(retry&&attempt+1<maxAttempts){last=new IxcReadonlyError(`IXC_HTTP_${response.status}`);continue}throw new IxcReadonlyError(`IXC_HTTP_${response.status}`)}const body=await response.json() as IxcListResponse;const contractError=apiError(body);if(contractError)throw contractError;const records=Array.isArray(body.registros)?body.registros.filter((item):item is Record<string,unknown>=>!!item&&typeof item==="object"):[];this.breaker.success();this.emit(`ixc.${operation}`,correlationId,this.now()-started,"success",{count:records.length});return records;}catch(error){clearTimeout(timer);last=classifyError(error);if(attempt+1<maxAttempts&&(last as IxcReadonlyError).code==="IXC_TIMEOUT")continue;break;}}
+    const payload={qtype,query,oper:options?.oper??"=",page:String(options?.page??1),rp:String(rp),sortname:options?.sortname??"id",sortorder:options?.sortorder??"asc"};
+    const maxAttempts=1+(this.options.retryLimit??1);for(let attempt=0;attempt<maxAttempts;attempt+=1){const controller=new AbortController();const timer=setTimeout(()=>controller.abort(),this.timeoutMs);const started=this.now();try{const response=await this.fetcher(url,{method:"POST",headers:{Authorization:`Basic ${basicCredential(this.options.token)}`,"Content-Type":"application/json","ixcsoft":"listar","x-correlation-id":correlationId},body:JSON.stringify(payload),signal:controller.signal});clearTimeout(timer);if(!response.ok){const retry=response.status===429||response.status>=500;if(retry&&attempt+1<maxAttempts){last=new IxcReadonlyError(`IXC_HTTP_${response.status}`);continue}throw new IxcReadonlyError(`IXC_HTTP_${response.status}`)}const body=await response.json() as IxcListResponse;const contractError=apiError(body);if(contractError)throw contractError;const records=Array.isArray(body.registros)?body.registros.filter((item):item is Record<string,unknown>=>!!item&&typeof item==="object"):[];const total=Number((body as {total?:unknown}).total??records.length);this.breaker.success();this.emit(`ixc.${operation}`,correlationId,this.now()-started,"success",{count:records.length});return{records,total:Number.isFinite(total)?total:records.length};}catch(error){clearTimeout(timer);last=classifyError(error);if(attempt+1<maxAttempts&&(last as IxcReadonlyError).code==="IXC_TIMEOUT")continue;break;}}
     const failure=classifyError(last);this.breaker.failure();this.emit(`ixc.${operation}`,correlationId,0,"failed",sanitizeTelemetry({error:failure.code}) as Record<string,unknown>);throw failure;
   }
   private emit(event:string,correlationId:string,durationMs:number,status:IxcTrace["status"],attributes:Record<string,unknown>){if(event.startsWith("ixc.")&&event!=="ixc.snapshot"){const key=event.slice(4);this.durations.set(correlationId,{...(this.durations.get(correlationId)??{}),[key]:durationMs});}this.options.trace?.({event,correlationId,durationMs,status,attributes:sanitizeTelemetry(attributes) as Record<string,unknown>});}

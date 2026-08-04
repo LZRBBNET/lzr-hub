@@ -21,8 +21,8 @@ type Loader<T> = () => Promise<T>;
 const delay = async <T>(value:T,ms=12) => { await new Promise((resolve)=>setTimeout(resolve,ms)); return value; };
 
 export class Customer360Service {
-  private readonly loaders?:Partial<Record<"contract"|"finance"|"network"|"support"|"intelligence",Loader<unknown>>>; private readonly ixc?:IxcReadonlyProvider; private readonly allowedIds:string[];
-  constructor(loaders?: Partial<Record<"contract"|"finance"|"network"|"support"|"intelligence",Loader<unknown>>>,ixc?:IxcReadonlyProvider,allowedIds:string[]=[]){this.loaders=loaders;this.ixc=ixc;this.allowedIds=allowedIds;}
+  private readonly loaders?:Partial<Record<"contract"|"finance"|"network"|"support"|"intelligence",Loader<unknown>>>; private readonly ixc?:IxcReadonlyProvider; private readonly allowedIds:string[]; private readonly fullBase:boolean;
+  constructor(loaders?: Partial<Record<"contract"|"finance"|"network"|"support"|"intelligence",Loader<unknown>>>,ixc?:IxcReadonlyProvider,allowedIds:string[]=[],fullBase=false){this.loaders=loaders;this.ixc=ixc;this.allowedIds=allowedIds;this.fullBase=fullBase;}
 
   async list(query="",risk="all",page=1,pageSize=10) {
     if(this.ixc)return this.listIxc(query,page,pageSize);
@@ -39,6 +39,12 @@ export class Customer360Service {
    * nunca com nome ou plano inventado.
    */
   private async listIxc(query:string,page:number,pageSize:number){
+    // Base inteira liberada: uma consulta paginada resolve a lista. Com allowlist
+    // continua sendo o snapshot de cada cadastro autorizado (são no máximo 10).
+    if(this.fullBase){
+      const result=await this.ixc!.listCustomers(query,page,pageSize,crypto.randomUUID());
+      return{items:result.items.map((customer):CustomerSummary=>({id:customer.id,name:customer.name,maskedDocument:customer.document,city:customer.city,neighborhood:customer.neighborhood,plan:"Abrir para consultar",status:customer.status==="S"?"Ativo":customer.status==="N"?"Inativo":customer.status,health:0,churnRisk:"low",priority:"—",tags:["IXC somente leitura"]})),total:result.total,page:result.page,pageSize:result.pageSize,mode:"staging-readonly" as const,scope:"full-base" as const};
+    }
     const settled=await Promise.allSettled(this.allowedIds.map((id)=>this.ixc!.getSnapshot(id,crypto.randomUUID())));
     const items=settled.map((result,index):CustomerSummary=>{
       const id=this.allowedIds[index];
@@ -48,7 +54,7 @@ export class Customer360Service {
     });
     const term=query.trim().toLocaleLowerCase("pt-BR");
     const filtered=term?items.filter((item)=>[item.id,item.name,item.maskedDocument,item.city,item.neighborhood].some((value)=>value.toLocaleLowerCase("pt-BR").includes(term))):items;
-    return{items:filtered.slice((page-1)*pageSize,page*pageSize),total:filtered.length,page,pageSize,mode:"staging-readonly" as const};
+    return{items:filtered.slice((page-1)*pageSize,page*pageSize),total:filtered.length,page,pageSize,mode:"staging-readonly" as const,scope:"allowlist" as const};
   }
 
   async get(customerId:string):Promise<Customer360|null> {

@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { ReadonlyIxcGuard, IxcCustomerNotAllowedError, IxcWriteBlockedError } from "../lib/integrations/ixc/guard.ts";
+import { customerQuery } from "../lib/integrations/ixc/readonly-provider.ts";
 import { IxcCustomerMapper, IxcContractMapper } from "../lib/integrations/ixc/mappers.ts";
 import { sanitizeTelemetry } from "../lib/integrations/ixc/masking.ts";
 import { CircuitBreaker, TtlCache } from "../lib/integrations/ixc/resilience.ts";
@@ -193,4 +194,38 @@ test("smoke preserva somente o código seguro da falha",async()=>{
 test("contrato IXC trata timeout",async()=>{
   const provider=new IxcReadonlyProvider({baseUrl:"https://ixc.invalid",token:"secret",allowedCustomerIds:[allowedId],fetcher:async()=>{throw new DOMException("timeout","AbortError")}});
   await assert.rejects(()=>provider.testConnection("corr-timeout"));
+});
+
+test("base inteira só abre com decisão explícita e com login exigido",()=>{
+  const base={LZR_ENV:"staging",IXC_MODE:"staging-readonly",IXC_BASE_URL:"https://ixc.invalid",IXC_API_TOKEN:"secret",IXC_WRITE_ENABLED:"false"};
+
+  // Sem a flag, nada muda: allowlist continua obrigatória.
+  assert.throws(()=>loadRuntimeConfig({...base,IXC_ALLOWED_CUSTOMER_IDS:""}),/allowlist/);
+  assert.equal(loadRuntimeConfig({...base,IXC_ALLOWED_CUSTOMER_IDS:allowedId}).ixcFullBase,false,"a flag nasce desligada");
+
+  // Ler a base inteira sem saber quem lê exporia todo cliente da BBNET.
+  assert.throws(()=>loadRuntimeConfig({...base,IXC_ALLOWED_CUSTOMER_IDS:"",FEATURE_IXC_FULL_BASE:"true"}),/FEATURE_AUTH/);
+
+  const full=loadRuntimeConfig({...base,IXC_ALLOWED_CUSTOMER_IDS:"",FEATURE_IXC_FULL_BASE:"true",FEATURE_AUTH:"true"});
+  assert.equal(full.ixcFullBase,true);
+  assert.deepEqual(full.ixcAllowlist,[],"sem allowlist obrigatória quando a base está liberada");
+});
+
+test("guard com base liberada aceita qualquer cadastro, mas continua bloqueando escrita",()=>{
+  const guard=new ReadonlyIxcGuard([],true);
+  assert.doesNotThrow(()=>guard.assertCustomer("99999"));
+  assert.equal(guard.isAllowed("qualquer-id"),true);
+  assert.equal(guard.scope(),"full-base");
+  assert.deepEqual(guard.listMasked(),[],"não faz sentido listar allowlist quando não há allowlist");
+  assert.throws(()=>guard.assertOperation("updateCustomer"),IxcWriteBlockedError,"leitura liberada não é escrita liberada");
+  assert.throws(()=>guard.assertOperation("desbloquear"),IxcWriteBlockedError);
+});
+
+test("busca traduz o que foi digitado para o filtro certo do IXC",()=>{
+  assert.deepEqual(customerQuery(""),{qtype:"cliente.id",query:"0",oper:">"},"vazio lista a base");
+  assert.deepEqual(customerQuery("  "),{qtype:"cliente.id",query:"0",oper:">"});
+  assert.deepEqual(customerQuery("21857"),{qtype:"cliente.id",query:"21857",oper:"="});
+  assert.deepEqual(customerQuery("123.456.789-01"),{qtype:"cliente.cnpj_cpf",query:"12345678901",oper:"="},"CPF vai sem pontuação");
+  assert.deepEqual(customerQuery("12.345.678/0001-95"),{qtype:"cliente.cnpj_cpf",query:"12345678000195",oper:"="});
+  assert.deepEqual(customerQuery("Wendel"),{qtype:"cliente.razao",query:"Wendel",oper:"L"});
 });

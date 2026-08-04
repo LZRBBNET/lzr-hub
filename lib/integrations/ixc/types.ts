@@ -2,6 +2,7 @@ export type IxcReadOperation =
   | "testConnection"
   | "findCustomer"
   | "getCustomer"
+  | "listCustomers"
   | "listContracts"
   | "getPlan"
   | "listInvoices"
@@ -17,5 +18,7 @@ export interface IxcInvoiceDto { id:string; customerId:string; contractId?:strin
 export interface IxcPaymentDto { id:string; customerId:string; invoiceId?:string; paidAt?:string; value?:number; method:string }
 export interface IxcServiceOrderDto { id:string; customerId:string; status:string; subject:string; openedAt?:string; closedAt?:string }
 export interface IxcConnectionDto { id:string; customerId:string; login:string; status:string; lastAccessAt?:string; address?:string; equipmentDescriptor?:string; connectionType?:string }
+/** Página da listagem de clientes. `total` é o tamanho do resultado no IXC, não o da página. */
+export interface IxcCustomerPage { items:IxcCustomerDto[]; total:number; page:number; pageSize:number }
 export interface IxcCustomerSnapshot { customer:IxcCustomerDto; contracts:IxcContractDto[]; plan:IxcPlanDto|null; invoices:IxcInvoiceDto[]; payments:IxcPaymentDto[]; serviceOrders:IxcServiceOrderDto[]; connection:IxcConnectionDto|null; partialSources:string[]; metrics:{totalLatencyMs:number;blockLatencies:Record<string,number>}; fetchedAt:string; mode:"staging-readonly"; cache:"hit"|"miss" }
 export interface IxcListResponse { registros?:unknown[]; total?:number|string; page?:number|string; [key:string]:unknown }
