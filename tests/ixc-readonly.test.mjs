@@ -11,14 +11,14 @@ import { IxcReadonlySmokeRunner, MemorySmokeRepository } from "../lib/platform/i
 
 const allowedId="IXC-AUTH-001";
 const fixtures={
-  cliente:{id:allowedId,razao:"Cliente Interno Um",cnpj_cpf:"DOC-01",cidade:"3502",bairro:"Centro",ativo:"S"},
+  cliente:{id:allowedId,razao:"Cliente Interno Um",cnpj_cpf:"DOC-01",telefone_celular:"(79) 90000-0001",email:"cliente.interno@exemplo.invalid",cidade:"3502",bairro:"Centro",endereco:"Rua Homologação",numero:"10",complemento:"Sala 2",cep:"49500-000",data_cadastro:"2020-01-15",ativo:"S"},
   cidade:{id:"3502",nome:"Itabaiana"},
   cliente_contrato:{id:"CTR-001",id_cliente:allowedId,id_vd_contrato:"PLAN-600",contrato:"600 Mega",status:"A",dia_vencimento:"10",valor_plano:"89,90"},
   vd_contratos:{id:"PLAN-600",nome:"600 Mega Homologado",velocidade:"600M",valor:"89,90"},
   fn_areceber:{id:"INV-001",id_cliente:allowedId,id_contrato:"CTR-001",status:"A",data_vencimento:"2026-07-20",valor:"89.90"},
-  fn_movim_finan:{id:"PAY-001",id_cliente:allowedId,id_receber:"INV-000",data:"2026-06-20",valor:"89.90",tipo_recebimento:"PIX"},
+  fn_movim_finan:{id:"PAY-001",id_receber:"INV-001",data:"2026-06-20",valor:"89.90",tipo_recebimento:"PIX"},
   su_oss_chamado:{id:"OS-001",id_cliente:allowedId,status:"A",assunto:"Suporte interno",data_abertura:"2026-07-10"},
-  radusuarios:{id:"RAD-001",id_cliente:allowedId,login:"interno.001",online:"S",endereco:"não registrar"},
+  radusuarios:{id:"RAD-001",id_cliente:allowedId,login:"interno.001",online:"S",endereco:"Rua Homologação",numero:"10",bairro:"Centro",conexao:"101-2048-OLT-HOMOLOG-01",tipo_conexao:"Ethernet"},
 };
 
 test("ReadonlyIxcGuard limita allowlist e bloqueia toda escrita",()=>{
@@ -29,12 +29,28 @@ test("ReadonlyIxcGuard limita allowlist e bloqueia toda escrita",()=>{
   assert.throws(()=>new ReadonlyIxcGuard(Array.from({length:11},(_,i)=>`ID-${i}`)));
 });
 
-test("mappers mascaram PII, aceitam campo inesperado e rejeitam contrato inválido",()=>{
-  const customer=IxcCustomerMapper.map({...fixtures.cliente,telefone:"PHONE-SYNTHETIC",campo_novo:"ignorado"});
-  assert.equal(customer.nameMasked,"Cliente I. U.");
-  assert.equal(customer.documentMasked,"***.***.***-01");
-  assert.equal("telefone" in customer,false);
+test("mapper de cliente devolve dado completo (sem mascarar) e aceita campo inesperado",()=>{
+  const customer=IxcCustomerMapper.map({...fixtures.cliente,campo_novo:"ignorado"});
+  // Decisão: atendente autenticado vê dado completo -- a proteção é sessão + RBAC
+  // (login obrigatório), não mais texto truncado. Ver docs do Customer 360.
+  assert.equal(customer.name,"Cliente Interno Um");
+  assert.equal(customer.document,"DOC-01");
+  assert.equal(customer.phone,"(79) 90000-0001");
+  assert.equal(customer.email,"cliente.interno@exemplo.invalid");
+  assert.equal(customer.neighborhood,"Centro");
+  assert.equal(customer.address,"Rua Homologação, 10 - Sala 2 - Bairro Centro - CEP 49500-000");
+  assert.equal(customer.customerSince,"2020-01-15");
+  assert.equal("campo_novo" in customer,false);
   assert.throws(()=>IxcContractMapper.map({id:"sem-cliente"}));
+});
+
+test("mapper de cliente não inventa dado quando o campo vem vazio",()=>{
+  const customer=IxcCustomerMapper.map({id:allowedId,razao:"",cnpj_cpf:""});
+  assert.equal(customer.name,"não informado");
+  assert.equal(customer.document,"não informado");
+  assert.equal(customer.phone,"não informado");
+  assert.equal(customer.email,"não informado");
+  assert.equal(customer.address,"não informado");
 });
 
 test("telemetria remove PII e segredos",()=>{
@@ -66,9 +82,43 @@ test("provider monta Customer 360 somente para cadastro autorizado e usa cache",
   const fetcher=async(url)=>{calls+=1;const resource=String(url).split("/").at(-1);return Response.json({registros:fixtures[resource]?[fixtures[resource]]:[]});};
   const provider=new IxcReadonlyProvider({baseUrl:"https://ixc.invalid",token:"secret",allowedCustomerIds:[allowedId],fetcher,trace:(trace)=>traces.push(trace)});
   const first=await provider.getSnapshot(allowedId,"corr-001");
-  assert.equal(first.customer.documentMasked,"***.***.***-01");assert.equal(first.customer.city,"Itabaiana");assert.equal(first.contracts.length,1);assert.equal(first.plan.name,"600 Mega Homologado");assert.equal(first.invoices.length,1);assert.equal(first.serviceOrders.length,1);assert.equal(first.connection.addressMasked,"[ENDEREÇO MASCARADO]");assert.equal(typeof first.metrics.blockLatencies.getPlan,"number");
+  assert.equal(first.customer.document,"DOC-01");assert.equal(first.customer.city,"Itabaiana");assert.equal(first.contracts.length,1);assert.equal(first.plan.name,"600 Mega Homologado");assert.equal(first.invoices.length,1);assert.equal(first.serviceOrders.length,1);assert.equal(first.connection.login,"interno.001");assert.equal(first.connection.equipmentDescriptor,"101-2048-OLT-HOMOLOG-01");assert.equal(typeof first.metrics.blockLatencies.getPlan,"number");
+  // Pagamento é buscado por fatura (id_receber), não por id_cliente direto -- é a
+  // correção do bug em que fn_movim_finan sempre devolvia erro do IXC.
+  assert.equal(first.payments.length,1);assert.equal(first.payments[0].invoiceId,"INV-001");
   const count=calls;const second=await provider.getSnapshot(allowedId,"corr-002");assert.equal(second.cache,"hit");assert.equal(second.metrics.totalLatencyMs,0);assert.equal(calls,count);assert.equal(traces.some((item)=>item.status==="cache-hit"),true);
   await assert.rejects(()=>provider.getSnapshot("NAO-AUTORIZADO","corr-003"),IxcCustomerNotAllowedError);
+});
+
+test("pagamentos são filtrados por fatura (id_receber), nunca por id_cliente",async()=>{
+  // fn_movim_finan não tem coluna id_cliente no IXC real -- filtrar por ela sempre
+  // devolvia uma página de erro (bug encontrado testando contra o IXC de verdade).
+  const paymentQueries=[];
+  const fetcher=async(url,init)=>{
+    const resource=String(url).split("/").at(-1);
+    if(resource==="fn_movim_finan"&&init?.body)paymentQueries.push(JSON.parse(init.body));
+    return Response.json({registros:fixtures[resource]?[fixtures[resource]]:[]});
+  };
+  const provider=new IxcReadonlyProvider({baseUrl:"https://ixc.invalid",token:"secret",allowedCustomerIds:[allowedId],fetcher});
+  await provider.getSnapshot(allowedId,"corr-payments-field");
+  assert.equal(paymentQueries.length,1);
+  assert.equal(paymentQueries[0].qtype,"id_receber");
+  assert.equal(paymentQueries[0].query,"INV-001");
+});
+
+test("sem fatura, não dispara nenhuma chamada de pagamento",async()=>{
+  let paymentCalls=0;
+  const fetcher=async(url)=>{
+    const resource=String(url).split("/").at(-1);
+    if(resource==="fn_movim_finan")paymentCalls+=1;
+    if(resource==="fn_areceber")return Response.json({registros:[]});
+    return Response.json({registros:fixtures[resource]?[fixtures[resource]]:[]});
+  };
+  const provider=new IxcReadonlyProvider({baseUrl:"https://ixc.invalid",token:"secret",allowedCustomerIds:[allowedId],fetcher});
+  const snapshot=await provider.getSnapshot(allowedId,"corr-no-invoices");
+  assert.equal(snapshot.invoices.length,0);
+  assert.equal(snapshot.payments.length,0);
+  assert.equal(paymentCalls,0);
 });
 
 test("falha parcial preserva Customer 360 e identifica a fonte",async()=>{

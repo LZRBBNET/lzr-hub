@@ -49,17 +49,30 @@ export class IxcReadonlyProvider {
       const settled=await Promise.allSettled([
         this.read("listContracts",endpoints.listContracts,"id_cliente",customerId,correlationId),
         this.read("listInvoices",endpoints.listInvoices,"id_cliente",customerId,correlationId),
-        this.read("listPayments",endpoints.listPayments,"id_cliente",customerId,correlationId),
         this.read("listServiceOrders",endpoints.listServiceOrders,"id_cliente",customerId,correlationId),
         this.read("getConnection",endpoints.getConnection,"id_cliente",customerId,correlationId),
       ]);
       const rows=(index:number)=>settled[index].status==="fulfilled"?settled[index].value:[];
-      const sourceNames=["contracts","invoices","payments","serviceOrders","connection"];const contracts=rows(0).map(IxcContractMapper.map);let plan=null;let planFailed=false;
+      const sourceNames=["contracts","invoices","serviceOrders","connection"];const contracts=rows(0).map(IxcContractMapper.map);let plan=null;let planFailed=false;
       if(contracts[0]?.planId){try{const planRows=await this.read("getPlan",endpoints.getPlan,"id",contracts[0].planId,correlationId,1,customerId);plan=planRows[0]?IxcPlanMapper.map(planRows[0]):null;if(plan&&contracts[0])contracts[0]={...contracts[0],planName:plan.name};}catch{planFailed=true;}}
+      // `fn_movim_finan` (pagamentos) não tem coluna id_cliente -- filtrar por ela sempre
+      // devolvia página de erro do próprio IXC, nunca um problema de rede. O vínculo real é
+      // por fatura (id_receber), então busca-se por fatura já sabidamente do cliente
+      // (confirmada pela consulta de faturas acima). Limitado às 10 faturas mais recentes
+      // para não disparar uma fatura de chamadas por atendimento.
+      const invoiceRows=rows(1);let payments:ReturnType<typeof IxcPaymentMapper.map>[]=[];let paymentsFailed=false;
+      if(invoiceRows.length>0){
+        const paymentSettled=await Promise.allSettled(invoiceRows.slice(0,10).map((invoice)=>{
+          const invoiceId=String((invoice as Record<string,unknown>).id??"");
+          return this.read("listPayments",endpoints.listPayments,"id_receber",invoiceId,correlationId,10,customerId);
+        }));
+        payments=paymentSettled.flatMap((item)=>item.status==="fulfilled"?item.value.map((row)=>IxcPaymentMapper.map(row,customerId)):[]);
+        paymentsFailed=paymentSettled.some((item)=>item.status==="rejected");
+      }
       let customer=IxcCustomerMapper.map(customerRows[0]);
       const cityCode=String(customerRows[0].cidade??"").trim();
       if(cityCode){const cityName=await this.resolveCityName(cityCode,correlationId,customerId);if(cityName)customer={...customer,city:cityName};}
-      const snapshot:IxcCustomerSnapshot={customer,contracts,plan,invoices:rows(1).map(IxcInvoiceMapper.map),payments:rows(2).map(IxcPaymentMapper.map),serviceOrders:rows(3).map(IxcServiceOrderMapper.map),connection:rows(4)[0]?IxcConnectionMapper.map(rows(4)[0]):null,partialSources:[...settled.flatMap((item,index)=>item.status==="rejected"?[sourceNames[index]]:[]),...(planFailed?["plan"]:[])],metrics:{totalLatencyMs:this.now()-started,blockLatencies:{...(this.durations.get(correlationId)??{})}},fetchedAt:new Date(this.now()).toISOString(),mode:"staging-readonly",cache:"miss"};
+      const snapshot:IxcCustomerSnapshot={customer,contracts,plan,invoices:invoiceRows.map(IxcInvoiceMapper.map),payments,serviceOrders:rows(2).map(IxcServiceOrderMapper.map),connection:rows(3)[0]?IxcConnectionMapper.map(rows(3)[0]):null,partialSources:[...settled.flatMap((item,index)=>item.status==="rejected"?[sourceNames[index]]:[]),...(planFailed?["plan"]:[]),...(paymentsFailed?["payments"]:[])],metrics:{totalLatencyMs:this.now()-started,blockLatencies:{...(this.durations.get(correlationId)??{})}},fetchedAt:new Date(this.now()).toISOString(),mode:"staging-readonly",cache:"miss"};
       this.cache.set(customerId,snapshot);this.emit("ixc.snapshot",correlationId,this.now()-started,"success",{partial:settled.some((item)=>item.status==="rejected")});return snapshot;
     }catch(error){this.emit("ixc.snapshot",correlationId,this.now()-started,"failed",{error:error instanceof Error?error.name:"unknown"});throw error;}
   }
