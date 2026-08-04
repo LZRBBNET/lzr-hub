@@ -6,6 +6,7 @@ import { queueNames, type QueueAction, type QueueSnapshot } from "@/lib/platform
 import { permissions, rolePermissions, roles, type Role } from "@/lib/platform/rbac";
 
 type HealthPayload = { status: "ok" | "degraded"; environment: string; runtimeMode: string; ixc: "disabled"; externalWrites: false };
+type ChannelPayload = { enabled: boolean; configured: boolean };
 
 export function AdminModule({ view }: { view: "integracoes" | "equipes" | "usuarios" | "auditoria" | "configuracoes" }) {
   if (view === "integracoes") return <Integrations />;
@@ -17,12 +18,18 @@ export function AdminModule({ view }: { view: "integracoes" | "equipes" | "usuar
 
 function Integrations() {
   const [health, setHealth] = useState<HealthPayload | null>(null);
+  const [channel, setChannel] = useState<ChannelPayload | null>(null);
   const [refresh, setRefresh] = useState(0);
   useEffect(() => { fetch("/api/health").then((response) => response.json()).then(setHealth).catch(() => setHealth(null)); }, [refresh]);
+  useEffect(() => { fetch("/api/channels/n8n").then((response) => response.json()).then(setChannel).catch(() => setChannel(null)); }, [refresh]);
+  const whatsappStatus = channel?.enabled ? (channel.configured ? "ok" : "degraded") : "disabled";
+  const whatsappDetail = channel?.enabled
+    ? (channel.configured ? "Canal ativo, conectado ao pipeline de IA" : "Ativado mas sem N8N_CHANNEL_SECRET configurado")
+    : "Nenhuma mensagem externa";
   const services = [
     ["Pipeline LZR", health?.status ?? "degraded", "mock", "Respostas demonstrativas com evidência e transbordo"],
     ["IXC", "disabled", "disabled", "Nenhuma consulta ou escrita real"],
-    ["WhatsApp", "disabled", "mock", "Nenhuma mensagem externa"],
+    ["WhatsApp", whatsappStatus, channel?.enabled ? "live" : "mock", whatsappDetail],
     ["Cobrança e filas", "disabled", "mock", "Jobs e pagamentos apenas demonstrativos"],
     ["Observabilidade externa", "disabled", "local", "Nenhum rastro enviado a terceiros"],
     ["Banco D1", "demo", "staging", "Dados exclusivamente sintéticos"],

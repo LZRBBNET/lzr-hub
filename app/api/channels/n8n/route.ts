@@ -4,6 +4,13 @@ import { getDb } from "@/db";
 import { D1ChannelRepository, MAX_MESSAGE_LENGTH, processChannelMessage } from "@/lib/platform/n8n-channel-service";
 import { DbSupportMetricsRepository } from "@/lib/platform/support-metrics";
 
+/** Estado do canal, sem nada sensível — usado pelo painel de integrações para não mentir sobre o status real. */
+export async function GET() {
+  const enabled = process.env.FEATURE_N8N_CHANNEL === "true";
+  const configured = enabled && !!process.env.N8N_CHANNEL_SECRET;
+  return NextResponse.json({ enabled, configured });
+}
+
 export async function POST(request: Request) {
   if (process.env.FEATURE_N8N_CHANNEL !== "true") {
     return NextResponse.json({ error: "Canal n8n desativado" }, { status: 503 });
