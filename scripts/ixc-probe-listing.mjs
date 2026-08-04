@@ -35,7 +35,17 @@ if (!baseUrl || !token || baseUrl.includes("localhost")) {
   console.error("Copie os dois do painel do Railway do lzr-hub para o .env.local e rode de novo.");
   process.exit(1);
 }
-console.log(`Alvo: ${new URL(baseUrl).host}\n`);
+
+// Um endereço mal colado (ex.: "http:https://...") só apareceria como
+// ENOTFOUND lá na frente, uma vez por consulta. Melhor falhar aqui, dizendo o quê.
+let target;
+try { target = new URL(baseUrl); } catch { target = undefined; }
+if (!target || !/^https?:$/.test(target.protocol) || !target.hostname.includes(".")) {
+  console.error(`IXC_BASE_URL não é um endereço válido: ${JSON.stringify(baseUrl)}`);
+  console.error('Esperado algo como "https://ixc-bridge.exemplo.com.br", sem prefixo sobrando.');
+  process.exit(1);
+}
+console.log(`Alvo: ${target.origin}\n`);
 
 const fetcher = createIxcFetcher(resolveIxcHttpMethod(process.env.IXC_HTTP_METHOD));
 

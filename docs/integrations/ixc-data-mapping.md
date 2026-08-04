@@ -34,6 +34,23 @@ Até aqui, nome, CPF, bairro, login PPPoE e endereço saíam mascarados do Custo
 
 Todos os campos inesperados são ignorados. IDs ausentes em entidades obrigatórias causam erro de contrato e falha parcial, nunca coerção silenciosa.
 
+## A base inteira é acessível (verificado em 2026-08-04)
+
+A doc afirmava que "o ERP não expõe busca aberta da base". **Estava errado** — nunca tinha sido testado. `scripts/ixc-probe-listing.mjs` perguntou ao IXC de homologação e confirmou:
+
+| Consulta | Resultado |
+|---|---|
+| `cliente.id > 0` | `total: 27538` |
+| `cliente.ativo = S` | `total: 14212` |
+| `rp: 100` | devolveu 100 registros — paginação respeitada |
+| `cliente.razao LIKE 'MARIA'` | `total: 2886` |
+| `cliente.razao = 'MARIA'` | `total: 0` — por isso a busca por nome usa `L`, não `=` |
+| `cliente_contrato.status = A` | `total: 14955` |
+
+A limitação a um cadastro era a **allowlist de homologação**, decisão nossa. Liberar depende de `FEATURE_IXC_FULL_BASE=true`, que por sua vez exige `FEATURE_AUTH=true` (o carregamento da configuração recusa a combinação sem login).
+
+⚠️ Antes de ligar, considere o `IXC_RATE_LIMIT_PER_MINUTE` (padrão 30). Uma tela de lista paginada consome 1 chamada por página mais as consultas de cidade ainda não cacheadas.
+
 ## O que o IXC genuinamente não disponibiliza (não inventamos valor no lugar)
 
 Testado com um cliente real: `radusuarios` (conexão) **não tem** modelo de ONU, potência óptica (dBm) nem contagem de dispositivos conectados. O Customer 360 mostra "Não disponibilizado pelo IXC" nesses campos -- frase deliberadamente diferente de "não consultado", que sugeriria que só não perguntamos.
