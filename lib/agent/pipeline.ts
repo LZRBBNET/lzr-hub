@@ -46,8 +46,13 @@ function previousIntent(history: ChatMessage[]) {
   return previousCustomer ? analyzeIntent(previousCustomer.content) : null;
 }
 
-function resolveIntent(message: string, history: ChatMessage[]) {
-  let analysis = analyzeIntent(message);
+function resolveIntent(message: string, history: ChatMessage[], override?: AgentContext["intentOverride"]) {
+  // O override substitui só a leitura da mensagem isolada. O refinamento por
+  // histórico ("sim", "não funcionou", "cadê o PIX") continua valendo: ele lê a
+  // conversa, que é justamente o que o classificador de uma mensagem não vê.
+  let analysis = override
+    ? { ...analyzeIntent(message), intent: override.intent, confidence: override.confidence }
+    : analyzeIntent(message);
   const reference = /^(sim|nao|não|cad[eê]|onde|nao funcionou|não funcionou|ja reiniciei|já reiniciei|essa|esse|aquela|aquele)\b/i.test(message.trim());
   if (reference && (analysis.intent === "general_information" || /^(sim|nao|não|nao funcionou|não funcionou|ja reiniciei|já reiniciei)\b/i.test(message.trim()))) {
     const inferred = previousIntent(history);
@@ -185,7 +190,7 @@ export function runAgentPipeline(
   context: AgentContext = {},
 ): AgentResult {
   const channel = context.channel ?? "web";
-  const analysis = resolveIntent(message, history);
+  const analysis = resolveIntent(message, history, context.intentOverride);
   const tools = executeAgentTools(analysis.intent, message, context);
   const recentAgent = history.filter((item) => item.role === "agent").map((item) => item.content);
   const repeatedWithoutResolution = customerRepeated(message, history) && recentAgent.length > 0;

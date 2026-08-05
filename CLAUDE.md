@@ -71,6 +71,7 @@ Flags relevantes:
 | `FEATURE_QUEUES` | Filas reais (Redis/BullMQ) | desligada |
 | `FEATURE_IXC_WRITE` | Escrita no ERP | desligada |
 | `FEATURE_IXC_FULL_BASE` | Leitura da **base inteira** do IXC, não só da allowlist | desligada |
+| `FEATURE_LLM_INTENT` | Classificação de intenção por modelo de linguagem (Groq) | desligada |
 | `IXC_MODE` | `disabled` / `staging-readonly` | `disabled` |
 
 ⚠️ **`FEATURE_AUTH=true` é obrigatório antes de qualquer dado real** (milestone M4: escrita no IXC, cobrança, venda). Enquanto desligada, nenhuma rota sabe quem está agindo.
@@ -84,6 +85,20 @@ Esse é o estado atual em produção e é deliberado: o canal recebe a mensagem 
 ### Antes de ligar qualquer flag
 
 Pergunte: *isso passa a produzir efeito no mundo real?* Se sim (mensagem enviada, cobrança gerada, cadastro alterado), a ação precisa estar protegida por login, auditada e idempotente antes de ser ligada.
+
+## A "IA" e o classificador de intenção
+
+⚠️ **Leia isto antes de mexer no agente.** O pipeline em `lib/agent/` **não usa modelo de linguagem** para responder: `analyzeIntent` é uma cadeia de expressões regulares e as respostas são textos fixos por intenção. Isso é deliberado no que toca à resposta — ela carrega garantias que o projeto não quer perder (nunca afirmar ação não executada, exigir evidência, transbordar quando não sabe).
+
+O problema medido está na **classificação**: em 13 conversas reais, 11 transbordaram por `low_intent_confidence`. A cadeia é `analyzeIntent` não casa nenhuma regra → confiança 0,55 → `handoff.ts` corta em 0,6 → transborda. Cliente real não escreve como a regra espera.
+
+`FEATURE_LLM_INTENT` liga um classificador com modelo de linguagem (Groq, camada gratuita) que escolhe **um item de uma lista fechada** de intenções. O modelo nunca escreve texto para o cliente — a saída é um enum validado contra `INTENTS`, e resposta fora da lista é descartada.
+
+**Groq foi escolhido em vez do Gemini por privacidade**: na camada gratuita do Gemini o Google usa o conteúdo enviado para treinar modelos e revisor humano pode ver. A Groq não treina com dado de cliente em nenhuma camada. Ainda assim, a mensagem sai **sanitizada** (`sanitizeHandoffText` remove e-mail, CPF e telefone) — o provedor não precisa disso para entender a intenção.
+
+Fail-closed em três camadas: sem `GROQ_API_KEY` não há chamada; erro ou demora acima de 4s cai na regex; resposta inválida é descartada. Em nenhum caso o atendimento para.
+
+⚠️ `intentOverride` é **contexto operacional**: a rota do agente o recusa com 403 se vier do cliente, junto com `channel` e `simulationProfile`. Quem escolhe a própria intenção contorna a decisão de transbordo.
 
 ## A ponte com o IXC (ERP)
 

@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { and, asc, eq } from "drizzle-orm";
 import { auditEvents, channelIdempotencyKeys, channelMessages } from "../../db/schema.ts";
 import { runAgentPipeline } from "../agent/pipeline.ts";
+import { classifyIntent, llmConfigFromEnv } from "../agent/llm-classifier.ts";
 import type { ChatMessage } from "../agent/types.ts";
 import { traceAgentResult } from "../observability/trace-agent-result.ts";
 import {
@@ -93,7 +94,13 @@ export async function processChannelMessage(
     return rated;
   }
 
-  const result = runAgentPipeline(input.text, history, { channel: "whatsapp" });
+  // Classifica antes de rodar o pipeline: sem chave configurada isto cai na
+  // regex e o comportamento é idêntico ao de antes.
+  const classified = await classifyIntent(input.text, llmConfigFromEnv());
+  const result = runAgentPipeline(input.text, history, {
+    channel: "whatsapp",
+    intentOverride: { intent: classified.intent, confidence: classified.confidence },
+  });
   await traceAgentResult(result, { channel: CHANNEL_NAME, correlationId: input.correlationId });
 
   // Só pede nota quando a resposta é de fato entregue — não dá para avaliar

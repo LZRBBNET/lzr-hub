@@ -71,6 +71,13 @@ export type AgentSimulationProfile =
 export interface AgentContext {
   simulationProfile?: AgentSimulationProfile;
   channel?: AgentChannel;
+  /**
+   * Intenção já resolvida fora do pipeline (pelo classificador com modelo de
+   * linguagem). Fica no contexto operacional de propósito: como `channel` e
+   * `simulationProfile`, é campo que a rota **recusa** se vier do cliente —
+   * quem escolhe a própria intenção contorna a decisão de transbordo.
+   */
+  intentOverride?: { intent: Intent; confidence: number };
 }
 
 export type AgentChannel =
