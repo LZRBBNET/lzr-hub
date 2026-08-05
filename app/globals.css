@@ -164,7 +164,8 @@ button { cursor: pointer; }
 .filter-bar { display:flex; gap:10px; margin-bottom:14px; }
 .filter-bar input,.filter-bar select { border:1px solid var(--line); background: var(--panel); border-radius:10px; padding:11px 13px; color:var(--ink); outline:none; }
 .filter-bar input { flex:1; }
-.state-card { background: var(--panel); border:1px solid var(--line); border-radius:14px; padding:40px; text-align:center; color:var(--muted); }
+/* 40px de respiro numa nota informativa empurrava o dado real para baixo da dobra. */
+.state-card { background: var(--panel); border:1px solid var(--line); border-radius:14px; padding:18px 22px; text-align:center; color:var(--muted); font-size:13px; line-height:1.6; }
 .state-card.error,.partial-alert { color:var(--bad); background:var(--bad-bg); border-color:var(--bad-line); }
 .customer360-grid { display:grid; grid-template-columns:minmax(600px,1fr) 390px; gap:14px; }
 .data-card,.detail-card { background: var(--panel); border:1px solid var(--line); border-radius:14px; overflow:hidden; }
@@ -406,3 +407,5 @@ input::placeholder, textarea::placeholder { color: var(--text-3); }
 .theme-toggle:hover { background: var(--nav-hover); color: var(--nav-hover-text); }
 .theme-toggle i { font-style: normal; font-size: 13px; }
 @media (max-width: 900px) { .theme-toggle span { display: none; } }
+
+.cell-clip{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}

@@ -3,7 +3,14 @@ export type Severity = "low" | "medium" | "high" | "critical";
 export type IntegrationMode = "disabled" | "mock" | "sandbox" | "production";
 
 export interface DataSource { provider: string; updatedAt: string; state: DataState; detail?: string; mode?:"demo"|"staging-readonly"|"local"; cache?:"hit"|"miss"|"none"; masked?:boolean; latencyMs?:number }
-export interface CustomerSummary { id: string; name: string; maskedDocument: string; city: string; neighborhood: string; plan: string; status: string; health: number; churnRisk: Severity; priority: string; tags: string[] }
+/**
+ * `health` e `churnRisk` são **opcionais de propósito**: para cliente real do
+ * IXC nada calcula nenhum dos dois. Antes vinham fixos como `health: 0` e
+ * `churnRisk: "low"`, e a tela traduzia isso para uma etiqueta "controlado" —
+ * que qualquer pessoa lê como avaliação de risco feita pelo sistema. Ausente
+ * precisa ser ausente, para a tela poder escrever "não calculado".
+ */
+export interface CustomerSummary { id: string; name: string; maskedDocument: string; city: string; neighborhood: string; plan: string; status: string; health?: number; churnRisk?: Severity; priority: string; tags: string[] }
 export interface NetworkIncident { id: string; title: string; city: string; neighborhood: string; equipment: string; severity: Severity; status: "investigating" | "monitoring" | "resolved"; startedAt: string; affectedCustomers: number; probableCause: string; source: string }
 export interface CollectionRuleStep { id: string; label: string; offsetDays: number; channel: string; template: string; time: string; attempts: number; pauseOnPayment: boolean; optOut: boolean; active: boolean }
 export interface CollectionCampaign { id: string; name: string; segment: string; audience: number; delivered: number; read: number; converted: number; recovered: number; status: "draft" | "queued-demo" | "running-demo" | "cancelled" | "completed" }

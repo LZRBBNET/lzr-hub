@@ -45,9 +45,11 @@ npm run db:migrate  # aplica migrações no Postgres
 
 `npm start` roda `scripts/migrate-postgres.mjs` **antes** de subir o servidor. Sem `DATABASE_URL` ele avisa e segue sem migrar, em vez de derrubar o boot.
 
-### ⚠️ `npm run dev` não enxerga o Postgres
+### ⚠️ `npm run dev` só às vezes enxerga o Postgres
 
-`npm run dev` sobe o Vite sobre o **runtime do Cloudflare Workers** (Miniflare). Ali o driver `pg` abre socket TCP e trava: toda rota que toca banco devolve *"The Workers runtime canceled this request because it detected that your Worker's code had hung"*. Vale para `/api/audit`, `/api/knowledge`, `/api/admin/users`, `/api/conversations`, `/api/support/metrics`, `/api/support/incidents`, `/api/billing/rules` e `/api/sales/goals`.
+`npm run dev` sobe o Vite sobre o **runtime do Cloudflare Workers** (Miniflare). Ali o driver `pg` abre socket TCP e frequentemente trava: a rota devolve *"The Workers runtime canceled this request because it detected that your Worker's code had hung"*.
+
+É **intermitente**, não determinístico — na mesma execução `/api/audit` e `/api/knowledge` responderam 200 enquanto `/api/support/metrics`, `/api/conversations` e `/api/sales/goals` travaram. Recarregar às vezes resolve, às vezes não. Não confie no resultado: uma tela vazia no `npm run dev` pode ser o runtime, não o seu código.
 
 Produção não tem esse problema: o Railway roda `vinext start`, que é Node.
 

@@ -126,7 +126,9 @@ export function LzrHubApp({ ixcMode = "disabled" }: { ixcMode?: string }) {
     <div className="app-shell">
       <aside className="sidebar">
         <div className="brand"><div className="brand-mark">L</div><div className="brand-copy"><strong>LZR HUB</strong><small>BBNET Intelligence</small></div></div>
-        <div className="nav-scroll">{navigation.map((item) => <div key={item.id}>{item.group ? <div className="nav-label">{item.group}</div> : null}<button className={`nav-item ${view === item.id ? "active" : ""}`} onClick={() => setView(item.id)}><span className="nav-icon">{item.icon}</span><span>{item.label}</span></button></div>)}</div>
+        {/* Em tela estreita a barra vira só ícones. O `title` e o `aria-label` são
+            o que impede isso de virar 23 glifos indecifráveis. */}
+        <nav className="nav-scroll" aria-label="Navegação principal">{navigation.map((item) => <div key={item.id}>{item.group ? <div className="nav-label">{item.group}</div> : null}<button className={`nav-item ${view === item.id ? "active" : ""}`} onClick={() => setView(item.id)} title={item.group ? `${item.group} › ${item.label}` : item.label} aria-label={item.label} aria-current={view === item.id ? "page" : undefined}><span className="nav-icon" aria-hidden="true">{item.icon}</span><span>{item.label}</span></button></div>)}</nav>
         <div className="sidebar-footer">
           <div className="sidebar-identity">
             <Avatar initials={user ? initialsOf(user.name) : "AD"} />
