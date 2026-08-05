@@ -159,9 +159,11 @@ function Tickets(){
       {!fullBase&&<section className="filter-bar"><select value={onlyOpen?"open":"all"} onChange={e=>setOnlyOpen(e.target.value==="open")}><option value="open">Só em aberto</option><option value="all">Todas as OS</option></select></section>}
       {items.length===0
         ? <div className="state-card">Nenhuma OS {onlyOpen&&!fullBase?"em aberto":"encontrada"} nos cadastros consultados.</div>
-        : <section className="data-card">
+        : <section className="data-card tickets">
             <div className="data-row header"><span>OS / {fullBase?"local":"cliente"}</span><span>Assunto</span><span>Status</span><span>Aberta em</span><span></span></div>
-            {items.map(t=><div className="data-row" key={t.id}><span><strong>{t.id}</strong><small>{fullBase?`Cadastro ${t.customerId}${t.address?` • ${t.address}`:""}`:`${t.customerName} • ${t.city}`}</small></span><span>{t.subject.slice(0,90)}</span><span><i className={`severity ${isOpenTicket(t.status)?"high":"low"}`}>{isOpenTicket(t.status)?"Em aberto":"Encerrada"}</i></span><span>{dateLabel(t.openedAt)}</span><span>›</span></div>)}
+            {items.map(t=><div className="data-row" key={t.id}><span><strong>{t.id}</strong><small>{fullBase?`Cadastro ${t.customerId}${t.address?` • ${t.address}`:""}`:`${t.customerName} • ${t.city}`}</small></span>{/* O assunto do IXC vem com o processo inteiro descrito e quebrava a linha em
+    seis; truncar na exibição mantém a fila legível e o texto completo no title. */}
+<span className="cell-clip" title={t.subject}>{t.subject}</span><span><i className={`severity ${isOpenTicket(t.status)?"high":"low"}`}>{isOpenTicket(t.status)?"Em aberto":"Encerrada"}</i></span><span>{dateLabel(t.openedAt)}</span><span>›</span></div>)}
             {fullBase&&<div className="pagination"><span>{((data.page??1)-1)*(data.pageSize??25)+1}–{((data.page??1)-1)*(data.pageSize??25)+items.length} de {(data.total??0).toLocaleString("pt-BR")}</span><button disabled={page<=1} onClick={()=>setPage(page-1)}>‹</button><button disabled={((data.page??1)-1)*(data.pageSize??25)+items.length>=(data.total??0)} onClick={()=>setPage(page+1)}>›</button></div>}
           </section>}
     </>}

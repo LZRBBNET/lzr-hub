@@ -409,3 +409,9 @@ input::placeholder, textarea::placeholder { color: var(--text-3); }
 @media (max-width: 900px) { .theme-toggle span { display: none; } }
 
 .cell-clip{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
+
+/* Na fila de chamados o assunto é a coluna que importa: era a mais estreita. */
+.tickets .data-row{grid-template-columns:1.15fr 2.3fr .75fr .7fr 20px}
+
+/* Nome do cliente e endereço também numa linha só: a fila é para varrer, não para ler. */
+.tickets .data-row>span>small{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
