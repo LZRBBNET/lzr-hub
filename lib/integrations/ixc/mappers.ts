@@ -2,7 +2,14 @@ import type { IxcConnectionDto, IxcContractDto, IxcCustomerDto, IxcInvoiceDto, I
 
 type Raw = Record<string,unknown>;
 const str=(raw:Raw,...keys:string[])=>{for(const key of keys){const value=raw[key];if(value!==undefined&&value!==null&&String(value).trim())return String(value).trim()}return ""};
-const num=(raw:Raw,...keys:string[])=>{const value=Number(str(raw,...keys).replace(",","."));return Number.isFinite(value)?value:undefined};
+/**
+ * Campo ausente vira `undefined`, nunca 0.
+ *
+ * `Number("")` é 0, então a versão anterior transformava "o IXC não mandou este
+ * campo" em "o valor é zero" — que atravessa a aplicação inteira parecendo dado
+ * bom. Mensalidade zerada e fatura de R$ 0,00 saíam daqui.
+ */
+const num=(raw:Raw,...keys:string[])=>{const text=str(raw,...keys);if(!text)return undefined;const value=Number(text.replace(",","."));return Number.isFinite(value)?value:undefined};
 
 /**
  * Compõe um endereço legível a partir dos campos separados do IXC.
@@ -44,9 +51,19 @@ export class IxcCustomerMapper {
   }
 }
 
-export class IxcContractMapper { static map(raw:Raw):IxcContractDto { const id=str(raw,"id"); const customerId=str(raw,"id_cliente"); if(!id||!customerId)throw new Error("IXC contract incompleto"); return {id,customerId,planId:str(raw,"id_vd_contrato","id_produto")||undefined,planName:str(raw,"contrato","plano","descricao")||"Plano não informado",status:str(raw,"status","status_internet")||"desconhecido",dueDay:num(raw,"dia_vencimento"),monthlyValue:num(raw,"valor_plano","valor"),activatedAt:str(raw,"data_ativacao","data_inicio")||undefined}; } }
-export class IxcPlanMapper { static map(raw:Raw):IxcPlanDto { const id=str(raw,"id");if(!id)throw new Error("IXC plan sem id");return{id,name:str(raw,"nome","descricao","contrato")||"Plano não informado",speed:str(raw,"velocidade","download")||undefined,value:num(raw,"valor","valor_plano")}; } }
-export class IxcInvoiceMapper { static map(raw:Raw):IxcInvoiceDto { const id=str(raw,"id"); const customerId=str(raw,"id_cliente"); if(!id||!customerId)throw new Error("IXC invoice incompleta"); return {id,customerId,contractId:str(raw,"id_contrato","id_vd_contrato")||undefined,status:str(raw,"status")||"desconhecido",dueAt:str(raw,"data_vencimento","vencimento")||undefined,value:num(raw,"valor"),paymentCode:str(raw,"linha_digitavel")||undefined}; } }
+/**
+ * `cliente_contrato` **não tem campo de valor** -- verificado listando os 150+
+ * campos que o IXC devolve. A mensalidade mora no plano (`vd_contratos`), então
+ * `monthlyValue` só é preenchido depois, quando o plano é resolvido. O nome do
+ * contrato traz o preço embutido ("FIBRA COMBO 300MB - 69,90 - BBNET"), mas
+ * extrair dinheiro de string de nome quebra no primeiro plano fora do padrão.
+ */
+export class IxcContractMapper { static map(raw:Raw):IxcContractDto { const id=str(raw,"id"); const customerId=str(raw,"id_cliente"); if(!id||!customerId)throw new Error("IXC contract incompleto"); return {id,customerId,planId:str(raw,"id_vd_contrato","id_produto")||undefined,planName:str(raw,"contrato","plano","descricao")||"Plano não informado",status:str(raw,"status","status_internet")||"desconhecido",dueDay:num(raw,"dia_vencimento"),monthlyValue:undefined,activatedAt:str(raw,"data_ativacao","data_inicio")||undefined}; } }
+// O valor do plano é `valor_contrato` (vem com 9 casas: "59.900000000").
+export class IxcPlanMapper { static map(raw:Raw):IxcPlanDto { const id=str(raw,"id");if(!id)throw new Error("IXC plan sem id");return{id,name:str(raw,"nome","descricao","contrato")||"Plano não informado",speed:str(raw,"velocidade","download")||undefined,value:num(raw,"valor_contrato","valor","valor_plano")}; } }
+// `valor_aberto` desconta o que já foi pago na fatura; é o número certo para
+// "em aberto" e "vencido". `valor` é o valor cheio e serve de reserva.
+export class IxcInvoiceMapper { static map(raw:Raw):IxcInvoiceDto { const id=str(raw,"id"); const customerId=str(raw,"id_cliente"); if(!id||!customerId)throw new Error("IXC invoice incompleta"); return {id,customerId,contractId:str(raw,"id_contrato","id_vd_contrato")||undefined,status:str(raw,"status")||"desconhecido",dueAt:str(raw,"data_vencimento","vencimento")||undefined,value:num(raw,"valor_aberto","valor"),paymentCode:str(raw,"linha_digitavel")||undefined}; } }
 /**
  * fn_movim_finan (pagamentos) não tem coluna id_cliente no IXC real -- por isso o
  * customerId vem de fora (já sabido: é o cliente cuja fatura acabou de ser

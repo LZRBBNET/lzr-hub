@@ -66,8 +66,8 @@ export function basicCredential(token:string){
 
 export class IxcReadonlyProvider {
   readonly mode="staging-readonly" as const;
-  private readonly guard:ReadonlyIxcGuard; private readonly fetcher:typeof fetch; private readonly timeoutMs:number; private readonly cache:TtlCache<IxcCustomerSnapshot>; private readonly cityCache:TtlCache<string>; private readonly breaker:CircuitBreaker; private readonly limiter:SlidingWindowRateLimiter; private readonly now:()=>number; private readonly options:IxcReadonlyOptions;private readonly durations=new Map<string,Record<string,number>>();
-  constructor(options:IxcReadonlyOptions){this.options=options;this.guard=new ReadonlyIxcGuard(options.allowedCustomerIds,options.fullBase??false);this.fetcher=options.fetcher??fetch;this.timeoutMs=options.timeoutMs??3500;this.now=options.now??(()=>Date.now());this.cache=new TtlCache<IxcCustomerSnapshot>(options.cacheTtlMs??300000,this.now);this.cityCache=new TtlCache<string>(options.cityCacheTtlMs??86400000,this.now);this.breaker=new CircuitBreaker(3,30000,this.now);this.limiter=new SlidingWindowRateLimiter(options.rateLimitPerMinute??30,60000,this.now);}
+  private readonly guard:ReadonlyIxcGuard; private readonly fetcher:typeof fetch; private readonly timeoutMs:number; private readonly cache:TtlCache<IxcCustomerSnapshot>; private readonly cityCache:TtlCache<string>; private readonly planCache:TtlCache<{name:string;value?:number}>; private readonly breaker:CircuitBreaker; private readonly limiter:SlidingWindowRateLimiter; private readonly now:()=>number; private readonly options:IxcReadonlyOptions;private readonly durations=new Map<string,Record<string,number>>();
+  constructor(options:IxcReadonlyOptions){this.options=options;this.guard=new ReadonlyIxcGuard(options.allowedCustomerIds,options.fullBase??false);this.fetcher=options.fetcher??fetch;this.timeoutMs=options.timeoutMs??3500;this.now=options.now??(()=>Date.now());this.cache=new TtlCache<IxcCustomerSnapshot>(options.cacheTtlMs??300000,this.now);this.cityCache=new TtlCache<string>(options.cityCacheTtlMs??86400000,this.now);this.planCache=new TtlCache<{name:string;value?:number}>(options.cityCacheTtlMs??86400000,this.now);this.breaker=new CircuitBreaker(3,30000,this.now);this.limiter=new SlidingWindowRateLimiter(options.rateLimitPerMinute??30,60000,this.now);}
   async testConnection(correlationId:string){await this.read("testConnection","cliente","id","0",correlationId,1);return true;}
   /**
    * Página da base de clientes. Existe para a lista de Clientes não precisar do
@@ -142,6 +142,31 @@ export class IxcReadonlyProvider {
     }
     return{rows,total,truncated:rows.length<total};
   }
+  /**
+   * Resolve nome e mensalidade dos planos informados.
+   *
+   * Existe porque o contrato não carrega valor nenhum: sem isto, toda soma de
+   * receita sai zerada. Custa pouco na prática — 262 ativações de um mês usam
+   * só 14 planos distintos — e o resultado fica em cache junto com as cidades.
+   */
+  async resolvePlanValues(planIds:string[],correlationId:string):Promise<Map<string,{name:string;value?:number}>>{
+    const resolved=new Map<string,{name:string;value?:number}>();
+    const missing:string[]=[];
+    for(const id of [...new Set(planIds.filter(Boolean))]){
+      const cached=this.planCache.get(id);
+      if(cached)resolved.set(id,cached);else missing.push(id);
+    }
+    await Promise.all(missing.map(async(id)=>{
+      try{
+        const rows=await this.read("getPlan",endpoints.getPlan,"id",id,correlationId,1,"");
+        if(!rows[0])return;
+        const plan=IxcPlanMapper.map(rows[0]);
+        const entry={name:plan.name,value:plan.value};
+        this.planCache.set(id,entry);resolved.set(id,entry);
+      }catch{/* plano indisponível: quem chama trata como valor ausente, não como zero */}
+    }));
+    return resolved;
+  }
   /** Quantos contratos ativos existem hoje. Uma consulta, sem varrer registro. */
   async countActiveContracts(correlationId:string){
     return this.countContractsByStatus("A",correlationId);
@@ -186,7 +211,7 @@ export class IxcReadonlyProvider {
       ]);
       const rows=(index:number)=>settled[index].status==="fulfilled"?settled[index].value:[];
       const sourceNames=["contracts","invoices","serviceOrders","connection"];const contracts=rows(0).map(IxcContractMapper.map);let plan=null;let planFailed=false;
-      if(contracts[0]?.planId){try{const planRows=await this.read("getPlan",endpoints.getPlan,"id",contracts[0].planId,correlationId,1,customerId);plan=planRows[0]?IxcPlanMapper.map(planRows[0]):null;if(plan&&contracts[0])contracts[0]={...contracts[0],planName:plan.name};}catch{planFailed=true;}}
+      if(contracts[0]?.planId){try{const planRows=await this.read("getPlan",endpoints.getPlan,"id",contracts[0].planId,correlationId,1,customerId);plan=planRows[0]?IxcPlanMapper.map(planRows[0]):null;if(plan&&contracts[0])contracts[0]={...contracts[0],planName:plan.name,monthlyValue:plan.value};}catch{planFailed=true;}}
       // `fn_movim_finan` (pagamentos) não tem coluna id_cliente -- filtrar por ela sempre
       // devolvia página de erro do próprio IXC, nunca um problema de rede. O vínculo real é
       // por fatura (id_receber), então busca-se por fatura já sabidamente do cliente

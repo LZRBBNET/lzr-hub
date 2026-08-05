@@ -1,5 +1,6 @@
 "use client";
 import { useEffect, useState } from "react";
+import { BarChart } from "./bar-chart";
 
 export function IntelligenceModule({view}:{view:"intelligence"|"saude"|"churn"|"upgrade"|"conhecimento"}){
   if(view==="conhecimento")return <Knowledge/>;
@@ -27,7 +28,6 @@ function Churn(){
       .catch(()=>{if(active)setState("error")});
     return()=>{active=false}},[period]);
   const summary=data?.summary;
-  const peak=summary?.byDay.reduce((max,item)=>Math.max(max,item.contracts),0)??0;
 
   return <main className="content">
     <Heading title="Churn" text="Contratos que a BBNET perdeu, lidos do IXC."/>
@@ -53,9 +53,7 @@ function Churn(){
             : summary.reasonCodes.slice(0,10).map(item=><div className="aging-row" key={item.code}><div><strong>Código {item.code}</strong><span>{item.contracts} contrato(s) • {Math.round(item.contracts/summary.scanned*100)}%</span></div></div>)}
         </section>
         <section className="data-card"><div className="card-header"><strong>Cancelamentos por dia</strong><span className="badge blue">{summary.byDay.length} dia(s)</span></div>
-          {summary.byDay.length===0
-            ? <p style={{fontSize:12,color:"#64748b",padding:"12px 0"}}>Nenhum cancelamento no período.</p>
-            : <div className="billing-chart">{summary.byDay.map(item=><div key={item.day} title={`${item.day}: ${item.contracts}`}><span style={{height:`${peak?Math.max(item.contracts/peak*100,4):0}%`}}/></div>)}</div>}
+          <BarChart data={summary.byDay} noun="cancelamento(s)"/>
           <div style={{marginTop:18,padding:14,background:"#f2f7ff",borderRadius:10,fontSize:11,color:"#40566d",lineHeight:1.6}}><strong style={{display:"block",fontSize:12,color:"#1267e8",marginBottom:4}}>Base histórica</strong>{summary.inactiveContracts.toLocaleString("pt-BR")} contratos encerrados desde sempre, contra {summary.activeContracts.toLocaleString("pt-BR")} ativos hoje.</div>
         </section>
       </div>

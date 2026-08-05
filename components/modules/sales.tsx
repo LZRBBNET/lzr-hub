@@ -1,5 +1,6 @@
 "use client";
 import { useEffect, useState } from "react";
+import { BarChart } from "./bar-chart";
 
 export function SalesModule({view}:{view:"comercial"|"leads"|"funil"|"kanban"|"metas"|"relatorios-comercial"}){
   if(view==="leads")return <NoCrm title="Leads" what="uma lista de leads"/>;
@@ -65,7 +66,7 @@ function SalesDashboard(){
               ["Taxa de conversão","Exige registrar o contato antes da venda. Não existe CRM: a tabela de leads nunca recebeu uma linha."],
               ["Ciclo médio de venda","Mesma razão — sabemos quando o contrato foi ativado, não quando a conversa começou."],
               ["Origem do lead","Ninguém registra de onde veio o cliente."],
-              ["Churn","O IXC marca cancelamento de um jeito que ainda não foi confirmado. Chutar o código de status daria número errado com cara de certo."],
+              ["Previsão de churn","Quem já saiu está medido em Inteligência › Churn. Prever quem vai sair é outra coisa, e exige sinal que ninguém coleta."],
             ].map(([title,why])=><div className="aging-row" key={title}><div><strong>{title}</strong><span>{why}</span></div></div>)}
           </div>
         </section>
@@ -78,7 +79,6 @@ function SalesReports(){
   const [period,setPeriod]=useState("30d");
   const {data,state,setState}=useSales(period);
   const summary=data?.summary;
-  const peak=summary?.byDay.reduce((max,item)=>Math.max(max,item.contracts),0)??0;
   return <main className="content">
     <Heading title="Relatórios comerciais" text="Volume e mix das vendas fechadas. Conversão e origem dependem de CRM, que não existe."/>
     <PeriodPicker period={period} onChange={(value)=>{setState("loading");setPeriod(value)}}/>
@@ -94,9 +94,7 @@ function SalesReports(){
         <Metric label="Receita recorrente" value={money(summary.monthlyRecurringAdded)} detail="Somada das novas vendas"/>
       </section>
       <section className="data-card" style={{marginTop:14}}><div className="card-header"><strong>Vendas por dia</strong><span className="badge blue">{summary.byDay.length} dia(s) com venda</span></div>
-        {summary.byDay.length===0
-          ? <p style={{fontSize:12,color:"#64748b",padding:"12px 0"}}>Nenhuma ativação no período.</p>
-          : <div className="billing-chart">{summary.byDay.map(item=><div key={item.day} title={`${item.day}: ${item.contracts} venda(s)`}><span style={{height:`${peak?Math.max(item.contracts/peak*100,4):0}%`}}/></div>)}</div>}
+        <BarChart data={summary.byDay} noun="venda(s)"/>
       </section>
     </>}
   </main>;

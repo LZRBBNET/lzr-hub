@@ -35,12 +35,17 @@ export async function GET(request: Request) {
       runtime.provider.listActivations(since, correlationId),
       runtime.provider.countActiveContracts(correlationId),
     ]);
+    // O contrato não traz valor: a mensalidade vem do plano (`vd_contratos`).
+    // São poucos planos distintos por período, então isso custa uma dezena de
+    // consultas, não uma por contrato.
+    const planIds = activations.rows.map((row) => String((row as Record<string, unknown>).id_vd_contrato ?? "")).filter(Boolean);
+    const plans = await runtime.provider.resolvePlanValues(planIds, correlationId);
     const rows = activations.rows.map((row) => {
       const raw = row as Record<string, unknown>;
-      const value = Number(String(raw.valor_plano ?? "").replace(",", "."));
+      const plan = plans.get(String(raw.id_vd_contrato ?? ""));
       return {
         planName: String(raw.contrato ?? raw.plano ?? ""),
-        monthlyValue: Number.isFinite(value) && value > 0 ? value : undefined,
+        monthlyValue: plan?.value,
         activatedAt: String(raw.data_ativacao ?? "") || undefined,
       };
     });

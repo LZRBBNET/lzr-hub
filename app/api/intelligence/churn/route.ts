@@ -28,13 +28,17 @@ export async function GET(request: Request) {
       runtime.provider.countContractsByStatus("A", correlationId),
       runtime.provider.countContractsByStatus("I", correlationId),
     ]);
+    // Mesmo caso das vendas: o contrato não guarda valor, quem guarda é o plano.
+    const plans = await runtime.provider.resolvePlanValues(
+      cancellations.rows.map((row) => String((row as Record<string, unknown>).id_vd_contrato ?? "")).filter(Boolean),
+      correlationId,
+    );
     const rows = cancellations.rows.map((row) => {
       const raw = row as Record<string, unknown>;
-      const value = Number(String(raw.valor_plano ?? "").replace(",", "."));
       return {
         reasonCode: String(raw.motivo_cancelamento ?? ""),
         cancelledAt: String(raw.data_cancelamento ?? "") || undefined,
-        monthlyValue: Number.isFinite(value) && value > 0 ? value : undefined,
+        monthlyValue: plans.get(String(raw.id_vd_contrato ?? ""))?.value,
       };
     });
     const summary = summarizeChurn(rows, {

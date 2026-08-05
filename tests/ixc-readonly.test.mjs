@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { ReadonlyIxcGuard, IxcCustomerNotAllowedError, IxcWriteBlockedError } from "../lib/integrations/ixc/guard.ts";
 import { customerQuery } from "../lib/integrations/ixc/readonly-provider.ts";
+import { IxcInvoiceMapper, IxcPlanMapper } from "../lib/integrations/ixc/mappers.ts";
 import { IxcCustomerMapper, IxcContractMapper } from "../lib/integrations/ixc/mappers.ts";
 import { sanitizeTelemetry } from "../lib/integrations/ixc/masking.ts";
 import { CircuitBreaker, TtlCache } from "../lib/integrations/ixc/resilience.ts";
@@ -228,4 +229,25 @@ test("busca traduz o que foi digitado para o filtro certo do IXC",()=>{
   assert.deepEqual(customerQuery("123.456.789-01"),{qtype:"cliente.cnpj_cpf",query:"12345678901",oper:"="},"CPF vai sem pontuação");
   assert.deepEqual(customerQuery("12.345.678/0001-95"),{qtype:"cliente.cnpj_cpf",query:"12345678000195",oper:"="});
   assert.deepEqual(customerQuery("Wendel"),{qtype:"cliente.razao",query:"Wendel",oper:"L"});
+});
+
+test("valor do plano vem de valor_contrato, e o contrato não finge ter valor",()=>{
+  // cliente_contrato realmente não tem campo de valor: verificado listando os
+  // 150+ campos que o IXC devolve. Antes o mapper procurava "valor_plano" e
+  // devolvia undefined em silêncio, o que zerava toda soma de receita.
+  const contract=IxcContractMapper.map({id:"1",id_cliente:"9",contrato:"FIBRA COMBO 300MB - 69,90 - BBNET",status:"A",id_vd_contrato:"394"});
+  assert.equal(contract.monthlyValue,undefined,"o valor precisa vir do plano, não ser inventado a partir do nome");
+  assert.equal(contract.planId,"394","é por este id que o plano é resolvido");
+
+  const plan=IxcPlanMapper.map({id:"394",nome:"FIBRA COMBO 300MB",valor_contrato:"69.900000000"});
+  assert.equal(plan.value,69.9,"valor_contrato vem com 9 casas decimais");
+
+  assert.equal(IxcPlanMapper.map({id:"1",nome:"X"}).value,undefined,"sem valor legível continua ausente, nunca zero");
+});
+
+test("valor da fatura usa o que está em aberto, não o valor cheio",()=>{
+  const parcial=IxcInvoiceMapper.map({id:"1",id_cliente:"9",status:"A",valor:"100.00",valor_aberto:"40.00"});
+  assert.equal(parcial.value,40,"fatura paga pela metade não deve entrar como dívida cheia");
+  const semAberto=IxcInvoiceMapper.map({id:"2",id_cliente:"9",status:"A",valor:"59.90"});
+  assert.equal(semAberto.value,59.9,"sem valor_aberto, o valor cheio serve de reserva");
 });
