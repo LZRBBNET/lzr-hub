@@ -88,6 +88,13 @@ function Users() {
   const [users, setUsers] = useState<UserRow[]>([]);
   const [available, setAvailable] = useState(true);
   const [state, setState] = useState<"loading" | "ready" | "error">("loading");
+  const [nonce, setNonce] = useState(0);
+  const [busy, setBusy] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [form, setForm] = useState({ name: "", email: "", role: "Atendente" as string });
+  // A senha aparece uma única vez: não é guardada em lugar nenhum, só o hash.
+  const [secret, setSecret] = useState<{ email: string; password: string } | null>(null);
+
   useEffect(() => {
     let active = true;
     fetch("/api/admin/users", { cache: "no-store" })
@@ -95,24 +102,55 @@ function Users() {
       .then((payload: { available: boolean; users: UserRow[] }) => { if (active) { setAvailable(payload.available); setUsers(payload.users ?? []); setState("ready"); } })
       .catch(() => { if (active) setState("error"); });
     return () => { active = false; };
-  }, []);
+  }, [nonce]);
+
+  async function act(key: string, body: Record<string, unknown>) {
+    setBusy(key); setError(null);
+    try {
+      const response = await fetch("/api/admin/users", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+      const payload = await response.json() as { error?: string; password?: string; user?: { email: string } };
+      if (!response.ok) { setError(payload.error ?? "Ação recusada"); return; }
+      if (payload.password && payload.user) setSecret({ email: payload.user.email, password: payload.password });
+      setNonce((value) => value + 1);
+    } catch { setError("Falha ao falar com o servidor"); }
+    finally { setBusy(null); }
+  }
 
   const when = (value: string | null) => value ? new Date(value).toLocaleString("pt-BR") : "nunca";
   return <main className="content">
-    <Heading title="Usuários e Permissões" text="Quem tem acesso ao LZR HUB e o que cada perfil pode fazer." />
+    <Heading title="Usuários e Permissões" text="Quem tem acesso ao LZR HUB, o que cada perfil pode fazer e como revogar." />
+    {error && <div className="state-card error">{error}</div>}
+    {secret && <div className="state-card"><strong>Senha de {secret.email}:</strong> <code style={{ fontSize: 14, userSelect: "all" }}>{secret.password}</code>
+      <p style={{ marginTop: 8, lineHeight: 1.6 }}>Anote agora — ela não é guardada em lugar nenhum, só o hash. Não dá para consultá-la depois; só gerar outra.</p>
+      <button className="button secondary" style={{ marginTop: 8 }} onClick={() => setSecret(null)}>Já anotei</button>
+    </div>}
+
     <section className="data-card">
+      <div className="card-header"><strong>Nova conta</strong><span className="badge blue">Senha gerada pelo sistema</span></div>
+      <div className="wizard" style={{ display: "grid", gap: 8 }}>
+        <input placeholder="Nome completo" value={form.name} onChange={(event) => { setForm({ ...form, name: event.target.value }); setError(null); }} />
+        <input placeholder="e-mail@bbnet.com" value={form.email} onChange={(event) => setForm({ ...form, email: event.target.value })} />
+        <select value={form.role} onChange={(event) => setForm({ ...form, role: event.target.value })}>{roles.map((item) => <option key={item} value={item}>{item}</option>)}</select>
+        <button className="button" disabled={busy !== null} onClick={() => void act("create", { action: "create", ...form }).then(() => setForm({ name: "", email: "", role: "Atendente" }))}>{busy === "create" ? "Criando…" : "Criar conta"}</button>
+      </div>
+    </section>
+
+    <section className="data-card" style={{ marginTop: 14 }}>
       <div className="card-header"><strong>Contas</strong><span className="badge green">{state === "ready" && available ? users.length : "—"}</span></div>
       {state === "loading" && <p style={{ padding: 14 }}>Carregando contas…</p>}
       {state === "error" && <p style={{ padding: 14 }}>Não foi possível consultar as contas.</p>}
       {state === "ready" && !available && <p style={{ padding: 14 }}>Lista de usuários indisponível — sem banco não há de onde ler.</p>}
       {state === "ready" && available && users.length === 0 && <p style={{ padding: 14, lineHeight: 1.6, color: "#64748b" }}>Nenhuma conta cadastrada.</p>}
-      {state === "ready" && available && users.map((user) => <div className="permission-row" key={user.id}>
-        <span><strong>{user.name}</strong><small style={{ display: "block", color: "#64748b" }}>{user.email} • último acesso: {when(user.lastLoginAt)}</small></span>
-        <span style={{ display: "flex", gap: 8, alignItems: "center" }}><i className="badge blue">{user.role}</i><i className={`badge ${user.active ? "green" : ""}`}>{user.active ? "ativa" : "inativa"}</i></span>
+      {state === "ready" && available && users.map((user) => <div className="permission-row" key={user.id} style={{ flexWrap: "wrap", gap: 10 }}>
+        <span style={{ flex: 1, minWidth: 220 }}><strong>{user.name}</strong><small style={{ display: "block", color: "#64748b" }}>{user.email} • último acesso: {when(user.lastLoginAt)}</small></span>
+        <span style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+          <select value={user.role} disabled={busy !== null} onChange={(event) => void act(`role:${user.id}`, { action: "set-role", id: user.id, role: event.target.value })}>{roles.map((item) => <option key={item} value={item}>{item}</option>)}</select>
+          <i className={`badge ${user.active ? "green" : ""}`}>{user.active ? "ativa" : "inativa"}</i>
+          <button disabled={busy !== null} onClick={() => void act(`active:${user.id}`, { action: "set-active", id: user.id, active: !user.active })}>{user.active ? "Desativar" : "Reativar"}</button>
+          <button disabled={busy !== null} onClick={() => void act(`pwd:${user.id}`, { action: "reset-password", id: user.id })}>Resetar senha</button>
+        </span>
       </div>)}
-      {/* Criar, desativar e trocar senha não existem na tela — dizer isso evita
-          que alguém procure um botão que nunca foi construído. */}
-      <div className="state-card" style={{ margin: 14 }}>Esta tela é somente leitura. Criar conta, desativar e trocar senha são feitos por <code>scripts/create-user.mjs</code> — não há tela para isso ainda.</div>
+      <div className="state-card" style={{ margin: 14 }}>Desativar tem efeito imediato: a sessão é verificada a cada requisição, então a pessoa perde o acesso no próximo clique — não é preciso esperar a sessão expirar. O mesmo vale para troca de perfil.</div>
     </section>
     <div className="support-grid" style={{ marginTop: 14 }}>
       <section className="data-card"><div className="card-header"><strong>Perfis</strong></div>{roles.map((item) => <button className={`role-row ${item === role ? "active" : ""}`} onClick={() => setRole(item)} key={item}><span>{item}</span><b>{rolePermissions[item].length} permissões</b></button>)}</section>

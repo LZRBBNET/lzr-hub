@@ -132,7 +132,8 @@ Ver [`docs/security/authentication.md`](docs/security/authentication.md).
 ## Limites conhecidos (não são bugs a "descobrir")
 
 - Sem rate limit no login
-- A tela de Usuários lista as contas reais, mas é **somente leitura**: criar, desativar e trocar senha continuam em `scripts/create-user.mjs`
+- A tela de Usuários gerencia contas de verdade: criar, desativar/reativar, trocar perfil e resetar senha, tudo auditado. A senha é **sempre gerada pelo sistema** e mostrada uma única vez; ninguém escolhe senha de terceiro. Duas travas impedem auto-bloqueio: não dá para desativar ou rebaixar a própria conta, nem deixar o sistema sem nenhuma conta capaz de gerenciar usuários
+- Não existe troca de senha pelo próprio usuário — só reset por quem administra
 - Custo por atendimento não é medido (depende do Langfuse, issue #6)
 - Tempo médio de atendimento também não é medido — a Visão geral escreve isso em vez de estimar
 - Responder pela tela de Atendimentos ainda não existe: quem responde é o fluxo do n8n, então o campo fica desabilitado
