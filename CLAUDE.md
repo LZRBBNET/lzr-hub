@@ -53,13 +53,29 @@ npm run db:migrate  # aplica migrações no Postgres
 
 Produção não tem esse problema: o Railway roda `vinext start`, que é Node.
 
-Consequência prática: **não dá para conferir tela de banco rodando só `npm run dev`.** Isso explica boa parte da ficção que sobreviveu tanto tempo nessas telas — ninguém conseguia ver o dado real localmente. Para trabalhar nelas:
+Consequência prática: **não dá para conferir tela de banco rodando só `npm run dev`.** Isso explica boa parte da ficção que sobreviveu tanto tempo nessas telas — ninguém conseguia ver o dado real localmente.
+
+### Como conferir tela de banco na sua máquina
+
+O caminho que funciona é rodar em **modo produção**, que usa Node de verdade — o mesmo runtime do Railway.
 
 ```bash
 docker run -d --name lzr-dev-pg -e POSTGRES_PASSWORD=devlocal -e POSTGRES_DB=lzrhub -p 55432:5432 postgres:16-alpine
 ```
 
-Aponte `DATABASE_URL` para `postgres://postgres:devlocal@localhost:55432/lzrhub`, rode `npm run db:migrate` e `node scripts/seed-dev.mjs` (o seed **recusa** qualquer banco que não seja localhost). Aí use `npm run build && npx vinext start` para exercitar as rotas de banco — ou teste pelo `curl`, que é mais rápido. O `npm run dev` continua bom para tudo que não toca banco.
+Aponte `DATABASE_URL` para `postgres://postgres:devlocal@localhost:55432/lzrhub` no `.env.local`, rode `npm run db:migrate` e `node scripts/seed-dev.mjs` (o seed **recusa** qualquer banco que não seja localhost). Depois:
+
+```bash
+npm run build
+npm start                          # porta 3000, Node de verdade
+node scripts/dev-static-bridge.mjs # porta 3100 — abra esta no navegador
+```
+
+A ponte existe por um motivo específico: o `vinext start` local devolve **404 para tudo em `/assets/*`**, então a página chega sem CSS nem JS e a tela fica ilegível. `scripts/dev-static-bridge.mjs` serve os estáticos de `dist/client` e repassa o resto para a porta 3000. No Railway isso não é preciso — lá o `vinext start` serve os estáticos corretamente.
+
+⚠️ `npm start` roda `db:migrate` antes de subir, mas **esse script não lê o `.env.local`** — ele avisa que não há `DATABASE_URL` e segue. O servidor em si lê. Se precisar migrar, rode `npm run db:migrate` com a variável no ambiente.
+
+O `npm run dev` continua ótimo para tudo que não toca banco: é mais rápido e tem recarga quente.
 
 `scripts/seed-dev.mjs` cria 8 usuários, 46 conversas espalhadas em 30 dias, massivas, documentos e leads. É massa de desenvolvimento, não dado de demonstração embutido no produto.
 
