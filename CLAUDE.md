@@ -131,9 +131,11 @@ Ver [`docs/security/authentication.md`](docs/security/authentication.md).
 
 ## Limites conhecidos (não são bugs a "descobrir")
 
-- Sem rate limit no login
 - A tela de Usuários gerencia contas de verdade: criar, desativar/reativar, trocar perfil e resetar senha, tudo auditado. A senha é **sempre gerada pelo sistema** e mostrada uma única vez; ninguém escolhe senha de terceiro. Duas travas impedem auto-bloqueio: não dá para desativar ou rebaixar a própria conta, nem deixar o sistema sem nenhuma conta capaz de gerenciar usuários
 - Troca de senha pelo próprio usuário fica no rodapé da barra lateral (botão "Senha"). Exige a senha atual e **derruba as outras sessões** — trocar a senha precisa expulsar quem estava dentro
+- Conta criada ou senha resetada pelo admin nascem com `must_change_password`: no primeiro acesso a pessoa é obrigada a definir a sua, num diálogo que não fecha
+- **Não há envio de e-mail no projeto** (sem SMTP, sem provedor). Por isso "esqueci minha senha" não manda link: registra um pedido que aparece na tela de Usuários, e quem administra gera a senha nova e entrega. O pedido é aceito mesmo para e-mail sem conta — recusar revelaria quais endereços têm conta
+- O rate limit de login é **memória do processo**: com mais de uma instância cada uma conta a sua parte. Migra para Redis quando houver escala horizontal
 - Custo por atendimento não é medido (depende do Langfuse, issue #6)
 - Tempo médio de atendimento também não é medido — a Visão geral escreve isso em vez de estimar
 - Responder pela tela de Atendimentos ainda não existe: quem responde é o fluxo do n8n, então o campo fica desabilitado

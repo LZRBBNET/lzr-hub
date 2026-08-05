@@ -25,7 +25,9 @@ export interface UserAdminRepository {
   findById(id: string): Promise<AdminUser | undefined>;
   findByEmail(email: string): Promise<AdminUser | undefined>;
   insert(user: { id: string; name: string; email: string; role: string; passwordHash: string; passwordSalt: string }): Promise<void>;
-  update(id: string, patch: { role?: string; active?: boolean; passwordHash?: string; passwordSalt?: string }): Promise<void>;
+  /** Senha definida por terceiro sempre é provisória: a pessoa define a dela no primeiro acesso. */
+  setProvisionalPassword(id: string, hash: string, salt: string): Promise<void>;
+  update(id: string, patch: { role?: string; active?: boolean }): Promise<void>;
 }
 
 export class UserAdminError extends Error {
@@ -85,7 +87,7 @@ export async function resetPassword(repository: UserAdminRepository, targetId: s
   if (!target) throw new UserAdminError("Conta não encontrada", 404);
   const password = randomBytes(GENERATED_PASSWORD_BYTES).toString("base64url");
   const { hash, salt } = await hashPassword(password);
-  await repository.update(targetId, { passwordHash: hash, passwordSalt: salt });
+  await repository.setProvisionalPassword(targetId, hash, salt);
   return { user: target, password };
 }
 
@@ -121,20 +123,27 @@ export class DbUserAdminRepository implements UserAdminRepository {
   async findByEmail(email: string) { const rows = await this.select().where(eq(users.email, email)).limit(1); return rows[0] ? toAdminUser(rows[0]) : undefined; }
   async insert(user: { id: string; name: string; email: string; role: string; passwordHash: string; passwordSalt: string }) {
     const now = new Date().toISOString();
-    await this.db.insert(users).values({ ...user, active: true, lastLoginAt: null, createdAt: now, updatedAt: now });
+    await this.db.insert(users).values({ ...user, active: true, mustChangePassword: true, lastLoginAt: null, createdAt: now, updatedAt: now });
   }
-  async update(id: string, patch: { role?: string; active?: boolean; passwordHash?: string; passwordSalt?: string }) {
+  async setProvisionalPassword(id: string, hash: string, salt: string) {
+    await this.db.update(users).set({ passwordHash: hash, passwordSalt: salt, mustChangePassword: true, updatedAt: new Date().toISOString() }).where(eq(users.id, id));
+  }
+  async update(id: string, patch: { role?: string; active?: boolean }) {
     await this.db.update(users).set({ ...patch, updatedAt: new Date().toISOString() }).where(eq(users.id, id));
   }
 }
 
 export class MemoryUserAdminRepository implements UserAdminRepository {
-  readonly rows: Array<AdminUser & { passwordHash: string; passwordSalt: string }> = [];
+  readonly rows: Array<AdminUser & { passwordHash: string; passwordSalt: string; mustChangePassword?: boolean }> = [];
   async list() { return this.rows.map(({ id, name, email, role, active }) => ({ id, name, email, role, active })); }
   async findById(id: string) { return (await this.list()).find((user) => user.id === id); }
   async findByEmail(email: string) { return (await this.list()).find((user) => user.email === email); }
-  async insert(user: { id: string; name: string; email: string; role: string; passwordHash: string; passwordSalt: string }) { this.rows.push({ ...user, active: true }); }
-  async update(id: string, patch: { role?: string; active?: boolean; passwordHash?: string; passwordSalt?: string }) {
+  async insert(user: { id: string; name: string; email: string; role: string; passwordHash: string; passwordSalt: string }) { this.rows.push({ ...user, active: true, mustChangePassword: true }); }
+  async setProvisionalPassword(id: string, hash: string, salt: string) {
+    const row = this.rows.find((item) => item.id === id);
+    if (row) Object.assign(row, { passwordHash: hash, passwordSalt: salt, mustChangePassword: true });
+  }
+  async update(id: string, patch: { role?: string; active?: boolean }) {
     const row = this.rows.find((item) => item.id === id);
     if (row) Object.assign(row, patch);
   }

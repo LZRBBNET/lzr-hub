@@ -95,10 +95,30 @@ export const users = pgTable("users", {
   passwordHash: text("password_hash").notNull(),
   passwordSalt: text("password_salt").notNull(),
   active: boolean("active").notNull().default(true),
+  /** Senha gerada pelo sistema: a pessoa precisa definir a sua no primeiro acesso. */
+  mustChangePassword: boolean("must_change_password").notNull().default(false),
   lastLoginAt: text("last_login_at"),
   createdAt: text("created_at").notNull(),
   updatedAt: text("updated_at").notNull(),
 });
+
+/**
+ * Pedido de recuperação de senha.
+ *
+ * O projeto não tem envio de e-mail, então não existe link de redefinição: a
+ * pessoa registra o pedido e quem administra resolve gerando uma senha nova.
+ * Guardamos o e-mail **como digitado**, exista a conta ou não — recusar o
+ * pedido de um e-mail inexistente revelaria quais contas existem.
+ */
+export const passwordResetRequests = pgTable("password_reset_requests", {
+  id: text("id").primaryKey(),
+  email: text("email").notNull(),
+  status: text("status").notNull().default("pending"),
+  note: text("note"),
+  resolvedBy: text("resolved_by"),
+  resolvedAt: text("resolved_at"),
+  createdAt: text("created_at").notNull(),
+}, (table) => [index("password_reset_status_idx").on(table.status, table.createdAt)]);
 
 /** Guardamos só o hash do token: vazamento do banco não concede sessão a ninguém. */
 export const sessions = pgTable("sessions", {

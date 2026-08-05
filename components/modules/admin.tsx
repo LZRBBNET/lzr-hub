@@ -81,11 +81,13 @@ function Queues() {
   return <main className="content"><Heading title="Equipes, Filas e Jobs" text="Processamento assíncrono real com Redis, BullMQ, idempotência, retries e DLQ." />{snapshot && !snapshot.enabled && <div className="protected-banner"><strong>Filas desabilitadas:</strong> {snapshot.detail ?? "ative FEATURE_QUEUES e configure o serviço."}</div>}{error && <div className="protected-banner"><strong>Falha:</strong> {error}</div>}<div className="queue-pills">{queueNames.map((queue) => <span key={queue}>{queue}<b>{snapshot?.counts[queue] ?? 0}</b></span>)}</div><section className="data-card"><div className="card-header"><strong>Runtime: {snapshot?.runtime ?? "carregando"}</strong><button onClick={() => void load()} disabled={busy !== null}>Atualizar filas</button></div><div className="job-row header"><span>Job / fila</span><span>Status</span><span>Tentativas</span><span>Correlação</span><span>Ações</span></div>{jobs.length === 0 && <div className="job-row"><span><strong>Nenhum job disponível</strong><small>Os jobs reais aparecerão aqui quando as filas estiverem habilitadas.</small></span></div>}{jobs.map((job) => { const key = `${job.queue}:${job.id}`; return <div className="job-row" key={key}><span><strong>{job.name}</strong><small>{job.queue} • {job.idempotencyKey}</small></span><span><i className={`badge ${job.status === "completed" ? "green" : job.status === "failed" ? "" : "blue"}`}>{job.status}</i>{job.error && <small>{job.error}</small>}</span><span>{job.attempts}/{job.maxAttempts}<small>{job.durationMs} ms</small></span><code>{job.correlationId}</code><span>{job.status === "failed" && <button disabled={busy === key} onClick={() => void act({ action: "retry", queue: job.queue, id: job.id })}>Reprocessar</button>}{job.status === "waiting" && job.queue !== "dead-letter" && <button disabled={busy === key} onClick={() => void act({ action: "cancel", queue: job.queue, id: job.id })}>Cancelar</button>}</span></div>; })}</section></main>;
 }
 
-type UserRow = { id: string; name: string; email: string; role: string; active: boolean; lastLoginAt: string | null; createdAt: string };
+type UserRow = { id: string; name: string; email: string; role: string; active: boolean; mustChangePassword: boolean; lastLoginAt: string | null; createdAt: string };
+type ResetRequest = { id: string; email: string; note: string | null; createdAt: string };
 
 function Users() {
   const [role, setRole] = useState<Role>("Administrador");
   const [users, setUsers] = useState<UserRow[]>([]);
+  const [resetRequests, setResetRequests] = useState<ResetRequest[]>([]);
   const [available, setAvailable] = useState(true);
   const [state, setState] = useState<"loading" | "ready" | "error">("loading");
   const [nonce, setNonce] = useState(0);
@@ -99,7 +101,7 @@ function Users() {
     let active = true;
     fetch("/api/admin/users", { cache: "no-store" })
       .then((response) => response.ok ? response.json() : Promise.reject(new Error("falhou")))
-      .then((payload: { available: boolean; users: UserRow[] }) => { if (active) { setAvailable(payload.available); setUsers(payload.users ?? []); setState("ready"); } })
+      .then((payload: { available: boolean; users: UserRow[]; resetRequests?: ResetRequest[] }) => { if (active) { setAvailable(payload.available); setUsers(payload.users ?? []); setResetRequests(payload.resetRequests ?? []); setState("ready"); } })
       .catch(() => { if (active) setState("error"); });
     return () => { active = false; };
   }, [nonce]);
@@ -125,7 +127,26 @@ function Users() {
       <button className="button secondary" style={{ marginTop: 8 }} onClick={() => setSecret(null)}>Já anotei</button>
     </div>}
 
-    <section className="data-card">
+    {resetRequests.length > 0 && <section className="data-card">
+      <div className="card-header"><strong>Pedidos de recuperação de senha</strong><span className="badge amber">{resetRequests.length}</span></div>
+      <div style={{ padding: "4px 0" }}>
+        {resetRequests.map((item) => {
+          const match = users.find((user) => user.email === item.email);
+          return <div className="permission-row" key={item.id} style={{ flexWrap: "wrap", gap: 10 }}>
+            <span style={{ flex: 1, minWidth: 220 }}><strong>{item.email}</strong><small style={{ display: "block", color: "#64748b" }}>{new Date(item.createdAt).toLocaleString("pt-BR")}{item.note ? ` • "${item.note}"` : ""}{match ? "" : " • nenhuma conta com este e-mail"}</small></span>
+            <span style={{ display: "flex", gap: 8 }}>
+              {match && <button disabled={busy !== null} onClick={() => void act(`pwd:${match.id}`, { action: "reset-password", id: match.id, requestId: item.id })}>Gerar senha nova</button>}
+              <button disabled={busy !== null} onClick={() => void act(`dismiss:${item.id}`, { action: "dismiss-reset", requestId: item.id })}>Descartar</button>
+            </span>
+          </div>;
+        })}
+      </div>
+      {/* O pedido é aceito mesmo sem conta correspondente, de propósito: recusar
+          revelaria quais e-mails têm conta. Por isso alguns aparecem sem par. */}
+      <div className="state-card" style={{ margin: 14 }}>Não há envio de e-mail no LZR HUB: a senha gerada aparece aqui e você a entrega à pessoa. Ela vai ser obrigada a definir a dela no primeiro acesso.</div>
+    </section>}
+
+    <section className="data-card" style={{ marginTop: resetRequests.length > 0 ? 14 : 0 }}>
       <div className="card-header"><strong>Nova conta</strong><span className="badge blue">Senha gerada pelo sistema</span></div>
       <div className="wizard" style={{ display: "grid", gap: 8 }}>
         <input placeholder="Nome completo" value={form.name} onChange={(event) => { setForm({ ...form, name: event.target.value }); setError(null); }} />
@@ -146,6 +167,7 @@ function Users() {
         <span style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
           <select value={user.role} disabled={busy !== null} onChange={(event) => void act(`role:${user.id}`, { action: "set-role", id: user.id, role: event.target.value })}>{roles.map((item) => <option key={item} value={item}>{item}</option>)}</select>
           <i className={`badge ${user.active ? "green" : ""}`}>{user.active ? "ativa" : "inativa"}</i>
+          {user.mustChangePassword && <i className="badge amber">senha provisória</i>}
           <button disabled={busy !== null} onClick={() => void act(`active:${user.id}`, { action: "set-active", id: user.id, active: !user.active })}>{user.active ? "Desativar" : "Reativar"}</button>
           <button disabled={busy !== null} onClick={() => void act(`pwd:${user.id}`, { action: "reset-password", id: user.id })}>Resetar senha</button>
         </span>

@@ -86,3 +86,16 @@ test("agir sobre conta inexistente falha com 404, não em silêncio", async () =
   await assert.rejects(() => resetPassword(repository, "nao-existe"), (error) => error.status === 404);
   await assert.rejects(() => setActive(repository, actor("x"), "nao-existe", false), (error) => error.status === 404);
 });
+
+test("senha definida por terceiro nasce provisória", async () => {
+  const repository = new MemoryUserAdminRepository();
+  const { user } = await createUser(repository, { name: "Ana", email: "ana@bbnet.com", role: "Atendente" });
+  assert.equal(repository.rows.find((row) => row.id === user.id).mustChangePassword, true, "conta nova exige definir a senha no primeiro acesso");
+
+  // Marca o contrário para provar que o reset volta a exigir a troca.
+  await repository.update(user.id, {});
+  repository.rows.find((row) => row.id === user.id).mustChangePassword = false;
+
+  await resetPassword(repository, user.id);
+  assert.equal(repository.rows.find((row) => row.id === user.id).mustChangePassword, true, "senha que o admin conhece não pode ficar valendo");
+});

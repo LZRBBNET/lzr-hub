@@ -15,7 +15,7 @@ type UiMessage = ChatMessage & { time: string; result?: AgentResult };
 
 function Avatar({ initials = "JP" }: { initials?: string }) { return <div className="avatar">{initials}</div>; }
 
-type SessionState = { authenticated: boolean; authRequired: boolean; user?: { name: string; email: string; role: string } };
+type SessionState = { authenticated: boolean; authRequired: boolean; mustChangePassword?: boolean; user?: { name: string; email: string; role: string } };
 
 function initialsOf(name: string) {
   return name.trim().split(/\s+/).slice(0, 2).map((part) => part[0]?.toUpperCase() ?? "").join("") || "??";
@@ -48,6 +48,8 @@ export function LzrHubApp({ ixcMode = "disabled" }: { ixcMode?: string }) {
   const [changingPassword, setChangingPassword] = useState(false);
   const session = useSessionRedirect();
   const user = session?.user;
+  // Senha gerada pelo sistema: a pessoa define a dela antes de usar qualquer tela.
+  const forced = session?.mustChangePassword === true;
   // Só existe dado real quando o IXC está de fato ligado. Fora disso a tela
   // continua avisando que é demonstração, que é a verdade nesse modo.
   const live = ixcMode === "staging-readonly" || ixcMode === "production-readonly";
@@ -72,7 +74,7 @@ export function LzrHubApp({ ixcMode = "disabled" }: { ixcMode?: string }) {
           </div>}
         </div>
       </aside>
-      {changingPassword && <PasswordDialog onClose={() => setChangingPassword(false)} />}
+      {(changingPassword || forced) && <PasswordDialog forced={forced} onClose={() => { setChangingPassword(false); if (forced) window.location.reload(); }} />}
       <section className="workspace">
         <header className="topbar"><div className="topbar-title"><strong>{viewTitles[view][0]}</strong><span>{live ? "Dados reais de produção • somente leitura" : viewTitles[view][1]}</span></div><div className="live-pill">{live ? "● IXC conectado • somente leitura" : "● Homologação protegida • demo mock"}</div></header>
         {live
@@ -188,7 +190,7 @@ function Dashboard({ onOpen }: { onOpen: () => void }) {
  * pertence à pessoa e não à Administração — um "Somente leitura" também precisa
  * conseguir trocar a sua, sem depender de alguém resetar por ele.
  */
-function PasswordDialog({ onClose }: { onClose: () => void }) {
+function PasswordDialog({ onClose, forced = false }: { onClose: () => void; forced?: boolean }) {
   const [current, setCurrent] = useState("");
   const [next, setNext] = useState("");
   const [confirm, setConfirm] = useState("");
@@ -208,13 +210,16 @@ function PasswordDialog({ onClose }: { onClose: () => void }) {
     finally { setBusy(false); }
   }
 
-  return <div style={{ position: "fixed", inset: 0, background: "rgba(15,23,42,.45)", display: "grid", placeItems: "center", zIndex: 50 }} onClick={onClose}>
+  // No primeiro acesso o diálogo não fecha: clicar fora ou apertar Esc deixaria
+  // a pessoa navegando com uma senha que um administrador conhece.
+  return <div style={{ position: "fixed", inset: 0, background: "rgba(15,23,42,.45)", display: "grid", placeItems: "center", zIndex: 50 }} onClick={forced ? undefined : onClose}>
     <div className="data-card" style={{ width: "min(420px, 92vw)", background: "white" }} onClick={(event) => event.stopPropagation()}>
-      <div className="card-header"><strong>Trocar minha senha</strong><button onClick={onClose}>Fechar</button></div>
+      <div className="card-header"><strong>{forced ? "Defina a sua senha" : "Trocar minha senha"}</strong>{!forced && <button onClick={onClose}>Fechar</button>}</div>
+      {forced && !done && <div className="state-card" style={{ margin: "0 14px" }}>A senha que você usou foi gerada pelo sistema e um administrador a conhece. Defina a sua para continuar.</div>}
       {done
-        ? <div style={{ padding: 16, lineHeight: 1.7, fontSize: 12 }}><strong>Senha trocada.</strong><p style={{ marginTop: 6 }}>As suas outras sessões foram encerradas — se alguém estava logado na sua conta em outro lugar, perdeu o acesso agora. Esta continua valendo.</p><button className="button" style={{ marginTop: 10 }} onClick={onClose}>Pronto</button></div>
+        ? <div style={{ padding: 16, lineHeight: 1.7, fontSize: 12 }}><strong>Senha trocada.</strong><p style={{ marginTop: 6 }}>As suas outras sessões foram encerradas — se alguém estava logado na sua conta em outro lugar, perdeu o acesso agora. Esta continua valendo.</p><button className="button" style={{ marginTop: 10 }} onClick={onClose}>{forced ? "Entrar" : "Pronto"}</button></div>
         : <div className="wizard" style={{ display: "grid", gap: 8 }}>
-            <input type="password" placeholder="Senha atual" value={current} onChange={(event) => { setCurrent(event.target.value); setMessage(null); }} />
+            <input type="password" placeholder={forced ? "Senha que você recebeu" : "Senha atual"} value={current} onChange={(event) => { setCurrent(event.target.value); setMessage(null); }} />
             <input type="password" placeholder="Nova senha (mínimo 10 caracteres)" value={next} onChange={(event) => setNext(event.target.value)} />
             <input type="password" placeholder="Repita a nova senha" value={confirm} onChange={(event) => setConfirm(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") void submit(); }} />
             {message && <p style={{ fontSize: 11, color: "#a83d49", lineHeight: 1.5 }}>{message}</p>}

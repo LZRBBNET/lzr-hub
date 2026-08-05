@@ -11,6 +11,8 @@ export const SESSION_TTL_HOURS = 12;
 const KEY_LENGTH = 64;
 
 export interface AuthenticatedUser { id: string; email: string; name: string; role: Role }
+/** Marca que a senha atual foi gerada pelo sistema e precisa ser trocada. */
+export interface WithPasswordFlag { mustChangePassword: boolean }
 
 export function isRole(value: string): value is Role {
   return (roles as readonly string[]).includes(value);
@@ -38,19 +40,19 @@ export function hashToken(token: string): string {
 }
 
 export interface AuthRepository {
-  findUserByEmail(email: string): Promise<{ id: string; email: string; name: string; role: string; passwordHash: string; passwordSalt: string; active: boolean } | undefined>;
+  findUserByEmail(email: string): Promise<{ id: string; email: string; name: string; role: string; passwordHash: string; passwordSalt: string; active: boolean; mustChangePassword?: boolean } | undefined>;
   createSession(tokenHash: string, userId: string, expiresAtIso: string): Promise<void>;
   findSession(tokenHash: string): Promise<{ userId: string; expiresAt: string } | undefined>;
   deleteSession(tokenHash: string): Promise<void>;
   deleteExpiredSessions(nowIso: string): Promise<void>;
   /** Encerra as outras sessões da pessoa, preservando a atual. */
   deleteOtherSessions(userId: string, keepTokenHash: string): Promise<void>;
-  updatePassword(userId: string, hash: string, salt: string): Promise<void>;
-  findUserById(id: string): Promise<{ id: string; email: string; name: string; role: string; active: boolean } | undefined>;
+  updatePassword(userId: string, hash: string, salt: string, mustChangePassword?: boolean): Promise<void>;
+  findUserById(id: string): Promise<{ id: string; email: string; name: string; role: string; active: boolean; mustChangePassword?: boolean } | undefined>;
   markLogin(userId: string, atIso: string): Promise<void>;
 }
 
-export interface LoginResult { token: string; expiresAt: string; user: AuthenticatedUser }
+export interface LoginResult { token: string; expiresAt: string; user: AuthenticatedUser; mustChangePassword: boolean }
 
 /**
  * Autentica e abre sessão. Retorna undefined para qualquer falha (e-mail
@@ -76,7 +78,7 @@ export async function login(
   await repository.createSession(hashToken(token), user.id, expiresAt);
   await repository.markLogin(user.id, new Date().toISOString());
 
-  return { token, expiresAt, user: { id: user.id, email: user.email, name: user.name, role: user.role } };
+  return { token, expiresAt, user: { id: user.id, email: user.email, name: user.name, role: user.role }, mustChangePassword: user.mustChangePassword === true };
 }
 
 export async function resolveSession(
@@ -127,8 +129,8 @@ export class DbAuthRepository implements AuthRepository {
   async deleteOtherSessions(userId: string, keepTokenHash: string) {
     await this.db.delete(sessions).where(and(eq(sessions.userId, userId), ne(sessions.tokenHash, keepTokenHash)));
   }
-  async updatePassword(userId: string, hash: string, salt: string) {
-    await this.db.update(users).set({ passwordHash: hash, passwordSalt: salt, updatedAt: new Date().toISOString() }).where(eq(users.id, userId));
+  async updatePassword(userId: string, hash: string, salt: string, mustChangePassword = false) {
+    await this.db.update(users).set({ passwordHash: hash, passwordSalt: salt, mustChangePassword, updatedAt: new Date().toISOString() }).where(eq(users.id, userId));
   }
   async deleteExpiredSessions(nowIso: string) {
     await this.db.delete(sessions).where(lt(sessions.expiresAt, nowIso));
@@ -139,12 +141,12 @@ export class DbAuthRepository implements AuthRepository {
 }
 
 export class MemoryAuthRepository implements AuthRepository {
-  readonly users: Array<{ id: string; email: string; name: string; role: string; passwordHash: string; passwordSalt: string; active: boolean; lastLoginAt?: string }> = [];
+  readonly users: Array<{ id: string; email: string; name: string; role: string; passwordHash: string; passwordSalt: string; active: boolean; mustChangePassword?: boolean; lastLoginAt?: string }> = [];
   readonly sessions = new Map<string, { userId: string; expiresAt: string }>();
 
-  async addUser(email: string, password: string, role: Role, name = email, active = true) {
+  async addUser(email: string, password: string, role: Role, name = email, active = true, mustChangePassword = false) {
     const { hash, salt } = await hashPassword(password);
-    const user = { id: randomUUID(), email: email.toLowerCase(), name, role, passwordHash: hash, passwordSalt: salt, active };
+    const user = { id: randomUUID(), email: email.toLowerCase(), name, role, passwordHash: hash, passwordSalt: salt, active, mustChangePassword };
     this.users.push(user);
     return user;
   }
@@ -159,9 +161,9 @@ export class MemoryAuthRepository implements AuthRepository {
   async deleteOtherSessions(userId: string, keepTokenHash: string) {
     for (const [key, value] of this.sessions) if (value.userId === userId && key !== keepTokenHash) this.sessions.delete(key);
   }
-  async updatePassword(userId: string, hash: string, salt: string) {
+  async updatePassword(userId: string, hash: string, salt: string, mustChangePassword = false) {
     const user = this.users.find((item) => item.id === userId);
-    if (user) { user.passwordHash = hash; user.passwordSalt = salt; }
+    if (user) { user.passwordHash = hash; user.passwordSalt = salt; user.mustChangePassword = mustChangePassword; }
   }
   async markLogin(userId: string, atIso: string) {
     const user = this.users.find((item) => item.id === userId);
@@ -200,7 +202,7 @@ export async function changeOwnPassword(
   }
 
   const { hash, salt } = await hashPassword(newPassword);
-  await repository.updatePassword(userId, hash, salt);
+  await repository.updatePassword(userId, hash, salt, false);
   await repository.deleteOtherSessions(userId, hashToken(currentToken));
 }
 
@@ -209,13 +211,13 @@ export async function changeOwnPassword(
  * de leitura e não precisa deles, e o que não sai daqui não vaza num log.
  * Usuários são criados por `scripts/create-user.mjs` — não há cadastro na tela.
  */
-export interface UserListItem { id: string; name: string; email: string; role: string; active: boolean; lastLoginAt: string | null; createdAt: string }
+export interface UserListItem { id: string; name: string; email: string; role: string; active: boolean; mustChangePassword: boolean; lastLoginAt: string | null; createdAt: string }
 
 export async function listUsers(db: unknown): Promise<UserListItem[]> {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const rows = await (db as any).select({
     id: users.id, name: users.name, email: users.email, role: users.role,
-    active: users.active, lastLoginAt: users.lastLoginAt, createdAt: users.createdAt,
+    active: users.active, mustChangePassword: users.mustChangePassword, lastLoginAt: users.lastLoginAt, createdAt: users.createdAt,
   }).from(users).orderBy(users.createdAt);
   return rows as UserListItem[];
 }

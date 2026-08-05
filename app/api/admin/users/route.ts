@@ -3,6 +3,7 @@ import { getDb } from "@/db";
 import { listUsers } from "@/lib/platform/auth";
 import { logUnauthenticatedAction } from "@/lib/platform/audit-log";
 import { authorize } from "@/lib/platform/session-guard";
+import { DbPasswordResetRepository } from "@/lib/platform/password-reset";
 import {
   DbUserAdminRepository, UserAdminError, createUser, parseNewUser, resetPassword, setActive, setRole,
 } from "@/lib/platform/user-admin";
@@ -12,9 +13,14 @@ export async function GET(request: Request) {
   const guard = await authorize(request, "users.manage");
   if (!guard.allowed) return NextResponse.json({ error: guard.error }, { status: guard.status });
   try {
-    return NextResponse.json({ available: true, users: await listUsers(await getDb()) });
+    const db = await getDb();
+    const [users, resetRequests] = await Promise.all([
+      listUsers(db),
+      new DbPasswordResetRepository(db).listPending(50),
+    ]);
+    return NextResponse.json({ available: true, users, resetRequests });
   } catch {
-    return NextResponse.json({ available: false, detail: "Lista de usuários indisponível", users: [] });
+    return NextResponse.json({ available: false, detail: "Lista de usuários indisponível", users: [], resetRequests: [] });
   }
 }
 
@@ -57,8 +63,18 @@ export async function POST(request: Request) {
       await logUnauthenticatedAction({ action: "users.set-role", entity: `user:${targetId}`, result: "success", reason: `Perfil de ${user.email} alterado para ${user.role}`, actor: guard.user });
       return NextResponse.json(user);
     }
+    if (body.action === "dismiss-reset") {
+      const requestId = typeof body.requestId === "string" ? body.requestId : "";
+      const resolved = await new DbPasswordResetRepository(await getDb()).resolve(requestId, guard.user.email, "dismissed");
+      await logUnauthenticatedAction({ action: "users.reset-request.dismiss", entity: `password_reset:${requestId}`, result: resolved ? "success" : "not_found", reason: "Pedido de recuperação descartado", actor: guard.user });
+      return resolved ? NextResponse.json(resolved) : NextResponse.json({ error: "Pedido não encontrado" }, { status: 404 });
+    }
     if (body.action === "reset-password") {
       const { user, password } = await resetPassword(repository, targetId);
+      // Resetar a senha de alguém encerra o pedido de recuperação em aberto:
+      // deixar pendente faria o administrador resetar de novo sem necessidade.
+      const requestId = typeof body.requestId === "string" ? body.requestId : "";
+      if (requestId) await new DbPasswordResetRepository(await getDb()).resolve(requestId, guard.user.email, "resolved");
       await logUnauthenticatedAction({ action: "users.reset-password", entity: `user:${targetId}`, result: "success", reason: `Senha redefinida para ${user.email}`, actor: guard.user });
       return NextResponse.json({ user, password });
     }

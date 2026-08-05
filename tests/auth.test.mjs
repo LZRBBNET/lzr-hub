@@ -138,3 +138,15 @@ test("senha nova curta ou igual à atual é recusada", async () => {
   await assert.rejects(() => changeOwnPassword(repository, user.id, sessao.token, "senha-antiga-123", "curta"), /pelo menos 10/);
   await assert.rejects(() => changeOwnPassword(repository, user.id, sessao.token, "senha-antiga-123", "senha-antiga-123"), /diferente da atual/);
 });
+
+test("trocar a própria senha limpa a marca de senha provisória", async () => {
+  const repository = new MemoryAuthRepository();
+  const user = await repository.addUser("ana@bbnet.com", "gerada-pelo-sistema", "Atendente", "Ana", true, true);
+
+  const primeiro = await login(repository, "ana@bbnet.com", "gerada-pelo-sistema");
+  assert.equal(primeiro.mustChangePassword, true, "o primeiro acesso avisa que a senha é provisória");
+
+  await changeOwnPassword(repository, user.id, primeiro.token, "gerada-pelo-sistema", "minha-senha-propria");
+  const depois = await login(repository, "ana@bbnet.com", "minha-senha-propria");
+  assert.equal(depois.mustChangePassword, false, "definida a senha, a marca sai");
+});
