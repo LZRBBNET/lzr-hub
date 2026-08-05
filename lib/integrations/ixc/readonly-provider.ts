@@ -144,7 +144,30 @@ export class IxcReadonlyProvider {
   }
   /** Quantos contratos ativos existem hoje. Uma consulta, sem varrer registro. */
   async countActiveContracts(correlationId:string){
-    return (await this.readPage("listContracts",endpoints.listContracts,"cliente_contrato.status","A",correlationId,1,"",{oper:"=",sortname:"cliente_contrato.id"})).total;
+    return this.countContractsByStatus("A",correlationId);
+  }
+  /**
+   * Contagem por situação do contrato. Confirmado em homologação: o IXC usa
+   * **"I"** para contrato encerrado, não "C" — que simplesmente não existe e
+   * devolveria zero em silêncio, parecendo "nenhum cancelamento".
+   */
+  async countContractsByStatus(status:string,correlationId:string){
+    return (await this.readPage("listContracts",endpoints.listContracts,"cliente_contrato.status",status,correlationId,1,"",{oper:"=",sortname:"cliente_contrato.id"})).total;
+  }
+  /**
+   * Contratos cancelados a partir de uma data. Filtra por `data_cancelamento`,
+   * sem prender o status: combinar `status = A` com data de cancelamento é
+   * contraditório e devolve zero — erro que já foi cometido aqui uma vez.
+   */
+  async listCancellations(sinceIso:string,correlationId:string,maxPages=4,pageSize=500){
+    const filters:GridFilter[]=[{TB:"cliente_contrato.data_cancelamento",OP:">=",P:sinceIso.slice(0,10)}];
+    const rows:Record<string,unknown>[]=[];let total=0;
+    for(let page=1;page<=maxPages;page+=1){
+      const result=await this.readPage("listContracts",endpoints.listContracts,"cliente_contrato.data_cancelamento",sinceIso.slice(0,10),correlationId,pageSize,"",{oper:">=",page,sortname:"cliente_contrato.data_cancelamento",sortorder:"desc",gridParam:filters});
+      total=result.total;rows.push(...result.records);
+      if(result.records.length<pageSize||rows.length>=total)break;
+    }
+    return{rows,total,truncated:rows.length<total};
   }
   /** Contagem de faturas em aberto na base inteira: uma consulta, sem varrer registro. */
   async countOpenInvoices(correlationId:string){

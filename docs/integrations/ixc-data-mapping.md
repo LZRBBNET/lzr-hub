@@ -51,6 +51,35 @@ A limitação a um cadastro era a **allowlist de homologação**, decisão nossa
 
 ⚠️ Antes de ligar, considere o `IXC_RATE_LIMIT_PER_MINUTE` (padrão 30). Uma tela de lista paginada consome 1 chamada por página mais as consultas de cidade ainda não cacheadas.
 
+## Situação do contrato: "I", não "C" (verificado em 2026-08-04)
+
+O IXC marca contrato encerrado com **`status = "I"`**. `"C"` não existe e devolve `total: 0` — em silêncio, parecendo "nenhum cancelamento". Confirmado por amostra de 400 contratos: só aparecem `A` e `I`, e todos os que têm `data_cancelamento` preenchida são `I`.
+
+| Status | Total na base |
+|---|---|
+| `A` (ativo) | 14.955 |
+| `I` (encerrado) | 21.949 |
+| `P` | 7 |
+| `C`, `D`, `N`, `B` | não existem |
+
+⚠️ **Nunca combine `status = "A"` com `data_cancelamento`** — são condições contraditórias e o resultado é sempre zero. Esse erro já foi cometido aqui e produziu a conclusão errada de que não havia cancelamentos.
+
+Cancelamentos filtrando só por `data_cancelamento`: 242 em 30 dias, 545 em 90, 1.345 em 2026.
+
+**`motivo_cancelamento` é um código numérico e a API não expõe a tradução.** Foram testados `cliente_contrato_motivo`, `motivo_cancelamento`, `su_motivo`, `cliente_contrato_cancelamento` e `vd_contrato_motivo_cancel` — todos respondem "Recurso não está disponível". A tela mostra o código cru; o significado precisa vir do painel do IXC ou do suporte.
+
+## Filtros compostos: `grid_param`
+
+O trio `qtype`/`query`/`oper` só aceita **uma** condição. Para combinar, o webservice usa `grid_param`, um JSON de filtros:
+
+```json
+[{"TB":"fn_areceber.status","OP":"=","P":"A"},{"TB":"fn_areceber.data_vencimento","OP":"<","P":"2026-08-04"}]
+```
+
+Validado: `status=A` sozinho dá 73.870 faturas; combinado com o vencimento cai para 3.541; e um valor inválido zera — o que prova que a combinação é aplicada, e não ignorada em silêncio.
+
+O IXC **não agrega**: `total` dá a contagem, mas somar valores exige varrer os registros. Por isso a Cobrança soma as vencidas (poucos milhares) e declara que não soma o total em aberto (74 mil).
+
 ## O que o IXC genuinamente não disponibiliza (não inventamos valor no lugar)
 
 Testado com um cliente real: `radusuarios` (conexão) **não tem** modelo de ONU, potência óptica (dBm) nem contagem de dispositivos conectados. O Customer 360 mostra "Não disponibilizado pelo IXC" nesses campos -- frase deliberadamente diferente de "não consultado", que sugeriria que só não perguntamos.

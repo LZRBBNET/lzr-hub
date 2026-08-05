@@ -12,4 +12,14 @@ test("consecutive responses expose repetition progress metrics",async()=>{const 
 test("responses ask at most one question",async()=>{for(const message of["sem internet","internet lenta","wifi ruim","preciso de ajuda"]){const result=await turn(message);assert.ok((result.response.match(/\?/g)??[]).length<=1)}})
 test("handoff contains receipt and summary",async()=>{const result=await turn("quero falar com um atendente");assert.equal(result.state,"handoff");assert.ok(result.tools.some(tool=>tool.artifact?.type==="protocol"));assert.match(result.conversationSummary,/ação/)})
 test("Customer 360 exposes masked data and provider sources",async()=>{const response=await worker.fetch(new Request("http://localhost/api/customers?id=DEMO-CLI-001"),env,ctx);assert.equal(response.status,200);const data=await response.json();assert.match(data.customer.maskedDocument,/\*\*\*/);assert.ok(data.sources.length>=4);assert.equal(typeof data.partial,"boolean")})
-test("knowledge ingestion and evidence search work",async()=>{const title="Procedimento demo de potência óptica";const createdResponse=await worker.fetch(new Request("http://localhost/api/knowledge",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({action:"ingest",title,category:"Suporte"})}),env,ctx);assert.equal(createdResponse.status,201);const created=await createdResponse.json();await worker.fetch(new Request("http://localhost/api/knowledge",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({action:"publish",id:created.id})}),env,ctx);const search=await worker.fetch(new Request("http://localhost/api/knowledge?q=potência óptica"),env,ctx);const result=await search.json();assert.ok(result.results.some(item=>item.document.title===title));assert.match(result.results[0].evidence,/Fonte interna/)})
+// A base de conhecimento passou a gravar no Postgres. Sem banco (que é o caso
+// deste worker de demonstração) a rota precisa declarar indisponibilidade em vez
+// de aceitar o documento em memória e perdê-lo no próximo restart.
+test("sem banco, a base de conhecimento se declara indisponível em vez de fingir que salvou",async()=>{
+  const created=await worker.fetch(new Request("http://localhost/api/knowledge",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({action:"ingest",title:"Procedimento de potência óptica",category:"Suporte",content:"Conteúdo suficientemente longo para passar na validação."})}),env,ctx);
+  assert.equal(created.status,503);
+  const list=await worker.fetch(new Request("http://localhost/api/knowledge"),env,ctx);
+  const payload=await list.json();
+  assert.equal(payload.available,false,"lista vazia com available:true seria lida como 'nenhum documento cadastrado'");
+  assert.deepEqual(payload.items,[]);
+})
