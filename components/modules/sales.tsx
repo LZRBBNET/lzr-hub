@@ -176,7 +176,10 @@ function Goals(){
         <Metric label="Meta do mês" value={goal.targetContracts.toLocaleString("pt-BR")} detail={goal.targetRevenue===null?"Sem meta de receita":`e ${money(goal.targetRevenue)} de receita`}/>
         <Metric label="Realizado" value={realized?realized.contracts.toLocaleString("pt-BR"):"—"} detail={realized?`${percent(progress?.contractsPercent??0)} da meta`:"IXC indisponível"}/>
         <Metric label="Receita somada" value={realized?money(realized.revenue):"—"} detail={realized&&progress?.revenuePercent!=null?`${percent(progress.revenuePercent)} da meta de receita`:realized?"Sem meta de receita definida":"IXC indisponível"}/>
-        <Metric label="Projeção pelo ritmo" value={progress?.projectedContracts==null?"—":progress.projectedContracts.toLocaleString("pt-BR")} detail={progress?.projectedContracts==null?"Só para o mês corrente":`${percent(progress.elapsed)} do mês decorrido`}/>
+        {/* Sem realizado a projeção não existe por falta de dado, não por ser
+            mês fechado — dizer "só para o mês corrente" em pleno mês corrente
+            manda a pessoa procurar o erro no lugar errado. */}
+        <Metric label="Projeção pelo ritmo" value={progress?.projectedContracts==null?"—":progress.projectedContracts.toLocaleString("pt-BR")} detail={!realized?"Depende do realizado, que está indisponível":progress?.projectedContracts==null?"Mês fechado não é projetado":`${percent(progress.elapsed)} do mês decorrido`}/>
       </section>}
 
       {goal&&realized&&progress&&<div className="state-card">
