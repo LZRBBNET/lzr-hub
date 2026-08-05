@@ -109,6 +109,22 @@ export class IxcReadonlyProvider {
     }
     return{rows,total,truncated:rows.length<total};
   }
+  /**
+   * Fila de ordens de serviço ainda não fechadas, da base inteira.
+   *
+   * Diferente da Cobrança, aqui não é preciso varrer nada: a fila é paginada, e
+   * cada página é uma consulta só. O `total` do IXC dá a contagem exata
+   * (~4.700 em homologação, contra 195 mil já fechadas).
+   *
+   * A OS traz `id_cliente` e o endereço, mas **não** o nome do cliente — buscar
+   * o nome linha a linha seria uma consulta por item da página. Quem chama
+   * mostra o id e o endereço em vez de disparar essa rajada.
+   */
+  async listOpenServiceOrders(page:number,pageSize:number,correlationId:string){
+    const size=Math.min(Math.max(pageSize,1),100);
+    const {records,total}=await this.readPage("listServiceOrders",endpoints.listServiceOrders,"su_oss_chamado.status","F",correlationId,size,"",{oper:"!=",page:Math.max(page,1),sortname:"su_oss_chamado.data_abertura",sortorder:"desc"});
+    return{items:records.map(IxcServiceOrderMapper.map),total,page:Math.max(page,1),pageSize:size};
+  }
   /** Contagem de faturas em aberto na base inteira: uma consulta, sem varrer registro. */
   async countOpenInvoices(correlationId:string){
     return (await this.readPage("listInvoices",endpoints.listInvoices,"fn_areceber.status","A",correlationId,1,"",{oper:"=",sortname:"fn_areceber.id"})).total;

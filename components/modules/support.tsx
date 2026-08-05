@@ -6,8 +6,8 @@ export function SupportModule({view}:{view:"monitoramento"|"mapa-alertas"|"massi
 }
 
 type Incident={id:string;title:string;severity:"low"|"medium"|"high"|"critical";status:"investigating"|"monitoring"|"resolved";city:string;neighborhood:string;equipment:string|null;affectedCustomers:number;startedAt:string;endedAt:string|null};
-type Ticket={id:string;customerId:string;customerName:string;city:string;subject:string;status:string;openedAt:string|null;closedAt:string|null};
-type TicketPayload={available:boolean;detail?:string;scope:string;allowlistSize?:number;unavailableCustomers?:number;items:Ticket[]};
+type Ticket={id:string;customerId:string;customerName:string|null;city:string|null;address?:string|null;subject:string;status:string;openedAt:string|null;closedAt:string|null};
+type TicketPayload={available:boolean;detail?:string;scope:string;allowlistSize?:number;unavailableCustomers?:number;total?:number;page?:number;pageSize?:number;items:Ticket[]};
 
 /** OS aberta no IXC: "F" e "finalizada" marcam encerramento; o resto segue em aberto. */
 const isOpenTicket=(status:string)=>!/^f$|finaliz|encerr|conclu/i.test(status.trim());
@@ -27,25 +27,28 @@ function useIncidents(){
   return {items,available,state,reload};
 }
 
-function useTickets(){
+function useTickets(page:number){
   const [data,setData]=useState<TicketPayload|null>(null);const [state,setState]=useState<"loading"|"ready"|"error">("loading");
   useEffect(()=>{let active=true;
-    fetch("/api/support/tickets").then(r=>r.ok?r.json():Promise.reject(new Error("falhou")))
+    fetch(`/api/support/tickets?page=${page}`).then(r=>r.ok?r.json():Promise.reject(new Error("falhou")))
       .then((payload:TicketPayload)=>{if(active){setData(payload);setState("ready")}}).catch(()=>{if(active)setState("error")});
-    return()=>{active=false}},[]);
+    return()=>{active=false}},[page]);
   return {data,state};
 }
 
 function MonitoringCenter(){
   const {items,available,state}=useIncidents();
-  const {data:tickets,state:ticketState}=useTickets();
+  const {data:tickets,state:ticketState}=useTickets(1);
   const open=items.filter(i=>i.status!=="resolved");
-  const openTickets=tickets?.items.filter(t=>isOpenTicket(t.status))??[];
+  // Na base inteira `items` é só a primeira página; a contagem verdadeira é o
+  // `total` do IXC. Contar a página daria 25 chamados para um provedor com milhares.
+  const fullBase=tickets?.scope==="full-base";
+  const openTicketCount=fullBase?(tickets?.total??0):(tickets?.items.filter(t=>isOpenTicket(t.status)).length??0);
   return <main className="content">
     <Heading title="Centro de Monitoramento" text="O que existe de medido hoje: massivas registradas pela operação e ordens de serviço do IXC."/>
     <section className="metrics">
       <Metric label="Massivas em aberto" value={state==="ready"&&available?String(open.length):"—"} detail={state==="ready"&&available?(open.length?`${open.reduce((sum,i)=>sum+i.affectedCustomers,0)} clientes estimados`:"Nenhuma massiva aberta"):"Registro indisponível"}/>
-      <Metric label="Chamados em aberto" value={ticketState==="ready"&&tickets?.available?String(openTickets.length):"—"} detail={ticketState==="ready"&&tickets?.available?`De ${tickets.items.length} OS consultadas no IXC`:"IXC indisponível"}/>
+      <Metric label="Chamados em aberto" value={ticketState==="ready"&&tickets?.available?openTicketCount.toLocaleString("pt-BR"):"—"} detail={ticketState==="ready"&&tickets?.available?(fullBase?"Fila real do IXC, base inteira":`De ${tickets.items.length} OS dos cadastros da allowlist`):"IXC indisponível"}/>
       <Metric label="Alertas de rede" value="—" detail="Sem integração de monitoramento conectada"/>
       <Metric label="Clientes impactados" value="—" detail="Depende do monitoramento de rede"/>
     </section>
@@ -137,22 +140,29 @@ function MassIncidents(){
 }
 
 function Tickets(){
-  const {data,state}=useTickets();
+  const [page,setPage]=useState(1);
+  const {data,state}=useTickets(page);
   const [onlyOpen,setOnlyOpen]=useState(true);
-  const items=(data?.items??[]).filter(t=>!onlyOpen||isOpenTicket(t.status));
+  const fullBase=data?.scope==="full-base";
+  // Na base inteira o próprio IXC já devolve só as não fechadas; filtrar de novo
+  // aqui esconderia parte da página sem reduzir o total, o que confunde.
+  const items=fullBase?(data?.items??[]):(data?.items??[]).filter(t=>!onlyOpen||isOpenTicket(t.status));
   return <main className="content">
     <Heading title="Chamados" text="Ordens de serviço reais do IXC."/>
     {state==="loading"&&<div className="state-card">Consultando o IXC…</div>}
     {state==="error"&&<div className="state-card error">Não foi possível consultar os chamados.</div>}
     {state==="ready"&&!data?.available&&<div className="state-card error">{data?.detail??"Fonte de chamados indisponível"}.</div>}
     {state==="ready"&&data?.available&&<>
-      <div className="state-card">Mostrando as OS dos <strong>{data.allowlistSize} cadastro(s)</strong> liberados na allowlist do IXC — não é a fila inteira do provedor, porque o ERP não permite listar a base toda por aqui.{data.unavailableCustomers?` ${data.unavailableCustomers} cadastro(s) não responderam.`:""}</div>
-      <section className="filter-bar"><select value={onlyOpen?"open":"all"} onChange={e=>setOnlyOpen(e.target.value==="open")}><option value="open">Só em aberto</option><option value="all">Todas as OS</option></select></section>
+      {fullBase
+        ? <div className="state-card">Fila real do provedor: <strong>{(data.total??0).toLocaleString("pt-BR")}</strong> OS ainda não fechadas. O IXC não devolve o nome do cliente na OS — buscar linha a linha seria uma consulta por item, então a fila mostra o código do cadastro e o endereço do atendimento.</div>
+        : <div className="state-card">Mostrando as OS dos <strong>{data.allowlistSize} cadastro(s)</strong> liberados na allowlist do IXC — trava nossa, de homologação, não é a fila inteira do provedor.{data.unavailableCustomers?` ${data.unavailableCustomers} cadastro(s) não responderam.`:""}</div>}
+      {!fullBase&&<section className="filter-bar"><select value={onlyOpen?"open":"all"} onChange={e=>setOnlyOpen(e.target.value==="open")}><option value="open">Só em aberto</option><option value="all">Todas as OS</option></select></section>}
       {items.length===0
-        ? <div className="state-card">Nenhuma OS {onlyOpen?"em aberto":"encontrada"} nos cadastros consultados.</div>
+        ? <div className="state-card">Nenhuma OS {onlyOpen&&!fullBase?"em aberto":"encontrada"} nos cadastros consultados.</div>
         : <section className="data-card">
-            <div className="data-row header"><span>OS / cliente</span><span>Assunto</span><span>Status</span><span>Aberta em</span><span></span></div>
-            {items.map(t=><div className="data-row" key={t.id}><span><strong>{t.id}</strong><small>{t.customerName} • {t.city}</small></span><span>{t.subject}</span><span><i className={`severity ${isOpenTicket(t.status)?"high":"low"}`}>{isOpenTicket(t.status)?"Em aberto":"Encerrada"}</i></span><span>{dateLabel(t.openedAt)}</span><span>›</span></div>)}
+            <div className="data-row header"><span>OS / {fullBase?"local":"cliente"}</span><span>Assunto</span><span>Status</span><span>Aberta em</span><span></span></div>
+            {items.map(t=><div className="data-row" key={t.id}><span><strong>{t.id}</strong><small>{fullBase?`Cadastro ${t.customerId}${t.address?` • ${t.address}`:""}`:`${t.customerName} • ${t.city}`}</small></span><span>{t.subject.slice(0,90)}</span><span><i className={`severity ${isOpenTicket(t.status)?"high":"low"}`}>{isOpenTicket(t.status)?"Em aberto":"Encerrada"}</i></span><span>{dateLabel(t.openedAt)}</span><span>›</span></div>)}
+            {fullBase&&<div className="pagination"><span>{((data.page??1)-1)*(data.pageSize??25)+1}–{((data.page??1)-1)*(data.pageSize??25)+items.length} de {(data.total??0).toLocaleString("pt-BR")}</span><button disabled={page<=1} onClick={()=>setPage(page-1)}>‹</button><button disabled={((data.page??1)-1)*(data.pageSize??25)+items.length>=(data.total??0)} onClick={()=>setPage(page+1)}>›</button></div>}
           </section>}
     </>}
   </main>;

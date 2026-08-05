@@ -53,7 +53,9 @@ export class IxcInvoiceMapper { static map(raw:Raw):IxcInvoiceDto { const id=str
  * consultada), em vez de ser extraído da própria linha crua.
  */
 export class IxcPaymentMapper { static map(raw:Raw,customerId:string):IxcPaymentDto { const id=str(raw,"id"); if(!id)throw new Error("IXC payment incompleto"); return {id,customerId,invoiceId:str(raw,"id_receber","id_fatura")||undefined,paidAt:str(raw,"data","data_pagamento")||undefined,value:num(raw,"valor"),method:str(raw,"tipo_recebimento","forma_pagamento")||"não informado"}; } }
-export class IxcServiceOrderMapper { static map(raw:Raw):IxcServiceOrderDto { const id=str(raw,"id"); const customerId=str(raw,"id_cliente"); if(!id||!customerId)throw new Error("IXC service order incompleta"); return {id,customerId,status:str(raw,"status")||"desconhecido",subject:str(raw,"assunto","mensagem")||"Assunto não informado",openedAt:str(raw,"data_abertura","data")||undefined,closedAt:str(raw,"data_fechamento")||undefined}; } }
+// O `endereco` da OS já vem montado numa string só pelo IXC (diferente do
+// cadastro, que traz os campos separados) -- por isso não passa por composeAddress.
+export class IxcServiceOrderMapper { static map(raw:Raw):IxcServiceOrderDto { const id=str(raw,"id"); const customerId=str(raw,"id_cliente"); if(!id||!customerId)throw new Error("IXC service order incompleta"); return {id,customerId,status:str(raw,"status")||"desconhecido",subject:str(raw,"assunto","mensagem")||"Assunto não informado",openedAt:str(raw,"data_abertura","data")||undefined,closedAt:str(raw,"data_fechamento")||undefined,address:str(raw,"endereco")||undefined}; } }
 
 export class IxcConnectionMapper {
   static map(raw:Raw):IxcConnectionDto {
