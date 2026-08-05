@@ -45,6 +45,22 @@ npm run db:migrate  # aplica migrações no Postgres
 
 `npm start` roda `scripts/migrate-postgres.mjs` **antes** de subir o servidor. Sem `DATABASE_URL` ele avisa e segue sem migrar, em vez de derrubar o boot.
 
+### ⚠️ `npm run dev` não enxerga o Postgres
+
+`npm run dev` sobe o Vite sobre o **runtime do Cloudflare Workers** (Miniflare). Ali o driver `pg` abre socket TCP e trava: toda rota que toca banco devolve *"The Workers runtime canceled this request because it detected that your Worker's code had hung"*. Vale para `/api/audit`, `/api/knowledge`, `/api/admin/users`, `/api/conversations`, `/api/support/metrics`, `/api/support/incidents`, `/api/billing/rules` e `/api/sales/goals`.
+
+Produção não tem esse problema: o Railway roda `vinext start`, que é Node.
+
+Consequência prática: **não dá para conferir tela de banco rodando só `npm run dev`.** Isso explica boa parte da ficção que sobreviveu tanto tempo nessas telas — ninguém conseguia ver o dado real localmente. Para trabalhar nelas:
+
+```bash
+docker run -d --name lzr-dev-pg -e POSTGRES_PASSWORD=devlocal -e POSTGRES_DB=lzrhub -p 55432:5432 postgres:16-alpine
+```
+
+Aponte `DATABASE_URL` para `postgres://postgres:devlocal@localhost:55432/lzrhub`, rode `npm run db:migrate` e `node scripts/seed-dev.mjs` (o seed **recusa** qualquer banco que não seja localhost). Aí use `npm run build && npx vinext start` para exercitar as rotas de banco — ou teste pelo `curl`, que é mais rápido. O `npm run dev` continua bom para tudo que não toca banco.
+
+`scripts/seed-dev.mjs` cria 8 usuários, 46 conversas espalhadas em 30 dias, massivas, documentos e leads. É massa de desenvolvimento, não dado de demonstração embutido no produto.
+
 ## Banco de dados
 
 Schema único em [`db/schema.ts`](db/schema.ts). Para mudar:
@@ -122,6 +138,10 @@ Ver [`docs/integrations/ixc-data-mapping.md`](docs/integrations/ixc-data-mapping
 **Nada de dado pessoal em log ou resumo.** Há sanitização obrigatória (e-mail, CPF/CNPJ, telefone) antes de gravar qualquer texto vindo de conversa. Ver `sanitizeHandoffText` em `lib/agent/handoff.ts`.
 
 **Contexto operacional vem do servidor.** Rotas nunca aceitam do cliente campos como `channel`, `simulationProfile` ou `role` — isso é rejeitado com 403 (`hasUntrustedOperationalContext` em `app/api/agent/route.ts`).
+
+**Nada de cor fixa.** `app/globals.css` tem tema claro e escuro, e cada cor é declarada **uma vez** com `light-dark(claro, escuro)`. Escrever `#64748b` numa regra — ou num `style={{}}` de componente — produz algo que funciona no claro e some no escuro. Se a cor não existe como token, crie o token. Dois azuis existem de propósito: `--blue` é azul **como texto** (claro no tema escuro) e `--blue-solid` é azul **como fundo de botão** (escuro o bastante para texto branco em cima).
+
+**Cliente não importa de servidor.** Componente com `"use client"` que importa um serviço de `lib/platform/` arrasta as dependências dele para o pacote do navegador. Já aconteceu: `billing.tsx` importava uma constante de `collection-rules-service.ts` e levou junto `node:crypto` e o schema do Drizzle — quebrava o `npm run dev` inteiro e mandava 40 KB de ORM para o navegador em produção. Quando a tela precisa de um tipo ou constante, ele mora num arquivo `*-shared.ts` sem dependência de servidor.
 
 **Estilo.** Parte do código usa formatação bem compacta (várias instruções por linha). Ao editar um arquivo, siga o estilo dele em vez de reformatar.
 

@@ -75,7 +75,7 @@ function Evaluations() {
               {/* A causa mais comum tem nome técnico e consequência clara: vale explicar. */}
               {handoffs[0]?.[0] === "low_intent_confidence" && <div className="insight insight-warning">
                 <strong>A causa principal é o classificador, não o cliente.</strong>
-                A intenção é detectada por expressões regulares fixas. Quando nenhuma casa, a confiança fica em 0,55 — abaixo do corte de 0,6 — e a conversa transborda. Cliente real raramente escreve exatamente o que a regra espera.
+                Quando nenhuma regra casa, a confiança fica em 0,55 — abaixo do corte de 0,6 — e a conversa transborda. Cliente real raramente escreve exatamente o que a regra espera. Estes números são do período selecionado: se o classificador por modelo tiver sido ligado depois, as conversas mais novas não passam mais por aqui. O estado atual está em <strong>Prompts e versões</strong>.
               </div>}
             </section>
 
@@ -102,35 +102,76 @@ function Evaluations() {
   </main>;
 }
 
+type Service = { name: string; state: string; mode: string; detail: string };
+
 /**
- * Não há prompt nenhum para versionar: a classificação de intenção é uma cadeia
- * de expressões regulares em `lib/agent/pipeline.ts` e as respostas são textos
- * fixos. Versionar prompt pressupõe que exista prompt.
+ * Existe **um** prompt no sistema: o do classificador de intenção. Ele não
+ * escreve nada para o cliente — escolhe um item de uma lista fechada de
+ * intenções, e a resposta continua sendo texto fixo.
+ *
+ * Por isso esta tela não versiona prompt em banco: quem muda esse texto muda um
+ * arquivo, e o histórico já está no Git com autor, data e revisão. Uma segunda
+ * cópia versionada no banco só criaria divergência entre o que a tela mostra e
+ * o que o servidor executa.
  */
 function Prompts() {
+  const [service, setService] = useState<Service | null>(null);
+  const [state, setState] = useState<"loading" | "ready" | "error">("loading");
+  useEffect(() => {
+    let active = true;
+    fetch("/api/admin/status", { cache: "no-store" })
+      .then((response) => response.ok ? response.json() : Promise.reject(new Error("falhou")))
+      .then((payload: { services: Service[] }) => {
+        if (!active) return;
+        setService(payload.services?.find((item) => item.name.startsWith("Classificação de intenção")) ?? null);
+        setState("ready");
+      })
+      .catch(() => { if (active) setState("error"); });
+    return () => { active = false; };
+  }, []);
+
+  const ativo = service?.state === "ok";
+  const meioLigado = service?.state === "degraded";
+
   return <main className="content">
-    <Heading title="Prompts e versões" text="Versionamento das instruções que guiam a IA." />
-    <div className="state-card error">
-      <strong>Não existe prompt neste sistema.</strong>
-      <p>A tela mostrava &quot;versão ativa v12&quot;, &quot;3 experimentos&quot; e &quot;rollback disponível&quot; — texto fixo no código, sem nada por trás.</p>
-    </div>
-    <section className="data-card">
-      <div className="card-header"><strong>Como a IA decide hoje</strong></div>
-      <div className="ranked-list">
-        {[
-          ["Classificação de intenção", "Cadeia de expressões regulares em lib/agent/pipeline.ts. Se nenhuma casar, a confiança cai para 0,55 e a conversa transborda."],
-          ["Resposta ao cliente", "Textos fixos por intenção e por desfecho da ferramenta. Não há geração de linguagem."],
-          ["Decisão de transbordo", "Regras explícitas em lib/agent/handoff.ts (confiança baixa, pedido de humano, risco de cancelamento, pedido não autorizado)."],
-          ["Modelo de linguagem", "Nenhum. O projeto não tem dependência de LLM nem chave de API."],
-        ].map(([item, detail]) => <div className="ranked-row" key={item}>
-          <div className="ranked-label"><strong>{item}</strong><span>{detail}</span></div>
-        </div>)}
-      </div>
-      <div className="insight insight-warning">
-        <strong>O que muda quando houver um modelo de verdade.</strong>
-        Aí esta tela passa a fazer sentido: versão do prompt em uso, histórico, comparação entre versões e rollback. Enquanto a decisão é código, versionar prompt é versionar nada — quem muda o comportamento é um commit, e isso já está no Git.
-      </div>
-    </section>
+    <Heading title="Prompts e versões" text="As instruções que guiam a IA, e onde elas realmente moram." />
+
+    {state === "loading" && <div className="state-card">Consultando o estado do classificador…</div>}
+    {state === "error" && <div className="state-card error">Não foi possível consultar o estado do classificador.</div>}
+    {state === "ready" && <>
+      {meioLigado && <div className="state-card error">
+        <strong>A flag está ligada, mas não há chave.</strong>
+        <p style={{ marginTop: 8, lineHeight: 1.7 }}>{service?.detail} Toda mensagem está sendo classificada por expressão regular, como antes.</p>
+      </div>}
+
+      <section className="metrics">
+        <Metric label="Classificador" value={ativo ? "Modelo" : "Regra"} detail={ativo ? String(service?.mode) : "Expressões regulares"} />
+        <Metric label="Quem escreve ao cliente" value="Ninguém" detail="Texto fixo por intenção — o modelo nunca redige" />
+        <Metric label="Prompts em uso" value={ativo ? "1" : "0"} detail={ativo ? "Só o da classificação" : "Nenhum: sem modelo, sem prompt"} />
+        <Metric label="Versionamento" value="Git" detail="Autor, data e revisão de cada alteração" />
+      </section>
+
+      <section className="data-card" style={{ marginTop: 14 }}>
+        <div className="card-header"><strong>Como a IA decide hoje</strong><span className={`badge ${ativo ? "green" : "amber"}`}>{ativo ? "● modelo ativo" : "● só regra"}</span></div>
+        <div className="ranked-list">
+          {[
+            ["Classificação de intenção", ativo
+              ? `O modelo (${service?.mode}) escolhe um item de uma lista fechada de 16 intenções. Resposta fora da lista é descartada e a regra assume.`
+              : "Cadeia de expressões regulares em lib/agent/pipeline.ts. Se nenhuma casar, a confiança fica em 0,55 e a conversa transborda."],
+            ["Resposta ao cliente", "Textos fixos por intenção e por desfecho da ferramenta. Não há geração de linguagem — isso é deliberado: a resposta carrega garantias (nunca afirmar ação não executada, exigir evidência) que texto livre jogaria fora."],
+            ["Decisão de transbordo", "Regras explícitas em lib/agent/handoff.ts: confiança baixa, pedido de humano, risco de cancelamento, pedido não autorizado."],
+            ["Privacidade", "A mensagem sai sanitizada — e-mail, CPF e telefone removidos antes de qualquer chamada externa. A Groq não treina com dado de cliente em nenhuma camada."],
+            ["Se o modelo falhar", "Sem chave não há chamada; erro ou demora acima de 4s cai na regra; resposta inválida é descartada. Em nenhum caso o atendimento para."],
+          ].map(([item, detail]) => <div className="ranked-row" key={item}>
+            <div className="ranked-label"><strong>{item}</strong><span>{detail}</span></div>
+          </div>)}
+        </div>
+        <div className="insight">
+          <strong>Por que não há histórico de versões aqui.</strong>
+          O único prompt do sistema é o do classificador, e ele vive em <code>lib/agent/llm-classifier.ts</code>. Quem o altera abre um commit — com autor, data e revisão. Guardar uma segunda cópia no banco criaria divergência entre o que esta tela mostra e o que o servidor executa, e a tela perderia primeiro.
+        </div>
+      </section>
+    </>}
   </main>;
 }
 

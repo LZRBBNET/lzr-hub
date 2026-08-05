@@ -47,6 +47,7 @@ export async function GET(request: Request) {
         planName: String(raw.contrato ?? raw.plano ?? ""),
         monthlyValue: plan?.value,
         activatedAt: String(raw.data_ativacao ?? "") || undefined,
+        status: String(raw.status ?? "") || undefined,
       };
     });
     const summary = summarizeSales(rows, { total: activations.total, truncated: activations.truncated, activeContracts });

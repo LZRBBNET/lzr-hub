@@ -1,6 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { asc, desc, eq } from "drizzle-orm";
 import { collectionRuleSteps, collectionRules } from "../../db/schema.ts";
+import { RULE_CHANNELS } from "./collection-rules-shared.ts";
+import type { RuleChannel, CollectionRuleRow, RuleInput, RuleStepRow } from "./collection-rules-shared.ts";
 
 /**
  * Régua de cobrança: as etapas que definem quando e por onde falar com quem
@@ -10,30 +12,11 @@ import { collectionRuleSteps, collectionRules } from "../../db/schema.ts";
  * Antes isso vivia num useState que fingia salvar: recarregar a página apagava
  * tudo e a tela ainda dizia "Versão salva".
  */
-export const RULE_CHANNELS = ["WhatsApp", "SMS", "E-mail", "Ligação"] as const;
-export type RuleChannel = typeof RULE_CHANNELS[number];
-
-export interface RuleStepRow {
-  id: string;
-  offsetDays: number;
-  channel: string;
-  templateId: string;
-  attempts: number;
-  active: boolean;
-}
-
-export interface CollectionRuleRow {
-  id: string;
-  name: string;
-  status: string;
-  version: number;
-  authorId: string;
-  updatedAt: string;
-  steps: RuleStepRow[];
-}
-
-export interface RuleStepInput { offsetDays: number; channel: string; templateId: string; attempts: number; active: boolean }
-export interface RuleInput { name: string; steps: RuleStepInput[] }
+// Os tipos e a lista de canais vivem em `collection-rules-shared.ts` porque a
+// tela também precisa deles, e importar deste arquivo levaria `node:crypto`
+// para o navegador. Reexportamos para não quebrar quem já importava daqui.
+export { RULE_CHANNELS } from "./collection-rules-shared.ts";
+export type { RuleChannel, RuleStepRow, CollectionRuleRow, RuleStepInput, RuleInput } from "./collection-rules-shared.ts";
 
 export interface CollectionRulesRepository {
   getLatest(): Promise<CollectionRuleRow | undefined>;

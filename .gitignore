@@ -47,3 +47,6 @@ next-env.d.ts
 backups/
 .wrangler/staging/
 .wrangler/restore-test/
+
+# Configuração pessoal do Claude Code (o launch.json é compartilhado, este não)
+.claude/settings.local.json

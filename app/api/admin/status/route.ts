@@ -3,6 +3,7 @@ import { getDb } from "@/db";
 import { getIxcRuntime } from "@/lib/integrations/ixc/runtime";
 import { authorize, authEnforced } from "@/lib/platform/session-guard";
 import { getQueueSnapshot } from "@/lib/platform/queue-service";
+import { llmConfigFromEnv } from "@/lib/agent/llm-classifier";
 
 /**
  * Estado real de cada integração, resolvido no servidor.
@@ -43,6 +44,8 @@ export async function GET(request: Request) {
   catch { database = { state: "error", detail: "Sem DATABASE_URL utilizável" }; }
 
   const queues = await getQueueSnapshot().catch(() => null);
+  // `llmConfigFromEnv` já aplica a regra completa: flag ligada **e** chave presente.
+  const llm = llmConfigFromEnv();
 
   return NextResponse.json({
     environment: process.env.LZR_ENV ?? "local",
@@ -58,6 +61,18 @@ export async function GET(request: Request) {
           : !process.env.N8N_CHANNEL_SECRET ? "Ligado sem N8N_CHANNEL_SECRET — o fluxo não consegue autenticar"
           : autoReply ? "A IA responde o cliente sem humano no meio"
           : "Recebe e classifica; a resposta fica como sugestão não enviada",
+      },
+      {
+        // A flag ligada sem chave não liga nada — e essa diferença precisa aparecer,
+        // senão alguém marca "classificador ativo" e ele está caindo na regex.
+        name: "Classificação de intenção (Groq)",
+        state: llm ? "ok" : process.env.FEATURE_LLM_INTENT === "true" ? "degraded" : "disabled",
+        mode: llm ? llm.model : "expressões regulares",
+        detail: llm
+          ? "Modelo escolhe uma intenção de lista fechada; a resposta ao cliente continua sendo texto fixo"
+          : process.env.FEATURE_LLM_INTENT === "true"
+            ? "FEATURE_LLM_INTENT ligada mas sem GROQ_API_KEY — está caindo na regex"
+            : "Intenção detectada por regra; sem modelo de linguagem",
       },
       { name: "Filas (BullMQ/Redis)", state: queues?.enabled ? "ok" : "disabled", mode: queues?.runtime ?? "—", detail: queues?.enabled ? "Jobs reais em processamento" : (queues?.detail ?? "FEATURE_QUEUES desligada") },
       { name: "Observabilidade (Langfuse)", state: process.env.FEATURE_LANGFUSE === "true" ? "ok" : "disabled", mode: "OTLP", detail: process.env.FEATURE_LANGFUSE === "true" ? "Rastro do pipeline sendo enviado" : "Sem rastro externo; custo por atendimento não é medido" },

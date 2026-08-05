@@ -58,14 +58,14 @@ function MonitoringCenter(){
         {state==="loading"&&<p style={{padding:14}}>Carregando…</p>}
         {state==="error"&&<p style={{padding:14}}>Não foi possível consultar as massivas.</p>}
         {state==="ready"&&!available&&<p style={{padding:14}}>Registro de massivas indisponível.</p>}
-        {state==="ready"&&available&&items.length===0&&<p style={{padding:14,lineHeight:1.6,color:"#64748b"}}>Nenhuma massiva registrada. Elas são cadastradas por uma pessoa na tela de Massivas — não existe integração de monitoramento alimentando isso automaticamente.</p>}
+        {state==="ready"&&available&&items.length===0&&<p style={{padding:14,lineHeight:1.6,color:"var(--muted)"}}>Nenhuma massiva registrada. Elas são cadastradas por uma pessoa na tela de Massivas — não existe integração de monitoramento alimentando isso automaticamente.</p>}
         {items.map(i=><IncidentRow incident={i} key={i.id}/>)}
       </section>
-      <section className="data-card"><div className="card-header"><strong>Fontes desta tela</strong><span className="badge blue">Origem declarada</span></div><div style={{padding:16,fontSize:12,lineHeight:1.9,color:"#40566d"}}>
+      <section className="data-card"><div className="card-header"><strong>Fontes desta tela</strong><span className="badge blue">Origem declarada</span></div><div style={{padding:16,fontSize:12,lineHeight:1.9,color:"var(--text-2)"}}>
         <p><strong>Massivas</strong> — banco do LZR HUB, registradas manualmente.</p>
         <p><strong>Chamados</strong> — ordens de serviço reais do IXC, limitadas aos cadastros da allowlist.</p>
         <p><strong>IA de Atendimento</strong> — desfechos e avaliações das conversas gravadas.</p>
-        <p style={{marginTop:12,paddingTop:12,borderTop:"1px solid #e2e8f0"}}><strong>O que não temos:</strong> alerta de rede, potência de ONU em massa e correlação geográfica automática. Isso exigiria integrar o monitoramento da rede (SmartOLT, Zabbix ou equivalente), que ainda não está conectado. Enquanto não estiver, esses campos ficam em branco em vez de estimados.</p>
+        <p style={{marginTop:12,paddingTop:12,borderTop:"1px solid var(--line)"}}><strong>O que não temos:</strong> alerta de rede, potência de ONU em massa e correlação geográfica automática. Isso exigiria integrar o monitoramento da rede (SmartOLT, Zabbix ou equivalente), que ainda não está conectado. Enquanto não estiver, esses campos ficam em branco em vez de estimados.</p>
       </div></section>
     </div>
   </main>;
@@ -123,16 +123,16 @@ function MassIncidents(){
           <input placeholder="Equipamento (opcional — ex.: OLT-ITA-02 / PON 4)" value={form.equipment} onChange={set("equipment")}/>
           <input placeholder="Clientes afetados (estimativa)" inputMode="numeric" value={form.affectedCustomers} onChange={set("affectedCustomers")}/>
           <select value={form.severity} onChange={set("severity")}><option value="low">Baixa</option><option value="medium">Média</option><option value="high">Alta</option><option value="critical">Crítica</option></select>
-          {error&&<p style={{color:"#b91c1c",fontSize:12}}>{error}</p>}
+          {error&&<p style={{color:"var(--bad)",fontSize:12}}>{error}</p>}
           <button className="button" disabled={busy} onClick={()=>void submit()}>{busy?"Registrando…":"Registrar massiva"}</button>
-          <p style={{fontSize:11,color:"#64748b",lineHeight:1.6}}>A estimativa de clientes é sua: o sistema não consegue calcular isso sozinho enquanto não houver integração com o monitoramento da rede.</p>
+          <p style={{fontSize:11,color:"var(--muted)",lineHeight:1.6}}>A estimativa de clientes é sua: o sistema não consegue calcular isso sozinho enquanto não houver integração com o monitoramento da rede.</p>
         </div>
       </section>
       <section className="data-card"><div className="card-header"><strong>Massivas registradas</strong><span className="badge green">{items.length} registro(s)</span></div>
         {state==="loading"&&<p style={{padding:14}}>Carregando…</p>}
         {state==="error"&&<p style={{padding:14}}>Não foi possível consultar as massivas.</p>}
         {state==="ready"&&!available&&<p style={{padding:14}}>Registro de massivas indisponível.</p>}
-        {state==="ready"&&available&&items.length===0&&<p style={{padding:14,color:"#64748b",lineHeight:1.6}}>Nenhuma massiva registrada ainda.</p>}
+        {state==="ready"&&available&&items.length===0&&<p style={{padding:14,color:"var(--muted)",lineHeight:1.6}}>Nenhuma massiva registrada ainda.</p>}
         {items.map(i=><div key={i.id}><IncidentRow incident={i}/>{i.status!=="resolved"&&<div style={{padding:"0 16px 14px"}}><button className="button secondary" disabled={busy} onClick={()=>void close(i.id)}>Encerrar</button></div>}</div>)}
       </section>
     </div>

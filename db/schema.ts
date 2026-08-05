@@ -7,6 +7,50 @@ export const collectionRules = pgTable("collection_rules", { id:text("id").prima
 export const collectionRuleSteps = pgTable("collection_rule_steps", { id:text("id").primaryKey(), ruleId:text("rule_id").notNull(), offsetDays:integer("offset_days").notNull(), channel:text("channel").notNull(), templateId:text("template_id").notNull(), attempts:integer("attempts").notNull().default(1), active:boolean("active").notNull().default(true), ...auditColumns });
 export const collectionCampaigns = pgTable("collection_campaigns", { id:text("id").primaryKey(), name:text("name").notNull(), segment:text("segment").notNull(), status:text("status").notNull(), audience:integer("audience").notNull().default(0), recoveredCents:integer("recovered_cents").notNull().default(0), ...auditColumns });
 export const leads = pgTable("leads", { id:text("id").primaryKey(), name:text("name").notNull(), maskedPhone:text("masked_phone").notNull(), city:text("city").notNull(), neighborhood:text("neighborhood").notNull(), source:text("source").notNull(), stage:text("stage").notNull(), score:integer("score").notNull().default(0), ownerId:text("owner_id"), ...auditColumns });
+/**
+ * Meta comercial do mês. Uma linha por competência (`2026-08`), da empresa
+ * inteira — não por equipe: atribuir contrato a vendedor exigiria um campo do
+ * IXC que ainda não foi confirmado, e meta por equipe calculada em cima de
+ * atribuição inventada não mede nada.
+ *
+ * O **realizado** não mora aqui: vem do IXC no momento da consulta. Guardar o
+ * realizado seria guardar uma cópia que envelhece.
+ */
+export const salesGoals = pgTable("sales_goals", {
+  id: text("id").primaryKey(),
+  /** Competência no formato `AAAA-MM`. */
+  period: text("period").notNull(),
+  targetContracts: integer("target_contracts").notNull(),
+  /** Opcional: nem toda operação define meta de receita, só de volume. */
+  targetRevenueCents: integer("target_revenue_cents"),
+  note: text("note"),
+  createdBy: text("created_by").notNull(),
+  ...auditColumns,
+}, (table) => [uniqueIndex("sales_goals_period_idx").on(table.period)]);
+
+/**
+ * Equipe de atendimento e a fila que ela recebe.
+ *
+ * `queue` é a fila de transbordo para onde a conversa vai quando a IA passa
+ * para humano — precisa casar com o motivo registrado em `conversation_outcomes`.
+ */
+export const teams = pgTable("teams", {
+  id: text("id").primaryKey(),
+  name: text("name").notNull(),
+  queue: text("queue").notNull(),
+  description: text("description"),
+  active: boolean("active").notNull().default(true),
+  ...auditColumns,
+}, (table) => [uniqueIndex("teams_name_idx").on(table.name)]);
+
+/** Vínculo de pessoa com equipe. Uma pessoa pode estar em mais de uma. */
+export const teamMembers = pgTable("team_members", {
+  id: text("id").primaryKey(),
+  teamId: text("team_id").notNull(),
+  userId: text("user_id").notNull(),
+  createdAt: text("created_at").notNull(),
+}, (table) => [uniqueIndex("team_members_pair_idx").on(table.teamId, table.userId), index("team_members_user_idx").on(table.userId)]);
+
 export const knowledgeDocuments = pgTable("knowledge_documents", { id:text("id").primaryKey(), title:text("title").notNull(), category:text("category").notNull(), content:text("content").notNull(), status:text("status").notNull(), version:integer("version").notNull().default(1), metadata:jsonb("metadata"), validUntil:text("valid_until"), ...auditColumns });
 export const auditEvents = pgTable("audit_events", { id:text("id").primaryKey(), actorId:text("actor_id").notNull(), role:text("role").notNull(), action:text("action").notNull(), entity:text("entity").notNull(), beforeMasked:text("before_masked"), afterMasked:text("after_masked"), reason:text("reason").notNull(), correlationId:text("correlation_id").notNull(), result:text("result").notNull(), origin:text("origin").notNull(), createdAt:text("created_at").notNull() });
 

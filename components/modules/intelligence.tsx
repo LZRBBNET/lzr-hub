@@ -2,12 +2,8 @@
 import { useEffect, useState } from "react";
 import { BarChart } from "./bar-chart";
 
-export function IntelligenceModule({view}:{view:"intelligence"|"saude"|"churn"|"upgrade"|"conhecimento"}){
-  if(view==="conhecimento")return <Knowledge/>;
-  if(view==="churn")return <Churn/>;
-  if(view==="upgrade")return <NoModel title="Oportunidades de Upgrade" lead="Quem poderia subir de plano." missing={UPGRADE_MISSING}/>;
-  if(view==="saude")return <NoModel title="Saúde do Cliente" lead="Um score por cliente, de 0 a 100." missing={HEALTH_MISSING}/>;
-  return <NoModel title="Customer Intelligence" lead="Segmentação e recomendação por cliente." missing={HEALTH_MISSING}/>;
+export function IntelligenceModule({view}:{view:"churn"|"conhecimento"}){
+  return view==="conhecimento" ? <Knowledge/> : <Churn/>;
 }
 
 /* ---------------------------------------------------------------- churn --- */
@@ -47,56 +43,22 @@ function Churn(){
       </section>
       <div className="dashboard-grid">
         <section className="data-card"><div className="card-header"><strong>Motivo do cancelamento</strong><span className="badge amber">Só o código</span></div>
-          <p style={{fontSize:11,color:"#64748b",lineHeight:1.6,padding:"6px 0 12px"}}>O IXC devolve o motivo como código numérico e não expõe a tabela que traduz — testei cinco endpoints prováveis, todos recusados. Os códigos abaixo são reais; o significado precisa vir do painel do IXC ou do suporte.</p>
+          <p style={{fontSize:11,color:"var(--muted)",lineHeight:1.6,padding:"6px 0 12px"}}>O IXC devolve o motivo como código numérico e não expõe a tabela que traduz — testei cinco endpoints prováveis, todos recusados. Os códigos abaixo são reais; o significado precisa vir do painel do IXC ou do suporte.</p>
           {summary.reasonCodes.length===0
-            ? <p style={{fontSize:12,color:"#64748b"}}>Nenhum cancelamento no período.</p>
+            ? <p style={{fontSize:12,color:"var(--muted)"}}>Nenhum cancelamento no período.</p>
             : summary.reasonCodes.slice(0,10).map(item=><div className="aging-row" key={item.code}><div><strong>Código {item.code}</strong><span>{item.contracts} contrato(s) • {Math.round(item.contracts/summary.scanned*100)}%</span></div></div>)}
         </section>
         <section className="data-card"><div className="card-header"><strong>Cancelamentos por dia</strong><span className="badge blue">{summary.byDay.length} dia(s)</span></div>
           <BarChart data={summary.byDay} noun="cancelamento(s)"/>
-          <div style={{marginTop:18,padding:14,background:"#f2f7ff",borderRadius:10,fontSize:11,color:"#40566d",lineHeight:1.6}}><strong style={{display:"block",fontSize:12,color:"#1267e8",marginBottom:4}}>Base histórica</strong>{summary.inactiveContracts.toLocaleString("pt-BR")} contratos encerrados desde sempre, contra {summary.activeContracts.toLocaleString("pt-BR")} ativos hoje.</div>
+          <div style={{marginTop:18,padding:14,background:"var(--blue-soft)",borderRadius:10,fontSize:11,color:"var(--text-2)",lineHeight:1.6}}><strong style={{display:"block",fontSize:12,color:"var(--blue)",marginBottom:4}}>Base histórica</strong>{summary.inactiveContracts.toLocaleString("pt-BR")} contratos encerrados desde sempre, contra {summary.activeContracts.toLocaleString("pt-BR")} ativos hoje.</div>
         </section>
       </div>
     </>}
   </main>;
 }
 
-/* ------------------------------------------------------------ sem modelo --- */
-
-const HEALTH_MISSING:[string,string][]=[
-  ["Consumo","Quanto o cliente usa da banda contratada. Não é coletado; exigiria integração de monitoramento de rede."],
-  ["Reincidência de chamado","Quantas vezes voltou pelo mesmo problema. As OS existem no IXC, mas nada correlaciona repetição por cliente ainda."],
-  ["Comportamento de pagamento","Atraso recorrente é o sinal mais forte que existe. Está no IXC e ainda não é lido por cliente."],
-  ["Satisfação","O CSAT só é coletado quando a IA responde — e ela está em modo observação, sem responder."],
-];
-
-const UPGRADE_MISSING:[string,string][]=[
-  ["Consumo contra o plano","Quem satura o plano é candidato. Sem medição de banda, não há como saber."],
-  ["Cobertura no endereço","Oferecer plano que a rede não entrega naquele ponto gera cancelamento, não venda."],
-  ["Histórico de recusa","Oferecer de novo a quem já disse não queima o canal."],
-];
-
-/**
- * Estas telas mostravam score e contagens fixas: `calculateHealth()` devolvia
- * sempre o mesmo número, para qualquer cliente, a partir de fatores de
- * demonstração. Um score inventado é pior que score nenhum — as pessoas passam
- * a priorizar atendimento por ele.
- */
-function NoModel({title,lead,missing}:{title:string;lead:string;missing:[string,string][]}){
-  return <main className="content">
-    <Heading title={title} text={lead}/>
-    <div className="state-card error"><strong>Não existe modelo calculando isso.</strong>
-      <p style={{marginTop:8,lineHeight:1.7}}>A tela exibia um score e contagens que não vinham de lugar nenhum — o mesmo número para todo cliente, vindo de fatores de demonstração fixos no código. Foi removido: score inventado é pior que score nenhum, porque as pessoas passam a priorizar atendimento por ele.</p>
-    </div>
-    <section className="data-card" style={{marginTop:14}}>
-      <div className="card-header"><strong>O que um score exigiria</strong></div>
-      <div style={{padding:"4px 0"}}>
-        {missing.map(([item,why])=><div className="aging-row" key={item}><div><strong>{item}</strong><span>{why}</span></div></div>)}
-      </div>
-    </section>
-    <div className="state-card" style={{marginTop:14}}>O que já é medido de verdade: <strong>churn realizado</strong> (nesta seção), <strong>vendas fechadas</strong> (Comercial) e a <strong>posição financeira</strong> (Cobrança).</div>
-  </main>;
-}
+// Saúde do Cliente, Upgrade e Customer Intelligence saíram do menu: nenhuma
+// tinha modelo calculando nada. Ver `docs/telas-removidas.md`.
 
 /* ----------------------------------------------------------- conhecimento --- */
 
@@ -161,16 +123,16 @@ function Knowledge(){
             <input placeholder="Ex.: segunda via boleto" value={query} onChange={e=>setQuery(e.target.value)} onKeyDown={e=>{if(e.key==="Enter")void search()}}/>
             <button className="button secondary" onClick={()=>void search()}>Buscar</button>
             {results===null
-              ? <p style={{fontSize:11,color:"#64748b",lineHeight:1.6}}>A busca é por correspondência de texto. Busca semântica dependeria de embeddings (<code>FEATURE_PGVECTOR</code>), que não estão gerados.</p>
+              ? <p style={{fontSize:11,color:"var(--muted)",lineHeight:1.6}}>A busca é por correspondência de texto. Busca semântica dependeria de embeddings (<code>FEATURE_PGVECTOR</code>), que não estão gerados.</p>
               : results.length===0
-                ? <p style={{fontSize:12,color:"#64748b"}}>Nenhum documento publicado corresponde.</p>
+                ? <p style={{fontSize:12,color:"var(--muted)"}}>Nenhum documento publicado corresponde.</p>
                 : results.map(hit=><div className="aging-row" key={hit.document.id}><div><strong>{hit.document.title}</strong><span>{hit.evidence}</span></div><b>{Math.round(hit.score*100)}%</b></div>)}
           </div>
         </section>
       </div>
       <section className="data-card" style={{marginTop:14}}><div className="card-header"><strong>Documentos</strong><span className="badge green">{items.length}</span></div>
         {items.length===0
-          ? <p style={{padding:14,lineHeight:1.6,color:"#64748b"}}>Nenhum documento cadastrado. A base começa vazia — nada de exemplo é pré-carregado, porque a IA citaria isso como se fosse procedimento da BBNET.</p>
+          ? <p style={{padding:14,lineHeight:1.6,color:"var(--muted)"}}>Nenhum documento cadastrado. A base começa vazia — nada de exemplo é pré-carregado, porque a IA citaria isso como se fosse procedimento da BBNET.</p>
           : items.map(doc=><div className="aging-row" key={doc.id}>
               <div><strong>{doc.title}</strong><span>{doc.category} • versão {doc.version} • {new Date(doc.updatedAt).toLocaleString("pt-BR")}</span></div>
               <div style={{display:"flex",gap:8,alignItems:"center"}}>

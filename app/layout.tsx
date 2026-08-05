@@ -12,9 +12,19 @@ export const metadata: Metadata = {
   icons: { icon: "/favicon.svg", shortcut: "/favicon.svg" },
 };
 
+/**
+ * Aplica o tema escolhido **antes** da primeira pintura.
+ *
+ * Sem isto, quem forçou um tema diferente do sistema vê a página piscar na cor
+ * errada até o React hidratar. É o único script inline do projeto, e por isso
+ * ele é minúsculo e não depende de nada.
+ */
+const THEME_BOOTSTRAP = `try{var t=localStorage.getItem("lzr-theme");if(t==="light"||t==="dark")document.documentElement.dataset.theme=t}catch(e){}`;
+
 export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
   return (
     <html lang="pt-BR">
+      <head><script dangerouslySetInnerHTML={{ __html: THEME_BOOTSTRAP }} /></head>
       <body className={`${geistSans.variable} ${geistMono.variable}`}>{children}</body>
     </html>
   );

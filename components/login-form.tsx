@@ -78,7 +78,7 @@ export function LoginForm() {
 
         <form onSubmit={forgot ? requestReset : submit} noValidate>
           {error && <p className="login-error" role="alert"><i aria-hidden="true">⚠</i><span>{error}</span></p>}
-          {sent && <p className="login-note" role="status" style={{ background: "#f2f7ff", padding: 12, borderRadius: 10, marginBottom: 12 }}>{sent}</p>}
+          {sent && <p className="login-note" role="status" style={{ background: "var(--blue-soft)", padding: 12, borderRadius: 10, marginBottom: 12 }}>{sent}</p>}
 
           <label className="login-field" htmlFor="login-email">
             <span>E-mail</span>

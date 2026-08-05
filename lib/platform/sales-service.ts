@@ -8,7 +8,8 @@
  * linha. Por isso este serviço só responde o que dá para provar: a venda
  * fechada. O que falta é declarado na tela, não estimado.
  */
-export interface SalesActivation { planName: string; monthlyValue?: number; activatedAt?: string }
+/** `status` é a situação atual do contrato no IXC: "A" ativo, "I" encerrado. */
+export interface SalesActivation { planName: string; monthlyValue?: number; activatedAt?: string; status?: string }
 
 export interface SalesOverview {
   activations: number;
@@ -23,6 +24,12 @@ export interface SalesOverview {
   /** Ativações sem valor de plano legível: contadas à parte, nunca somadas como zero. */
   withoutValue: number;
   byDay: Array<{ day: string; contracts: number }>;
+  /**
+   * Quantas dessas vendas já foram canceladas. A venda continua contando — quem
+   * vendeu vendeu — mas esconder isso daria a impressão de que a base cresceu
+   * na mesma proporção, e não cresceu.
+   */
+  alreadyCancelled: number;
 }
 
 export function summarizeSales(
@@ -31,9 +38,11 @@ export function summarizeSales(
 ): SalesOverview {
   const planTotals = new Map<string, { contracts: number; value: number }>();
   const dayTotals = new Map<string, number>();
-  let recurring = 0, withValue = 0, withoutValue = 0;
+  let recurring = 0, withValue = 0, withoutValue = 0, alreadyCancelled = 0;
 
   for (const activation of activations) {
+    // "I" é encerrado no IXC — "C" não existe e devolveria zero em silêncio.
+    if (activation.status?.trim().toUpperCase() === "I") alreadyCancelled += 1;
     const plan = activation.planName.trim() || "Plano não informado";
     const current = planTotals.get(plan) ?? { contracts: 0, value: 0 };
     const value = activation.monthlyValue;
@@ -59,5 +68,6 @@ export function summarizeSales(
       .sort((a, b) => b.contracts - a.contracts),
     withoutValue,
     byDay: [...dayTotals.entries()].map(([day, contracts]) => ({ day, contracts })).sort((a, b) => a.day.localeCompare(b.day)),
+    alreadyCancelled,
   };
 }

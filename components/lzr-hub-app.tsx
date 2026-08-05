@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import type { AgentResult, ChatMessage } from "@/lib/agent/types";
 import { navigation, viewTitles, type View } from "@/lib/platform/navigation";
 import { Customer360Module } from "@/components/modules/customer360";
@@ -14,6 +14,68 @@ import { QualityModule } from "@/components/modules/quality";
 type UiMessage = ChatMessage & { time: string; result?: AgentResult };
 
 function Avatar({ initials = "JP" }: { initials?: string }) { return <div className="avatar">{initials}</div>; }
+
+type Theme = "system" | "light" | "dark";
+const THEME_KEY = "lzr-theme";
+const THEME_LABELS: Record<Theme, [string, string]> = { system: ["◐", "Tema do sistema"], light: ["☀", "Tema claro"], dark: ["☾", "Tema escuro"] };
+const NEXT_THEME: Record<Theme, Theme> = { system: "light", light: "dark", dark: "system" };
+
+/**
+ * O tema vive no elemento raiz, não no estado do React — o script do `layout`
+ * já o aplicou antes da primeira pintura. Aqui a gente apenas **lê** de lá, com
+ * `useSyncExternalStore`, que existe para esse caso: um valor que mora fora do
+ * React e precisa disparar renderização quando muda.
+ */
+const themeListeners = new Set<() => void>();
+function subscribeTheme(callback: () => void) {
+  themeListeners.add(callback);
+  // Trocar o tema numa aba passa a valer nas outras: o evento `storage` só
+  // chega nas abas que não fizeram a alteração, então elas aplicam aqui.
+  const onStorage = (event: StorageEvent) => {
+    if (event.key !== THEME_KEY) return;
+    if (event.newValue === "light" || event.newValue === "dark") document.documentElement.dataset.theme = event.newValue;
+    else delete document.documentElement.dataset.theme;
+    callback();
+  };
+  window.addEventListener("storage", onStorage);
+  return () => { themeListeners.delete(callback); window.removeEventListener("storage", onStorage); };
+}
+function readTheme(): Theme {
+  const value = document.documentElement.dataset.theme;
+  return value === "light" || value === "dark" ? value : "system";
+}
+/** No servidor não há elemento raiz para consultar: "sistema" é o padrão. */
+const readThemeOnServer = (): Theme => "system";
+
+/**
+ * Alterna entre tema do sistema, claro e escuro.
+ *
+ * "Sistema" é o padrão e é uma opção de verdade, não a ausência de escolha:
+ * quem trabalha de dia e de noite quer acompanhar o sistema operacional. Ele é
+ * representado pela **ausência** de `data-theme` — aí o `color-scheme: light dark`
+ * do CSS decide sozinho.
+ */
+function ThemeToggle() {
+  const theme = useSyncExternalStore(subscribeTheme, readTheme, readThemeOnServer);
+
+  function change() {
+    const next = NEXT_THEME[theme];
+    try {
+      if (next === "system") { window.localStorage.removeItem(THEME_KEY); delete document.documentElement.dataset.theme; }
+      else { window.localStorage.setItem(THEME_KEY, next); document.documentElement.dataset.theme = next; }
+    } catch {
+      // Armazenamento bloqueado: o tema ainda vale nesta aba, só não persiste.
+      if (next === "system") delete document.documentElement.dataset.theme;
+      else document.documentElement.dataset.theme = next;
+    }
+    for (const listener of themeListeners) listener();
+  }
+
+  const [icon, label] = THEME_LABELS[theme];
+  return <button className="theme-toggle" onClick={change} title={`${label} — clique para trocar`} aria-label={`${label}. Clique para trocar de tema.`}>
+    <i aria-hidden="true">{icon}</i><span>{label}</span>
+  </button>;
+}
 
 type SessionState = { authenticated: boolean; authRequired: boolean; mustChangePassword?: boolean; user?: { name: string; email: string; role: string } };
 
@@ -66,12 +128,15 @@ export function LzrHubApp({ ixcMode = "disabled" }: { ixcMode?: string }) {
         <div className="brand"><div className="brand-mark">L</div><div className="brand-copy"><strong>LZR HUB</strong><small>BBNET Intelligence</small></div></div>
         <div className="nav-scroll">{navigation.map((item) => <div key={item.id}>{item.group ? <div className="nav-label">{item.group}</div> : null}<button className={`nav-item ${view === item.id ? "active" : ""}`} onClick={() => setView(item.id)}><span className="nav-icon">{item.icon}</span><span>{item.label}</span></button></div>)}</div>
         <div className="sidebar-footer">
-          <Avatar initials={user ? initialsOf(user.name) : "AD"} />
-          <div><strong>{user ? user.name : "Admin Demonstração"}</strong><span>{user ? user.role : "Usuário sintético"}</span></div>
-          {user && <div style={{ display: "flex", gap: 6 }}>
-            <button className="button secondary" onClick={() => setChangingPassword(true)}>Senha</button>
-            <button className="button secondary" onClick={signOut}>Sair</button>
-          </div>}
+          <div className="sidebar-identity">
+            <Avatar initials={user ? initialsOf(user.name) : "AD"} />
+            <div><strong>{user ? user.name : "Admin Demonstração"}</strong><span>{user ? user.role : "Usuário sintético"}</span></div>
+            {user && <div style={{ display: "flex", gap: 6 }}>
+              <button className="button secondary" onClick={() => setChangingPassword(true)}>Senha</button>
+              <button className="button secondary" onClick={signOut}>Sair</button>
+            </div>}
+          </div>
+          <ThemeToggle />
         </div>
       </aside>
       {(changingPassword || forced) && <PasswordDialog forced={forced} onClose={() => { setChangingPassword(false); if (forced) window.location.reload(); }} />}
@@ -86,9 +151,9 @@ export function LzrHubApp({ ixcMode = "disabled" }: { ixcMode?: string }) {
         {["integracoes","equipes","usuarios","auditoria","configuracoes"].includes(view) && <AdminModule view={view as "integracoes"|"equipes"|"usuarios"|"auditoria"|"configuracoes"} />}
         {view === "clientes" && <Customer360Module />}
         {["monitoramento","mapa-alertas","massivas","chamados"].includes(view) && <SupportModule view={view as "monitoramento"|"mapa-alertas"|"massivas"|"chamados"} />}
-        {["cobranca","regua","campanhas","relatorios-cobranca"].includes(view) && <BillingModule view={view as "cobranca"|"regua"|"campanhas"|"relatorios-cobranca"} />}
-        {["comercial","leads","funil","kanban","metas","relatorios-comercial"].includes(view) && <SalesModule view={view as "comercial"|"leads"|"funil"|"kanban"|"metas"|"relatorios-comercial"} />}
-        {["intelligence","saude","churn","upgrade","conhecimento"].includes(view) && <IntelligenceModule view={view as "intelligence"|"saude"|"churn"|"upgrade"|"conhecimento"} />}
+        {["cobranca","regua","relatorios-cobranca"].includes(view) && <BillingModule view={view as "cobranca"|"regua"|"relatorios-cobranca"} />}
+        {["comercial","metas","relatorios-comercial"].includes(view) && <SalesModule view={view as "comercial"|"metas"|"relatorios-comercial"} />}
+        {["churn","conhecimento"].includes(view) && <IntelligenceModule view={view as "churn"|"conhecimento"} />}
         {["avaliacoes","prompts"].includes(view) && <QualityModule view={view as "avaliacoes"|"prompts"} />}
       </section>
     </div>
@@ -166,7 +231,7 @@ function Dashboard({ onOpen }: { onOpen: () => void }) {
       <section className="dashboard-grid">
         <div className="card"><div className="card-header"><strong>Últimas conversas</strong><span className={`badge ${data.integrations.channel.enabled?"green":"amber"}`}>{data.integrations.channel.enabled?"● Canal ativo":"● Canal desligado"}</span></div><div className="card-body">
           {data.queue.length===0
-            ? <p style={{fontSize:12,color:"#64748b",lineHeight:1.6}}>Nenhuma conversa registrada. {data.integrations.channel.enabled?"O canal está ligado e aguardando mensagens.":"O canal do WhatsApp está desligado (FEATURE_N8N_CHANNEL)."}</p>
+            ? <p style={{fontSize:12,color:"var(--muted)",lineHeight:1.6}}>Nenhuma conversa registrada. {data.integrations.channel.enabled?"O canal está ligado e aguardando mensagens.":"O canal do WhatsApp está desligado (FEATURE_N8N_CHANNEL)."}</p>
             : data.queue.map((item)=><button className="queue-row" key={`${item.channel}:${item.externalConversationId}`} onClick={onOpen} style={{width:"100%",textAlign:"left",background:"none",border:"none",cursor:"pointer"}}>
                 <Avatar initials={conversationLabel(item.externalConversationId).slice(-2)} />
                 <div><p>{conversationLabel(item.externalConversationId)}</p><span>{item.intent?intentLabel(item.intent):"Sem desfecho registrado"} • {item.messages} mensagens</span></div>
@@ -175,10 +240,10 @@ function Dashboard({ onOpen }: { onOpen: () => void }) {
         </div></div>
         <div className="card"><div className="card-header"><strong>Conversas por intenção</strong><span className="badge blue">Últimos {PERIOD_LABELS.find(([v])=>v===period)?.[1]}</span></div><div className="card-body">
           {metrics.conversations===0
-            ? <p style={{fontSize:12,color:"#64748b"}}>Sem conversas no período — nada a distribuir.</p>
+            ? <p style={{fontSize:12,color:"var(--muted)"}}>Sem conversas no período — nada a distribuir.</p>
             : Object.entries(metrics.intents).sort((a,b)=>b[1]-a[1]).slice(0,6).map(([intent,count])=><Progress key={intent} label={`${intentLabel(intent)} (${count})`} value={Math.round(count/metrics.conversations*100)} />)}
-          {metrics.handoffs>0 && <div style={{marginTop:22,padding:14,background:"#fff7ed",borderRadius:10,fontSize:11,color:"#7c4a18",lineHeight:1.6}}><strong style={{display:"block",fontSize:12,color:"#b45309",marginBottom:4}}>Por que passou para humano</strong>{Object.entries(metrics.handoffReasons).sort((a,b)=>b[1]-a[1]).map(([reason,count])=>`${handoffLabel(reason)}: ${count}`).join(" • ")}</div>}
-          <div style={{marginTop:14,padding:14,background:"#f2f7ff",borderRadius:10,fontSize:11,color:"#40566d",lineHeight:1.6}}><strong style={{display:"block",fontSize:12,color:"#1267e8",marginBottom:4}}>Ainda não medimos</strong>Tempo médio de atendimento e custo por conversa dependem da instrumentação do Langfuse. Em vez de estimar, ficam de fora.</div>
+          {metrics.handoffs>0 && <div style={{marginTop:22,padding:14,background:"var(--warn-bg)",borderRadius:10,fontSize:11,color:"var(--warn)",lineHeight:1.6}}><strong style={{display:"block",fontSize:12,color:"var(--warn)",marginBottom:4}}>Por que passou para humano</strong>{Object.entries(metrics.handoffReasons).sort((a,b)=>b[1]-a[1]).map(([reason,count])=>`${handoffLabel(reason)}: ${count}`).join(" • ")}</div>}
+          <div style={{marginTop:14,padding:14,background:"var(--blue-soft)",borderRadius:10,fontSize:11,color:"var(--text-2)",lineHeight:1.6}}><strong style={{display:"block",fontSize:12,color:"var(--blue)",marginBottom:4}}>Ainda não medimos</strong>Tempo médio de atendimento e custo por conversa dependem da instrumentação do Langfuse. Em vez de estimar, ficam de fora.</div>
         </div></div>
       </section>
     </>}
@@ -222,9 +287,9 @@ function PasswordDialog({ onClose, forced = false }: { onClose: () => void; forc
             <input type="password" placeholder={forced ? "Senha que você recebeu" : "Senha atual"} value={current} onChange={(event) => { setCurrent(event.target.value); setMessage(null); }} />
             <input type="password" placeholder="Nova senha (mínimo 10 caracteres)" value={next} onChange={(event) => setNext(event.target.value)} />
             <input type="password" placeholder="Repita a nova senha" value={confirm} onChange={(event) => setConfirm(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") void submit(); }} />
-            {message && <p style={{ fontSize: 11, color: "#a83d49", lineHeight: 1.5 }}>{message}</p>}
+            {message && <p style={{ fontSize: 11, color: "var(--bad)", lineHeight: 1.5 }}>{message}</p>}
             <button className="button" disabled={busy || !current || !next} onClick={() => void submit()}>{busy ? "Trocando…" : "Trocar senha"}</button>
-            <p style={{ fontSize: 10, color: "#64748b", lineHeight: 1.5 }}>Pedimos a senha atual de propósito: sem isso, um cookie roubado bastaria para trancar você fora da própria conta.</p>
+            <p style={{ fontSize: 10, color: "var(--muted)", lineHeight: 1.5 }}>Pedimos a senha atual de propósito: sem isso, um cookie roubado bastaria para trancar você fora da própria conta.</p>
           </div>}
     </div>
   </div>;
@@ -290,8 +355,8 @@ function Conversation() {
       <div className="messages">
         {messagesState==="loading" && <div className="message agent">Carregando histórico…</div>}
         {messagesState==="ready" && messages.length===0 && <div className="message agent">Conversa sem mensagens gravadas.</div>}
-        {messages.map((message,index)=><div className={`message ${message.role==="customer"?"":"agent"}`} key={index} style={message.role==="suggestion"?{opacity:0.72,borderLeft:"3px solid #b45309"}:undefined}>
-          {message.role==="suggestion" && <strong style={{display:"block",fontSize:10,color:"#b45309",textTransform:"uppercase",letterSpacing:0.4,marginBottom:4}}>Sugestão da IA — não enviada ao cliente</strong>}
+        {messages.map((message,index)=><div className={`message ${message.role==="customer"?"":"agent"}`} key={index} style={message.role==="suggestion"?{opacity:0.72,borderLeft:"3px solid var(--warn)"}:undefined}>
+          {message.role==="suggestion" && <strong style={{display:"block",fontSize:10,color:"var(--warn)",textTransform:"uppercase",letterSpacing:0.4,marginBottom:4}}>Sugestão da IA — não enviada ao cliente</strong>}
           {message.content}
           <time>{new Date(message.createdAt).toLocaleString("pt-BR",{day:"2-digit",month:"2-digit",hour:"2-digit",minute:"2-digit"})}</time>
         </div>)}
@@ -349,12 +414,12 @@ function TrainingMode() {
 }
 
 function Analysis({result,accepted,onAccept}:{result:AgentResult;accepted:boolean;onAccept:()=>void}) { const e=result.evaluation; const scores=[["Naturalidade",e.naturalness],["Precisão",e.precision],["Empatia",e.empathy],["Segurança",e.safety],["Continuidade",e.continuity],["Memória",e.memory],["Novidade",e.noveltyScore*10],["Progresso",e.progressScore*10]] as const; return <>
-  <div className="analysis-block"><div className="analysis-main"><div><h4>Intenção detectada</h4><strong>{result.intent}</strong><div style={{fontSize:11,color:"#64748b",marginTop:4}}>{result.goal} • confiança {Math.round(result.confidence*100)}%</div></div><div className="score"><span>{e.score}</span></div></div></div>
+  <div className="analysis-block"><div className="analysis-main"><div><h4>Intenção detectada</h4><strong>{result.intent}</strong><div style={{fontSize:11,color:"var(--muted)",marginTop:4}}>{result.goal} • confiança {Math.round(result.confidence*100)}%</div></div><div className="score"><span>{e.score}</span></div></div></div>
   <div className="analysis-block"><h4>Estado e execução</h4><div className="analysis-status"><span className="badge blue">{result.state}</span><span className={`badge ${result.actionExecuted?"amber":"green"}`}>{result.actionExecuted?"Ação externa":"Zero ação real"}</span><span className="badge">{result.finalStatus}</span></div><div className="correlation">{result.correlationId}</div></div>
   <div className="analysis-block"><h4>Ferramentas</h4><div className="tool-list">{result.tools.length?result.tools.map(t=><span className="tool-chip" key={t.tool}>{t.status==="completed"?"✓":"!"} {t.tool} • {t.outcome}</span>):<span className="analysis-muted">Nenhuma ferramenta necessária.</span>}</div></div>
   <div className="analysis-block"><h4>Evidências</h4>{result.evidence.length?<div className="evidence-list">{result.evidence.map((evidence)=><div className="evidence-item" key={evidence.id}><strong>{evidence.kind} • {evidence.source}</strong><span>{evidence.summary}</span><small>{evidence.simulated?"Evidência simulada e identificada":"Evidência validada"}</small></div>)}</div>:<p className="analysis-muted">Nenhuma evidência foi produzida; o agente não pode alegar sucesso.</p>}</div>
   <div className="analysis-block"><h4>Transbordo</h4><div className={`handoff-card ${result.handoff.required?"required":""}`}><strong>{result.handoff.required?"Necessário":"Não necessário"}</strong><span>{result.handoff.reason??"O fluxo demonstrativo pode continuar com segurança."}</span>{result.handoff.summary&&<small>{result.handoff.summary}</small>}</div></div>
   <div className="analysis-block"><h4>Avaliação</h4>{scores.map(([label,value])=><div className="score-row" key={label}><div><div style={{display:"flex",justifyContent:"space-between",marginBottom:4}}><span>{label}</span><strong>{value}</strong></div><div className="mini-bar"><span style={{width:`${value*10}%`}} /></div></div><span>/10</span></div>)}</div>
-  <div className="analysis-block"><h4>Resumo e próximo passo</h4><p style={{fontSize:11,lineHeight:1.55,color:"#536478"}}>{result.conversationSummary}</p><p style={{fontSize:11,lineHeight:1.55}}><strong>Próximo:</strong> {result.nextStep}</p></div>
-  <div className="analysis-block"><h4>Resposta considerada perfeita</h4><div className="ideal">{e.idealResponse}</div><p style={{fontSize:10,color:"#64748b",lineHeight:1.5}}>{e.suggestion}</p><button className={`button ${accepted?"success":""}`} style={{width:"100%"}} onClick={onAccept}>{accepted?"✓ Melhoria salva como caso aprovado":"Aceitar melhoria"}</button></div>
+  <div className="analysis-block"><h4>Resumo e próximo passo</h4><p style={{fontSize:11,lineHeight:1.55,color:"var(--text-2)"}}>{result.conversationSummary}</p><p style={{fontSize:11,lineHeight:1.55}}><strong>Próximo:</strong> {result.nextStep}</p></div>
+  <div className="analysis-block"><h4>Resposta considerada perfeita</h4><div className="ideal">{e.idealResponse}</div><p style={{fontSize:10,color:"var(--muted)",lineHeight:1.5}}>{e.suggestion}</p><button className={`button ${accepted?"success":""}`} style={{width:"100%"}} onClick={onAccept}>{accepted?"✓ Melhoria salva como caso aprovado":"Aceitar melhoria"}</button></div>
   </>; }

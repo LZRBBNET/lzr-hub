@@ -1,6 +1,6 @@
 "use client";
 import { useEffect, useState } from "react";
-import { RULE_CHANNELS, type RuleStepInput } from "@/lib/platform/collection-rules-service";
+import { RULE_CHANNELS, type RuleStepInput } from "@/lib/platform/collection-rules-shared";
 
 export function BillingModule({view}:{view:"cobranca"|"regua"|"campanhas"|"relatorios-cobranca"}){if(view==="regua")return <RuleBuilder/>;if(view==="campanhas")return <Campaigns/>;if(view==="relatorios-cobranca")return <BillingReports/>;return <BillingDashboard/>}
 
@@ -57,7 +57,7 @@ function BillingDashboard(){
       <div className="dashboard-grid">
         <section className="data-card"><div className="card-header"><strong>Faixa de atraso</strong><span className="badge blue">Calculado da data real de vencimento</span></div>
           {summary.overdueInvoices===0
-            ? <p style={{fontSize:12,color:"#64748b",padding:"12px 0"}}>Nenhuma fatura vencida entre os cadastros consultados.</p>
+            ? <p style={{fontSize:12,color:"var(--muted)",padding:"12px 0"}}>Nenhuma fatura vencida entre os cadastros consultados.</p>
             : summary.aging.map(bucket=><div className="aging-row" key={bucket.label}><div><strong>{bucket.label}</strong><span>{bucket.invoices} fatura(s) • {Math.round(bucket.invoices/summary.overdueInvoices*100)}% das vencidas</span></div><b>{money(bucket.value)}</b></div>)}
           {summary.invoicesWithoutDueDate>0&&<div className="state-card" style={{marginTop:12}}>{summary.invoicesWithoutDueDate} fatura(s) em aberto sem data de vencimento legível ficaram fora das faixas, em vez de serem chutadas para uma.</div>}
         </section>
@@ -73,9 +73,9 @@ function BillingDashboard(){
             </section>
           : <section className="data-card"><div className="card-header"><strong>Como pagaram</strong><span className="badge blue">Últimos {PERIODS.find(([v])=>v===period)?.[1]}</span></div>
           {summary.paymentsInPeriod===0
-            ? <p style={{fontSize:12,color:"#64748b",padding:"12px 0"}}>Nenhum pagamento registrado no período.</p>
+            ? <p style={{fontSize:12,color:"var(--muted)",padding:"12px 0"}}>Nenhum pagamento registrado no período.</p>
             : Object.entries(summary.paymentMethods).sort((a,b)=>b[1]-a[1]).map(([method,count])=><div className="aging-row" key={method}><div><strong>{method}</strong><span>{count} pagamento(s)</span></div><b>{Math.round(count/summary.paymentsInPeriod*100)}%</b></div>)}
-          <div style={{marginTop:18,padding:14,background:"#f2f7ff",borderRadius:10,fontSize:11,color:"#40566d",lineHeight:1.6}}><strong style={{display:"block",fontSize:12,color:"#1267e8",marginBottom:4}}>Ainda não medimos</strong>Recuperação atribuída a campanha, conversão e ROI dependem de campanha executada — e campanha não está ligada. Sem isso, qualquer número seria invenção.</div>
+          <div style={{marginTop:18,padding:14,background:"var(--blue-soft)",borderRadius:10,fontSize:11,color:"var(--text-2)",lineHeight:1.6}}><strong style={{display:"block",fontSize:12,color:"var(--blue)",marginBottom:4}}>Ainda não medimos</strong>Recuperação atribuída a campanha, conversão e ROI dependem de campanha executada — e campanha não está ligada. Sem isso, qualquer número seria invenção.</div>
         </section>}
       </div>
     </>}

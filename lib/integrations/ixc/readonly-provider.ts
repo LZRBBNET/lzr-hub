@@ -126,17 +126,26 @@ export class IxcReadonlyProvider {
     return{items:records.map(IxcServiceOrderMapper.map),total,page:Math.max(page,1),pageSize:size};
   }
   /**
-   * Contratos ativados a partir de uma data: é o que a BBNET vendeu no período.
+   * Contratos ativados no período: é o que a BBNET vendeu.
+   *
+   * **Não filtra por situação do contrato, de propósito.** Antes filtrava
+   * `status = A`, e isso escondia toda venda que já tinha cancelado depois —
+   * medido em homologação na competência 06/2026: 248 contratos ativados no mês,
+   * dos quais 14 já cancelaram. O filtro antigo respondia 234, subestimando a
+   * venda em 5,6%. Venda cancelada continua sendo venda: quem vendeu bate a meta
+   * do mês mesmo que o cliente saia depois, e o cancelamento é medido à parte,
+   * no churn.
    *
    * Varre de verdade (algumas centenas por mês cabem numa página de 500) porque
-   * ticket médio e mix de planos só saem lendo `valor_plano` e o nome do plano
-   * linha a linha — o IXC devolve contagem, nunca soma.
+   * ticket médio e mix de planos só saem lendo o plano linha a linha — o IXC
+   * devolve contagem, nunca soma.
    */
-  async listActivations(sinceIso:string,correlationId:string,maxPages=4,pageSize=500){
-    const filters:GridFilter[]=[{TB:"cliente_contrato.status",OP:"=",P:"A"},{TB:"cliente_contrato.data_ativacao",OP:">=",P:sinceIso.slice(0,10)}];
+  async listActivations(sinceIso:string,correlationId:string,maxPages=4,pageSize=500,untilIso?:string){
+    const filters:GridFilter[]=[{TB:"cliente_contrato.data_ativacao",OP:">=",P:sinceIso.slice(0,10)}];
+    if(untilIso)filters.push({TB:"cliente_contrato.data_ativacao",OP:"<=",P:untilIso.slice(0,10)});
     const rows:Record<string,unknown>[]=[];let total=0;
     for(let page=1;page<=maxPages;page+=1){
-      const result=await this.readPage("listContracts",endpoints.listContracts,"cliente_contrato.status","A",correlationId,pageSize,"",{oper:"=",page,sortname:"cliente_contrato.data_ativacao",sortorder:"desc",gridParam:filters});
+      const result=await this.readPage("listContracts",endpoints.listContracts,"cliente_contrato.data_ativacao",sinceIso.slice(0,10),correlationId,pageSize,"",{oper:">=",page,sortname:"cliente_contrato.data_ativacao",sortorder:"desc",gridParam:filters});
       total=result.total;rows.push(...result.records);
       if(result.records.length<pageSize||rows.length>=total)break;
     }

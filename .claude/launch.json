@@ -1,0 +1,17 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "lzr-hub",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["run", "dev"],
+      "port": 5173
+    },
+    {
+      "name": "lzr-hub-producao-local",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["start"],
+      "port": 3000
+    }
+  ]
+}

@@ -133,7 +133,7 @@ function Users() {
         {resetRequests.map((item) => {
           const match = users.find((user) => user.email === item.email);
           return <div className="permission-row" key={item.id} style={{ flexWrap: "wrap", gap: 10 }}>
-            <span style={{ flex: 1, minWidth: 220 }}><strong>{item.email}</strong><small style={{ display: "block", color: "#64748b" }}>{new Date(item.createdAt).toLocaleString("pt-BR")}{item.note ? ` • "${item.note}"` : ""}{match ? "" : " • nenhuma conta com este e-mail"}</small></span>
+            <span style={{ flex: 1, minWidth: 220 }}><strong>{item.email}</strong><small style={{ display: "block", color: "var(--muted)" }}>{new Date(item.createdAt).toLocaleString("pt-BR")}{item.note ? ` • "${item.note}"` : ""}{match ? "" : " • nenhuma conta com este e-mail"}</small></span>
             <span style={{ display: "flex", gap: 8 }}>
               {match && <button disabled={busy !== null} onClick={() => void act(`pwd:${match.id}`, { action: "reset-password", id: match.id, requestId: item.id })}>Gerar senha nova</button>}
               <button disabled={busy !== null} onClick={() => void act(`dismiss:${item.id}`, { action: "dismiss-reset", requestId: item.id })}>Descartar</button>
@@ -161,9 +161,9 @@ function Users() {
       {state === "loading" && <p style={{ padding: 14 }}>Carregando contas…</p>}
       {state === "error" && <p style={{ padding: 14 }}>Não foi possível consultar as contas.</p>}
       {state === "ready" && !available && <p style={{ padding: 14 }}>Lista de usuários indisponível — sem banco não há de onde ler.</p>}
-      {state === "ready" && available && users.length === 0 && <p style={{ padding: 14, lineHeight: 1.6, color: "#64748b" }}>Nenhuma conta cadastrada.</p>}
+      {state === "ready" && available && users.length === 0 && <p style={{ padding: 14, lineHeight: 1.6, color: "var(--muted)" }}>Nenhuma conta cadastrada.</p>}
       {state === "ready" && available && users.map((user) => <div className="permission-row" key={user.id} style={{ flexWrap: "wrap", gap: 10 }}>
-        <span style={{ flex: 1, minWidth: 220 }}><strong>{user.name}</strong><small style={{ display: "block", color: "#64748b" }}>{user.email} • último acesso: {when(user.lastLoginAt)}</small></span>
+        <span style={{ flex: 1, minWidth: 220 }}><strong>{user.name}</strong><small style={{ display: "block", color: "var(--muted)" }}>{user.email} • último acesso: {when(user.lastLoginAt)}</small></span>
         <span style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
           <select value={user.role} disabled={busy !== null} onChange={(event) => void act(`role:${user.id}`, { action: "set-role", id: user.id, role: event.target.value })}>{roles.map((item) => <option key={item} value={item}>{item}</option>)}</select>
           <i className={`badge ${user.active ? "green" : ""}`}>{user.active ? "ativa" : "inativa"}</i>

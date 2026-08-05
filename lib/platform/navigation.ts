@@ -1,8 +1,17 @@
+/**
+ * As telas que existem de verdade.
+ *
+ * Leads, Funil, Kanban, Campanhas, Saúde do Cliente, Upgrade e Customer
+ * Intelligence saíram daqui: nenhuma tinha fonte de dados, e todas mostravam um
+ * aviso explicando o que faltaria. Item de menu que não leva a lugar nenhum
+ * ensina quem usa a desconfiar do sistema inteiro — some do menu até existir.
+ * O que faltava para cada uma está em `docs/telas-removidas.md`.
+ */
 export type View =
   | "dashboard" | "atendimento" | "clientes" | "monitoramento" | "mapa-alertas" | "massivas" | "chamados"
-  | "cobranca" | "regua" | "campanhas" | "relatorios-cobranca"
-  | "comercial" | "leads" | "funil" | "kanban" | "metas" | "relatorios-comercial"
-  | "training" | "conhecimento" | "intelligence" | "saude" | "churn" | "upgrade" | "avaliacoes" | "prompts"
+  | "cobranca" | "regua" | "relatorios-cobranca"
+  | "comercial" | "metas" | "relatorios-comercial"
+  | "training" | "conhecimento" | "churn" | "avaliacoes" | "prompts"
   | "integracoes" | "equipes" | "usuarios" | "auditoria" | "configuracoes";
 
 export interface NavItem { id: View; label: string; icon: string; group?: string }
@@ -16,20 +25,13 @@ export const navigation: NavItem[] = [
   { id:"chamados", label:"Chamados", icon:"▣" },
   { id:"cobranca", label:"Visão Geral", icon:"$", group:"Cobrança" },
   { id:"regua", label:"Régua", icon:"≋" },
-  { id:"campanhas", label:"Campanhas", icon:"◉" },
   { id:"relatorios-cobranca", label:"Relatórios", icon:"▥" },
   { id:"comercial", label:"Dashboard", icon:"↗", group:"Comercial" },
-  { id:"leads", label:"Leads", icon:"♙" },
-  { id:"funil", label:"Funil", icon:"▽" },
-  { id:"kanban", label:"Kanban", icon:"▤" },
   { id:"metas", label:"Metas", icon:"◎" },
   { id:"relatorios-comercial", label:"Relatórios", icon:"▥" },
   { id:"training", label:"AI Training Mode", icon:"✦", group:"Inteligência" },
   { id:"conhecimento", label:"Base de Conhecimento", icon:"▱" },
-  { id:"intelligence", label:"Customer Intelligence", icon:"◈" },
-  { id:"saude", label:"Saúde do Cliente", icon:"♡" },
-  { id:"churn", label:"Risco de Churn", icon:"⚑" },
-  { id:"upgrade", label:"Upgrade", icon:"↑" },
+  { id:"churn", label:"Churn", icon:"⚑" },
   { id:"avaliacoes", label:"Avaliações da IA", icon:"✓" },
   { id:"prompts", label:"Prompts e versões", icon:"{ }" },
   { id:"integracoes", label:"Integrações", icon:"⌁", group:"Administração" },
