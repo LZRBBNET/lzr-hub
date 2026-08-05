@@ -125,6 +125,27 @@ export class IxcReadonlyProvider {
     const {records,total}=await this.readPage("listServiceOrders",endpoints.listServiceOrders,"su_oss_chamado.status","F",correlationId,size,"",{oper:"!=",page:Math.max(page,1),sortname:"su_oss_chamado.data_abertura",sortorder:"desc"});
     return{items:records.map(IxcServiceOrderMapper.map),total,page:Math.max(page,1),pageSize:size};
   }
+  /**
+   * Contratos ativados a partir de uma data: é o que a BBNET vendeu no período.
+   *
+   * Varre de verdade (algumas centenas por mês cabem numa página de 500) porque
+   * ticket médio e mix de planos só saem lendo `valor_plano` e o nome do plano
+   * linha a linha — o IXC devolve contagem, nunca soma.
+   */
+  async listActivations(sinceIso:string,correlationId:string,maxPages=4,pageSize=500){
+    const filters:GridFilter[]=[{TB:"cliente_contrato.status",OP:"=",P:"A"},{TB:"cliente_contrato.data_ativacao",OP:">=",P:sinceIso.slice(0,10)}];
+    const rows:Record<string,unknown>[]=[];let total=0;
+    for(let page=1;page<=maxPages;page+=1){
+      const result=await this.readPage("listContracts",endpoints.listContracts,"cliente_contrato.status","A",correlationId,pageSize,"",{oper:"=",page,sortname:"cliente_contrato.data_ativacao",sortorder:"desc",gridParam:filters});
+      total=result.total;rows.push(...result.records);
+      if(result.records.length<pageSize||rows.length>=total)break;
+    }
+    return{rows,total,truncated:rows.length<total};
+  }
+  /** Quantos contratos ativos existem hoje. Uma consulta, sem varrer registro. */
+  async countActiveContracts(correlationId:string){
+    return (await this.readPage("listContracts",endpoints.listContracts,"cliente_contrato.status","A",correlationId,1,"",{oper:"=",sortname:"cliente_contrato.id"})).total;
+  }
   /** Contagem de faturas em aberto na base inteira: uma consulta, sem varrer registro. */
   async countOpenInvoices(correlationId:string){
     return (await this.readPage("listInvoices",endpoints.listInvoices,"fn_areceber.status","A",correlationId,1,"",{oper:"=",sortname:"fn_areceber.id"})).total;
