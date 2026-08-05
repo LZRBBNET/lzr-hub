@@ -132,13 +132,16 @@ Ver [`docs/security/authentication.md`](docs/security/authentication.md).
 ## Limites conhecidos (não são bugs a "descobrir")
 
 - Sem rate limit no login
-- Sem tela de gestão de usuários nem troca de senha — usuários são criados por `scripts/create-user.mjs`
+- A tela de Usuários lista as contas reais, mas é **somente leitura**: criar, desativar e trocar senha continuam em `scripts/create-user.mjs`
 - Custo por atendimento não é medido (depende do Langfuse, issue #6)
 - Tempo médio de atendimento também não é medido — a Visão geral escreve isso em vez de estimar
 - Responder pela tela de Atendimentos ainda não existe: quem responde é o fluxo do n8n, então o campo fica desabilitado
 - Conversa do canal não é associada ao cadastro do IXC (faltaria casar o telefone do WhatsApp com o cliente)
 - A lista de Clientes é a allowlist do IXC enquanto `FEATURE_IXC_FULL_BASE` estiver desligada. A trava é **nossa**, de homologação, não do ERP: `scripts/ixc-probe-listing.mjs` pergunta ao IXC se a listagem paginada funciona. Ligar a flag exige `FEATURE_AUTH=true` (o código recusa a subir sem isso)
-- Chamados mostra as OS do IXC só dos cadastros da allowlist, pelo mesmo motivo
+- Com `FEATURE_IXC_FULL_BASE` ligada, Chamados mostra a fila real do provedor (OS não fechadas, paginadas). A OS não traz o nome do cliente — só `id_cliente` e endereço — e buscar o nome seria uma consulta por linha da página
+- Churn é **realizado**, não previsto: medimos quem saiu, não quem vai sair. Não há score de saúde nem elegibilidade de upgrade — nada disso é calculado, e a tela diz o que faltaria
+- Não existe CRM: leads, funil e origem do contato não são registrados em lugar nenhum
+- O motivo de cancelamento do IXC vem como código numérico e a API não expõe a tabela de tradução
 - Não há integração de monitoramento de rede (alerta, potência em massa, correlação geográfica). Massivas são registradas por uma pessoa, na tela; o Mapa de Alertas agrupa só o que foi registrado
 - O runtime de filas tem apenas um teste, e ele é pulado sem um Redis disponível
 

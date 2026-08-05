@@ -152,3 +152,19 @@ export class MemoryAuthRepository implements AuthRepository {
     if (user) user.lastLoginAt = atIso;
   }
 }
+
+/**
+ * Lista de contas para a tela de Usuários. Nunca traz hash nem salt: a tela é
+ * de leitura e não precisa deles, e o que não sai daqui não vaza num log.
+ * Usuários são criados por `scripts/create-user.mjs` — não há cadastro na tela.
+ */
+export interface UserListItem { id: string; name: string; email: string; role: string; active: boolean; lastLoginAt: string | null; createdAt: string }
+
+export async function listUsers(db: unknown): Promise<UserListItem[]> {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const rows = await (db as any).select({
+    id: users.id, name: users.name, email: users.email, role: users.role,
+    active: users.active, lastLoginAt: users.lastLoginAt, createdAt: users.createdAt,
+  }).from(users).orderBy(users.createdAt);
+  return rows as UserListItem[];
+}
