@@ -11,6 +11,12 @@ type BillingPayload={available:boolean;detail?:string;period:string;scope?:"allo
 const isFullBase=(summary:BillingSummary|FullBaseSummary|null):summary is FullBaseSummary=>summary?.scope==="full-base";
 
 const money=(value:number)=>`R$ ${value.toLocaleString("pt-BR",{minimumFractionDigits:2,maximumFractionDigits:2})}`;
+/** A régua escrevia "1 dias depois do vencimento". Um dia é um dia. */
+const offsetLabel=(days:number)=>{
+  if(days===0)return "No vencimento";
+  const n=Math.abs(days), palavra=n===1?"dia":"dias";
+  return days<0?`${n} ${palavra} antes do vencimento`:`${n} ${palavra} depois do vencimento`;
+};
 const PERIODS:[string,string][]=[["24h","24 horas"],["7d","7 dias"],["30d","30 dias"]];
 
 function useBilling(period:string){
@@ -134,7 +140,7 @@ function RuleBuilder(){
                 <label style={{fontSize:11}}>Tentativas<input type="number" min={1} max={5} value={step.attempts} onChange={e=>update(index,{attempts:Number(e.target.value)})} style={{width:56,marginLeft:6}}/></label>
               </div>
               <input placeholder="Identificador do template" value={step.templateId} onChange={e=>update(index,{templateId:e.target.value})}/>
-              <small>{step.offsetDays<0?`${Math.abs(step.offsetDays)} dias antes do vencimento`:step.offsetDays===0?"No vencimento":`${step.offsetDays} dias depois do vencimento`}</small>
+              <small>{offsetLabel(step.offsetDays)}</small>
             </div>
             <div style={{display:"grid",gap:6}}>
               <button onClick={()=>update(index,{active:!step.active})}>{step.active?"Ativa":"Inativa"}</button>
