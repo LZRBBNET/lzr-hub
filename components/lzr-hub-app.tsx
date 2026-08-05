@@ -291,7 +291,7 @@ function PasswordDialog({ onClose, forced = false }: { onClose: () => void; forc
             <input type="password" placeholder="Repita a nova senha" value={confirm} onChange={(event) => setConfirm(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") void submit(); }} />
             {message && <p style={{ fontSize: 11, color: "var(--bad)", lineHeight: 1.5 }}>{message}</p>}
             <button className="button" disabled={busy || !current || !next} onClick={() => void submit()}>{busy ? "Trocando…" : "Trocar senha"}</button>
-            <p style={{ fontSize: 10, color: "var(--muted)", lineHeight: 1.5 }}>Pedimos a senha atual de propósito: sem isso, um cookie roubado bastaria para trancar você fora da própria conta.</p>
+            <p style={{ fontSize: 11, color: "var(--muted)", lineHeight: 1.5 }}>Pedimos a senha atual de propósito: sem isso, um cookie roubado bastaria para trancar você fora da própria conta.</p>
           </div>}
     </div>
   </div>;
@@ -358,7 +358,7 @@ function Conversation() {
         {messagesState==="loading" && <div className="message agent">Carregando histórico…</div>}
         {messagesState==="ready" && messages.length===0 && <div className="message agent">Conversa sem mensagens gravadas.</div>}
         {messages.map((message,index)=><div className={`message ${message.role==="customer"?"":"agent"}`} key={index} style={message.role==="suggestion"?{opacity:0.72,borderLeft:"3px solid var(--warn)"}:undefined}>
-          {message.role==="suggestion" && <strong style={{display:"block",fontSize:10,color:"var(--warn)",textTransform:"uppercase",letterSpacing:0.4,marginBottom:4}}>Sugestão da IA — não enviada ao cliente</strong>}
+          {message.role==="suggestion" && <strong style={{display:"block",fontSize:11,color:"var(--warn)",textTransform:"uppercase",letterSpacing:0.4,marginBottom:4}}>Sugestão da IA — não enviada ao cliente</strong>}
           {message.content}
           <time>{new Date(message.createdAt).toLocaleString("pt-BR",{day:"2-digit",month:"2-digit",hour:"2-digit",minute:"2-digit"})}</time>
         </div>)}
@@ -423,5 +423,5 @@ function Analysis({result,accepted,onAccept}:{result:AgentResult;accepted:boolea
   <div className="analysis-block"><h4>Transbordo</h4><div className={`handoff-card ${result.handoff.required?"required":""}`}><strong>{result.handoff.required?"Necessário":"Não necessário"}</strong><span>{result.handoff.reason??"O fluxo demonstrativo pode continuar com segurança."}</span>{result.handoff.summary&&<small>{result.handoff.summary}</small>}</div></div>
   <div className="analysis-block"><h4>Avaliação</h4>{scores.map(([label,value])=><div className="score-row" key={label}><div><div style={{display:"flex",justifyContent:"space-between",marginBottom:4}}><span>{label}</span><strong>{value}</strong></div><div className="mini-bar"><span style={{width:`${value*10}%`}} /></div></div><span>/10</span></div>)}</div>
   <div className="analysis-block"><h4>Resumo e próximo passo</h4><p style={{fontSize:11,lineHeight:1.55,color:"var(--text-2)"}}>{result.conversationSummary}</p><p style={{fontSize:11,lineHeight:1.55}}><strong>Próximo:</strong> {result.nextStep}</p></div>
-  <div className="analysis-block"><h4>Resposta considerada perfeita</h4><div className="ideal">{e.idealResponse}</div><p style={{fontSize:10,color:"var(--muted)",lineHeight:1.5}}>{e.suggestion}</p><button className={`button ${accepted?"success":""}`} style={{width:"100%"}} onClick={onAccept}>{accepted?"✓ Melhoria salva como caso aprovado":"Aceitar melhoria"}</button></div>
+  <div className="analysis-block"><h4>Resposta considerada perfeita</h4><div className="ideal">{e.idealResponse}</div><p style={{fontSize:11,color:"var(--muted)",lineHeight:1.5}}>{e.suggestion}</p><button className={`button ${accepted?"success":""}`} style={{width:"100%"}} onClick={onAccept}>{accepted?"✓ Melhoria salva como caso aprovado":"Aceitar melhoria"}</button></div>
   </>; }

@@ -303,10 +303,15 @@ function Users() {
 
     <section className="data-card" style={{ marginTop: resetRequests.length > 0 ? 14 : 0 }}>
       <div className="card-header"><strong>Nova conta</strong><span className="badge blue">Senha gerada pelo sistema</span></div>
-      <div className="wizard" style={{ display: "grid", gap: 8 }}>
-        <input placeholder="Nome completo" value={form.name} onChange={(event) => { setForm({ ...form, name: event.target.value }); setError(null); }} />
-        <input placeholder="e-mail@bbnet.com" value={form.email} onChange={(event) => setForm({ ...form, email: event.target.value })} />
-        <select value={form.role} onChange={(event) => setForm({ ...form, role: event.target.value })}>{roles.map((item) => <option key={item} value={item}>{item}</option>)}</select>
+      {/* Rótulo de verdade, não placeholder: placeholder some quando a pessoa
+          digita, e nem todo leitor de tela o anuncia como nome do campo. */}
+      <div className="wizard" style={{ display: "grid", gap: 10 }}>
+        <label className="field"><span>Nome completo</span>
+          <input value={form.name} placeholder="ex.: Camila Torres" onChange={(event) => { setForm({ ...form, name: event.target.value }); setError(null); }} /></label>
+        <label className="field"><span>E-mail</span>
+          <input type="email" value={form.email} placeholder="ex.: camila@bbnet.com" onChange={(event) => setForm({ ...form, email: event.target.value })} /></label>
+        <label className="field"><span>Perfil de acesso</span>
+          <select value={form.role} onChange={(event) => setForm({ ...form, role: event.target.value })}>{roles.map((item) => <option key={item} value={item}>{item}</option>)}</select></label>
         <button className="button" disabled={busy !== null} onClick={() => void act("create", { action: "create", ...form }).then(() => setForm({ name: "", email: "", role: "Atendente" }))}>{busy === "create" ? "Criando…" : "Criar conta"}</button>
       </div>
     </section>

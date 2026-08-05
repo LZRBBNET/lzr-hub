@@ -117,12 +117,13 @@ function MassIncidents(){
     <div className="support-grid">
       <section className="data-card"><div className="card-header"><strong>Registrar massiva</strong><span className="badge blue">Fica auditado</span></div>
         <div style={{padding:16,display:"grid",gap:10}}>
-          <input placeholder="O que está acontecendo (ex.: rompimento de fibra no anel norte)" value={form.title} onChange={set("title")}/>
-          <input placeholder="Cidade" value={form.city} onChange={set("city")}/>
-          <input placeholder="Bairro ou região" value={form.neighborhood} onChange={set("neighborhood")}/>
-          <input placeholder="Equipamento (opcional — ex.: OLT-ITA-02 / PON 4)" value={form.equipment} onChange={set("equipment")}/>
-          <input placeholder="Clientes afetados (estimativa)" inputMode="numeric" value={form.affectedCustomers} onChange={set("affectedCustomers")}/>
-          <select value={form.severity} onChange={set("severity")}><option value="low">Baixa</option><option value="medium">Média</option><option value="high">Alta</option><option value="critical">Crítica</option></select>
+          {/* Rótulo visível, não só placeholder: o placeholder some ao digitar. */}
+          <label className="field"><span>O que está acontecendo</span><input placeholder="ex.: rompimento de fibra no anel norte" value={form.title} onChange={set("title")}/></label>
+          <label className="field"><span>Cidade</span><input placeholder="ex.: Itabaiana" value={form.city} onChange={set("city")}/></label>
+          <label className="field"><span>Bairro ou região</span><input placeholder="ex.: Centro" value={form.neighborhood} onChange={set("neighborhood")}/></label>
+          <label className="field"><span>Equipamento (opcional)</span><input placeholder="ex.: OLT-ITA-02 / PON 4" value={form.equipment} onChange={set("equipment")}/></label>
+          <label className="field"><span>Clientes afetados (estimativa)</span><input placeholder="ex.: 340" inputMode="numeric" value={form.affectedCustomers} onChange={set("affectedCustomers")}/></label>
+          <label className="field"><span>Severidade</span><select value={form.severity} onChange={set("severity")}><option value="low">Baixa</option><option value="medium">Média</option><option value="high">Alta</option><option value="critical">Crítica</option></select></label>
           {error&&<p style={{color:"var(--bad)",fontSize:12}}>{error}</p>}
           <button className="button" disabled={busy} onClick={()=>void submit()}>{busy?"Registrando…":"Registrar massiva"}</button>
           <p style={{fontSize:11,color:"var(--muted)",lineHeight:1.6}}>A estimativa de clientes é sua: o sistema não consegue calcular isso sozinho enquanto não houver integração com o monitoramento da rede.</p>

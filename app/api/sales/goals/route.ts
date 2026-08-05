@@ -90,7 +90,8 @@ export async function POST(request: Request) {
     const saved = await new DbSalesGoalsRepository(await getDb()).upsert(input, actor);
     await logUnauthenticatedAction({
       action: "sales.goal.save", entity: `sales_goal:${saved.period}`, result: "success",
-      reason: `Meta de ${saved.period}: ${saved.targetContracts} contratos${saved.targetRevenue === null ? "" : ` e R$ ${saved.targetRevenue.toFixed(2)}`}`,
+      // O registro de auditoria é lido por pessoas: valor em formato brasileiro.
+      reason: `Meta de ${saved.period}: ${saved.targetContracts} contratos${saved.targetRevenue === null ? "" : ` e R$ ${saved.targetRevenue.toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}`,
       actor: guard.user,
     });
     return NextResponse.json(saved, { status: 201 });
