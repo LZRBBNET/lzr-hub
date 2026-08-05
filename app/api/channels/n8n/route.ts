@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import { getDb } from "@/db";
 import { D1ChannelRepository, MAX_MESSAGE_LENGTH, processChannelMessage } from "@/lib/platform/n8n-channel-service";
 import { DbSupportMetricsRepository } from "@/lib/platform/support-metrics";
+import { authorize } from "@/lib/platform/session-guard";
 
 /**
  * Resposta automática nasce desligada, como toda flag que produz efeito no
@@ -11,7 +12,10 @@ import { DbSupportMetricsRepository } from "@/lib/platform/support-metrics";
 const autoReplyEnabled = () => process.env.FEATURE_N8N_AUTOREPLY === "true";
 
 /** Estado do canal, sem nada sensível — usado pelo painel de integrações para não mentir sobre o status real. */
-export async function GET() {
+export async function GET(request: Request) {
+  // Estado de configuração do canal não precisa ser público.
+  const guard = await authorize(request, "customer.read");
+  if (!guard.allowed) return NextResponse.json({ error: guard.error }, { status: guard.status });
   const enabled = process.env.FEATURE_N8N_CHANNEL === "true";
   const configured = enabled && !!process.env.N8N_CHANNEL_SECRET;
   return NextResponse.json({ enabled, configured, autoReply: enabled && autoReplyEnabled() });

@@ -45,6 +45,7 @@ function useSessionRedirect() {
 
 export function LzrHubApp({ ixcMode = "disabled" }: { ixcMode?: string }) {
   const [view, setView] = useState<View>("dashboard");
+  const [changingPassword, setChangingPassword] = useState(false);
   const session = useSessionRedirect();
   const user = session?.user;
   // Só existe dado real quando o IXC está de fato ligado. Fora disso a tela
@@ -65,9 +66,13 @@ export function LzrHubApp({ ixcMode = "disabled" }: { ixcMode?: string }) {
         <div className="sidebar-footer">
           <Avatar initials={user ? initialsOf(user.name) : "AD"} />
           <div><strong>{user ? user.name : "Admin Demonstração"}</strong><span>{user ? user.role : "Usuário sintético"}</span></div>
-          {user && <button className="button secondary" onClick={signOut}>Sair</button>}
+          {user && <div style={{ display: "flex", gap: 6 }}>
+            <button className="button secondary" onClick={() => setChangingPassword(true)}>Senha</button>
+            <button className="button secondary" onClick={signOut}>Sair</button>
+          </div>}
         </div>
       </aside>
+      {changingPassword && <PasswordDialog onClose={() => setChangingPassword(false)} />}
       <section className="workspace">
         <header className="topbar"><div className="topbar-title"><strong>{viewTitles[view][0]}</strong><span>{live ? "Dados reais de produção • somente leitura" : viewTitles[view][1]}</span></div><div className="live-pill">{live ? "● IXC conectado • somente leitura" : "● Homologação protegida • demo mock"}</div></header>
         {live
@@ -176,6 +181,48 @@ function Dashboard({ onOpen }: { onOpen: () => void }) {
       </section>
     </>}
   </main>;
+}
+
+/**
+ * Troca da própria senha. Fica na barra lateral, junto do "Sair", porque
+ * pertence à pessoa e não à Administração — um "Somente leitura" também precisa
+ * conseguir trocar a sua, sem depender de alguém resetar por ele.
+ */
+function PasswordDialog({ onClose }: { onClose: () => void }) {
+  const [current, setCurrent] = useState("");
+  const [next, setNext] = useState("");
+  const [confirm, setConfirm] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [message, setMessage] = useState<string | null>(null);
+  const [done, setDone] = useState(false);
+
+  async function submit() {
+    if (next !== confirm) { setMessage("A confirmação não confere com a nova senha."); return; }
+    setBusy(true); setMessage(null);
+    try {
+      const response = await fetch("/api/auth/password", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ currentPassword: current, newPassword: next }) });
+      const payload = await response.json() as { error?: string };
+      if (!response.ok) { setMessage(payload.error ?? "Não foi possível trocar a senha."); return; }
+      setDone(true); setCurrent(""); setNext(""); setConfirm("");
+    } catch { setMessage("Falha ao falar com o servidor."); }
+    finally { setBusy(false); }
+  }
+
+  return <div style={{ position: "fixed", inset: 0, background: "rgba(15,23,42,.45)", display: "grid", placeItems: "center", zIndex: 50 }} onClick={onClose}>
+    <div className="data-card" style={{ width: "min(420px, 92vw)", background: "white" }} onClick={(event) => event.stopPropagation()}>
+      <div className="card-header"><strong>Trocar minha senha</strong><button onClick={onClose}>Fechar</button></div>
+      {done
+        ? <div style={{ padding: 16, lineHeight: 1.7, fontSize: 12 }}><strong>Senha trocada.</strong><p style={{ marginTop: 6 }}>As suas outras sessões foram encerradas — se alguém estava logado na sua conta em outro lugar, perdeu o acesso agora. Esta continua valendo.</p><button className="button" style={{ marginTop: 10 }} onClick={onClose}>Pronto</button></div>
+        : <div className="wizard" style={{ display: "grid", gap: 8 }}>
+            <input type="password" placeholder="Senha atual" value={current} onChange={(event) => { setCurrent(event.target.value); setMessage(null); }} />
+            <input type="password" placeholder="Nova senha (mínimo 10 caracteres)" value={next} onChange={(event) => setNext(event.target.value)} />
+            <input type="password" placeholder="Repita a nova senha" value={confirm} onChange={(event) => setConfirm(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") void submit(); }} />
+            {message && <p style={{ fontSize: 11, color: "#a83d49", lineHeight: 1.5 }}>{message}</p>}
+            <button className="button" disabled={busy || !current || !next} onClick={() => void submit()}>{busy ? "Trocando…" : "Trocar senha"}</button>
+            <p style={{ fontSize: 10, color: "#64748b", lineHeight: 1.5 }}>Pedimos a senha atual de propósito: sem isso, um cookie roubado bastaria para trancar você fora da própria conta.</p>
+          </div>}
+    </div>
+  </div>;
 }
 
 function Metric({ label, value, detail, icon }: { label:string; value:string; detail:string; icon:string }) { return <article className="metric"><div className="metric-top"><span>{label}</span><span className="metric-icon">{icon}</span></div><strong>{value}</strong><small>{detail}</small></article>; }

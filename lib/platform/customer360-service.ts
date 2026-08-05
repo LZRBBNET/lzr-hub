@@ -1,4 +1,5 @@
 import { customers } from "./demo-data.ts";
+import { isOpenInvoice } from "./billing-service.ts";
 import type { CustomerSummary, DataSource } from "./types.ts";
 import type { IxcReadonlyProvider } from "../integrations/ixc/readonly-provider.ts";
 
@@ -77,7 +78,11 @@ export class Customer360Service {
   async refresh(customerId:string){if(!this.ixc)return this.get(customerId);return this.getIxc(customerId,true);}
 
   private async getIxc(customerId:string,force:boolean):Promise<Customer360>{
-    const snapshot=await this.ixc!.getSnapshot(customerId,crypto.randomUUID(),force);const contract=snapshot.contracts[0];const openInvoices=snapshot.invoices.filter((item)=>!/[PR]|pago|recebido/i.test(item.status));
+    const snapshot=await this.ixc!.getSnapshot(customerId,crypto.randomUUID(),force);const contract=snapshot.contracts[0];
+    // Usa a mesma regra da Cobrança. A anterior era `!/[PR]|pago|recebido/` —
+    // sem âncora, então qualquer status contendo P ou R era descartado, e
+    // "cancelada" (C) entrava como dívida. Duas telas discordavam sobre o mesmo cliente.
+    const openInvoices=snapshot.invoices.filter((item)=>isOpenInvoice(item.status));
     // Pagamentos vêm de várias faturas (uma consulta por fatura); ordena por data antes de
     // pegar o mais recente -- assume formato de data comparável como string (AAAA-MM-DD).
     const latestPayment=[...snapshot.payments].sort((a,b)=>(b.paidAt??"").localeCompare(a.paidAt??""))[0];

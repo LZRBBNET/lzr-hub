@@ -1,6 +1,6 @@
 import { createHash, randomBytes, randomUUID, scrypt, timingSafeEqual } from "node:crypto";
 import { promisify } from "node:util";
-import { and, eq, gt, lt } from "drizzle-orm";
+import { and, eq, gt, lt, ne } from "drizzle-orm";
 import { sessions, users } from "../../db/schema.ts";
 import { roles, type Role } from "./rbac.ts";
 
@@ -43,6 +43,9 @@ export interface AuthRepository {
   findSession(tokenHash: string): Promise<{ userId: string; expiresAt: string } | undefined>;
   deleteSession(tokenHash: string): Promise<void>;
   deleteExpiredSessions(nowIso: string): Promise<void>;
+  /** Encerra as outras sessões da pessoa, preservando a atual. */
+  deleteOtherSessions(userId: string, keepTokenHash: string): Promise<void>;
+  updatePassword(userId: string, hash: string, salt: string): Promise<void>;
   findUserById(id: string): Promise<{ id: string; email: string; name: string; role: string; active: boolean } | undefined>;
   markLogin(userId: string, atIso: string): Promise<void>;
 }
@@ -121,6 +124,12 @@ export class DbAuthRepository implements AuthRepository {
   async deleteSession(tokenHash: string) {
     await this.db.delete(sessions).where(eq(sessions.tokenHash, tokenHash));
   }
+  async deleteOtherSessions(userId: string, keepTokenHash: string) {
+    await this.db.delete(sessions).where(and(eq(sessions.userId, userId), ne(sessions.tokenHash, keepTokenHash)));
+  }
+  async updatePassword(userId: string, hash: string, salt: string) {
+    await this.db.update(users).set({ passwordHash: hash, passwordSalt: salt, updatedAt: new Date().toISOString() }).where(eq(users.id, userId));
+  }
   async deleteExpiredSessions(nowIso: string) {
     await this.db.delete(sessions).where(lt(sessions.expiresAt, nowIso));
   }
@@ -147,10 +156,52 @@ export class MemoryAuthRepository implements AuthRepository {
   async deleteExpiredSessions(nowIso: string) {
     for (const [key, value] of this.sessions) if (value.expiresAt < nowIso) this.sessions.delete(key);
   }
+  async deleteOtherSessions(userId: string, keepTokenHash: string) {
+    for (const [key, value] of this.sessions) if (value.userId === userId && key !== keepTokenHash) this.sessions.delete(key);
+  }
+  async updatePassword(userId: string, hash: string, salt: string) {
+    const user = this.users.find((item) => item.id === userId);
+    if (user) { user.passwordHash = hash; user.passwordSalt = salt; }
+  }
   async markLogin(userId: string, atIso: string) {
     const user = this.users.find((item) => item.id === userId);
     if (user) user.lastLoginAt = atIso;
   }
+}
+
+export const MIN_PASSWORD_LENGTH = 10;
+
+export class PasswordChangeError extends Error {
+  constructor(message: string) { super(message); this.name = "PasswordChangeError"; }
+}
+
+/**
+ * Troca de senha pela própria pessoa.
+ *
+ * Exige a senha atual: sem isso, um cookie roubado viraria posse permanente da
+ * conta — o invasor trocaria a senha e trancaria o dono para fora. E ao trocar,
+ * as **outras** sessões caem, preservando só a que fez a troca: se a conta
+ * estava comprometida, trocar a senha precisa expulsar quem estava dentro.
+ */
+export async function changeOwnPassword(
+  repository: AuthRepository,
+  userId: string,
+  currentToken: string,
+  currentPassword: string,
+  newPassword: string,
+): Promise<void> {
+  if (newPassword.length < MIN_PASSWORD_LENGTH) throw new PasswordChangeError(`A nova senha precisa de pelo menos ${MIN_PASSWORD_LENGTH} caracteres`);
+  if (newPassword === currentPassword) throw new PasswordChangeError("A nova senha precisa ser diferente da atual");
+
+  const user = await repository.findUserByEmail((await repository.findUserById(userId))?.email ?? "");
+  if (!user || !user.active) throw new PasswordChangeError("Conta indisponível");
+  if (!(await verifyPassword(currentPassword, user.passwordHash, user.passwordSalt))) {
+    throw new PasswordChangeError("Senha atual incorreta");
+  }
+
+  const { hash, salt } = await hashPassword(newPassword);
+  await repository.updatePassword(userId, hash, salt);
+  await repository.deleteOtherSessions(userId, hashToken(currentToken));
 }
 
 /**

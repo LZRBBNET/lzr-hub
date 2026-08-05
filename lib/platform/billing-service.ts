@@ -11,9 +11,21 @@ import type { IxcCustomerSnapshot, IxcInvoiceDto, IxcPaymentDto } from "../integ
  * carteira inteira da BBNET.
  */
 
-/** No fn_areceber do IXC, "R" é recebido e "P" pago; o resto continua em aberto. */
+/**
+ * Fatura em aberto.
+ *
+ * Lista branca de propósito. A versão anterior excluía "R" e "P" e deixava
+ * passar o resto — só que o IXC também usa **"C" (cancelada)**, e são 557 mil
+ * delas na base. Cada uma entrava como dívida do cliente. Com lista branca, um
+ * código desconhecido deixa de ser cobrado em vez de virar dívida inventada:
+ * errar para menos aqui é reversível, errar para mais é cobrar quem não deve.
+ *
+ * Códigos verificados em homologação: A=aberta, R=recebida, C=cancelada.
+ */
 export function isOpenInvoice(status: string): boolean {
-  return !/^[PR]$/i.test(status.trim()) && !/pago|recebido|cancelad/i.test(status);
+  const value = status.trim();
+  if (/^[A-Za-z]$/.test(value)) return value.toUpperCase() === "A";
+  return !/pago|recebido|cancelad|baixad|estornad/i.test(value);
 }
 
 export interface AgingBucket { label: string; minDays: number; maxDays: number | null; invoices: number; value: number }
@@ -63,12 +75,23 @@ const BUCKETS: Array<Omit<AgingBucket, "invoices" | "value">> = [
   { label: "31+ dias", minDays: 31, maxDays: null },
 ];
 
+/**
+ * Data de referência no fuso do negócio.
+ *
+ * O vencimento do IXC é uma data de calendário brasileira, sem hora nem fuso.
+ * Comparar com `toISOString()` (UTC) fazia o "hoje" virar amanhã a partir das
+ * 21h de Brasília — e toda fatura ganhava um dia de atraso à noite, mudando de
+ * faixa. O servidor roda em UTC, então o fuso precisa ser explícito.
+ */
+const SAO_PAULO = new Intl.DateTimeFormat("en-CA", { timeZone: "America/Sao_Paulo", year: "numeric", month: "2-digit", day: "2-digit" });
+export const businessToday = (now: Date) => SAO_PAULO.format(now);
+
 /** Datas do IXC vêm como AAAA-MM-DD. Formato diferente devolve undefined em vez de NaN silencioso. */
 export function daysOverdue(dueAt: string | undefined, now: Date): number | undefined {
   if (!dueAt) return undefined;
   const parsed = new Date(`${dueAt.slice(0, 10)}T00:00:00Z`);
   if (Number.isNaN(parsed.getTime())) return undefined;
-  const today = new Date(`${now.toISOString().slice(0, 10)}T00:00:00Z`);
+  const today = new Date(`${businessToday(now)}T00:00:00Z`);
   return Math.round((today.getTime() - parsed.getTime()) / 86400000);
 }
 

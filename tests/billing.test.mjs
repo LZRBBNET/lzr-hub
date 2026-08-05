@@ -118,3 +118,23 @@ test("base inteira: contagem exata, soma só do que foi lido, e nada estimado", 
     ["1–5 dias", 1], ["6–15 dias", 1], ["16–30 dias", 0], ["31+ dias", 0],
   ]);
 });
+
+test("fatura cancelada não conta como dívida do cliente", () => {
+  // O IXC usa "C" para cancelada e há 557 mil delas na base. A regra anterior
+  // era lista negra e deixava todas passarem como se fossem dívida em aberto.
+  assert.equal(isOpenInvoice("C"), false, "cancelada não é dívida");
+  assert.equal(isOpenInvoice("A"), true);
+  assert.equal(isOpenInvoice("R"), false);
+  assert.equal(isOpenInvoice("X"), false, "código desconhecido erra para menos: melhor não cobrar do que cobrar errado");
+  assert.equal(isOpenInvoice("Em aberto"), true, "status por extenso continua funcionando");
+  assert.equal(isOpenInvoice("cancelada"), false);
+});
+
+test("o dia de referência é o do Brasil, não o do servidor em UTC", async () => {
+  const { businessToday } = await import("../lib/platform/billing-service.ts");
+  // 04/08 às 23h de Brasília já é 05/08 em UTC. Sem fuso explícito, toda fatura
+  // ganhava um dia de atraso à noite e podia mudar de faixa.
+  const noiteDeBrasilia = new Date("2026-08-05T02:00:00.000Z");
+  assert.equal(businessToday(noiteDeBrasilia), "2026-08-04");
+  assert.equal(daysOverdue("2026-08-04", noiteDeBrasilia), 0, "vence hoje continua sendo hoje às 23h");
+});

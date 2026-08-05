@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { getIxcRuntime } from "@/lib/integrations/ixc/runtime";
-import { summarizeBilling, summarizeFullBase } from "@/lib/platform/billing-service";
+import { businessToday, summarizeBilling, summarizeFullBase } from "@/lib/platform/billing-service";
 import { authorize } from "@/lib/platform/session-guard";
 
 const PERIODS: Record<string, number> = { "24h": 1, "7d": 7, "30d": 30 };
@@ -31,7 +31,7 @@ export async function GET(request: Request) {
     const today = new Date();
     try {
       const [overdue, openCount] = await Promise.all([
-        runtime.provider.listOverdueInvoices(today.toISOString(), correlationId),
+        runtime.provider.listOverdueInvoices(businessToday(today), correlationId),
         runtime.provider.countOpenInvoices(correlationId),
       ]);
       const invoices = overdue.rows.map((row) => {

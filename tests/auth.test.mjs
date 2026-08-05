@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   MemoryAuthRepository,
+  changeOwnPassword,
   SESSION_COOKIE,
   generateSessionToken,
   hashPassword,
@@ -105,4 +106,35 @@ test("RBAC bloqueia ação fora do papel", () => {
 
 test("nome do cookie de sessão é estável", () => {
   assert.equal(SESSION_COOKIE, "lzr_session");
+});
+
+test("troca de senha exige a senha atual e derruba as outras sessões", async () => {
+  const repository = new MemoryAuthRepository();
+  const user = await repository.addUser("ana@bbnet.com", "senha-antiga-123", "Atendente");
+
+  const aqui = await login(repository, "ana@bbnet.com", "senha-antiga-123");
+  const outroDispositivo = await login(repository, "ana@bbnet.com", "senha-antiga-123");
+  assert.equal(repository.sessions.size, 2);
+
+  await assert.rejects(
+    () => changeOwnPassword(repository, user.id, aqui.token, "chute-errado", "senha-nova-4567"),
+    /Senha atual incorreta/,
+    "sem a senha atual, um cookie roubado trancaria o dono fora",
+  );
+
+  await changeOwnPassword(repository, user.id, aqui.token, "senha-antiga-123", "senha-nova-4567");
+
+  assert.equal(await resolveSession(repository, aqui.token) !== undefined, true, "a sessão que trocou continua valendo");
+  assert.equal(await resolveSession(repository, outroDispositivo.token), undefined, "as outras caem: trocar senha expulsa quem estava dentro");
+  assert.equal(await login(repository, "ana@bbnet.com", "senha-antiga-123"), undefined, "a senha antiga para de valer");
+  assert.ok(await login(repository, "ana@bbnet.com", "senha-nova-4567"));
+});
+
+test("senha nova curta ou igual à atual é recusada", async () => {
+  const repository = new MemoryAuthRepository();
+  const user = await repository.addUser("bia@bbnet.com", "senha-antiga-123", "Suporte");
+  const sessao = await login(repository, "bia@bbnet.com", "senha-antiga-123");
+
+  await assert.rejects(() => changeOwnPassword(repository, user.id, sessao.token, "senha-antiga-123", "curta"), /pelo menos 10/);
+  await assert.rejects(() => changeOwnPassword(repository, user.id, sessao.token, "senha-antiga-123", "senha-antiga-123"), /diferente da atual/);
 });
