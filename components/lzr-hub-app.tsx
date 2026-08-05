@@ -3,13 +3,13 @@
 import { useEffect, useRef, useState } from "react";
 import type { AgentResult, ChatMessage } from "@/lib/agent/types";
 import { navigation, viewTitles, type View } from "@/lib/platform/navigation";
-import { PlatformView } from "@/components/platform-view";
 import { Customer360Module } from "@/components/modules/customer360";
 import { SupportModule } from "@/components/modules/support";
 import { BillingModule } from "@/components/modules/billing";
 import { SalesModule } from "@/components/modules/sales";
 import { IntelligenceModule } from "@/components/modules/intelligence";
 import { AdminModule } from "@/components/modules/admin";
+import { QualityModule } from "@/components/modules/quality";
 
 type UiMessage = ChatMessage & { time: string; result?: AgentResult };
 
@@ -89,7 +89,7 @@ export function LzrHubApp({ ixcMode = "disabled" }: { ixcMode?: string }) {
         {["cobranca","regua","campanhas","relatorios-cobranca"].includes(view) && <BillingModule view={view as "cobranca"|"regua"|"campanhas"|"relatorios-cobranca"} />}
         {["comercial","leads","funil","kanban","metas","relatorios-comercial"].includes(view) && <SalesModule view={view as "comercial"|"leads"|"funil"|"kanban"|"metas"|"relatorios-comercial"} />}
         {["intelligence","saude","churn","upgrade","conhecimento"].includes(view) && <IntelligenceModule view={view as "intelligence"|"saude"|"churn"|"upgrade"|"conhecimento"} />}
-        {!["dashboard","atendimento","training","integracoes","equipes","usuarios","auditoria","configuracoes","clientes","monitoramento","mapa-alertas","massivas","chamados","cobranca","regua","campanhas","relatorios-cobranca","comercial","leads","funil","kanban","metas","relatorios-comercial","intelligence","saude","churn","upgrade","conhecimento"].includes(view) && <PlatformView view={view} />}
+        {["avaliacoes","prompts"].includes(view) && <QualityModule view={view as "avaliacoes"|"prompts"} />}
       </section>
     </div>
   );
