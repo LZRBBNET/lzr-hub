@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { getIxcRuntime } from "@/lib/integrations/ixc/runtime";
-import { summarizeBilling } from "@/lib/platform/billing-service";
+import { summarizeBilling, summarizeFullBase } from "@/lib/platform/billing-service";
 import { authorize } from "@/lib/platform/session-guard";
 
 const PERIODS: Record<string, number> = { "24h": 1, "7d": 7, "30d": 30 };
@@ -24,6 +24,28 @@ export async function GET(request: Request) {
     return NextResponse.json({ available: false, detail: "IXC desligado: sem fonte de faturas", period, summary: null });
   }
 
+  // Base inteira: percorrer cadastro por cadastro é impossível (27 mil), então a
+  // posição vem de consultas agregadas nas faturas. Ver summarizeFullBase.
+  if (runtime.config.ixcFullBase) {
+    const correlationId = crypto.randomUUID();
+    const today = new Date();
+    try {
+      const [overdue, openCount] = await Promise.all([
+        runtime.provider.listOverdueInvoices(today.toISOString(), correlationId),
+        runtime.provider.countOpenInvoices(correlationId),
+      ]);
+      const invoices = overdue.rows.map((row) => {
+        const raw = row as Record<string, unknown>;
+        const value = Number(String(raw.valor ?? "").replace(",", "."));
+        return { status: String(raw.status ?? ""), dueAt: String(raw.data_vencimento ?? "") || undefined, value: Number.isFinite(value) ? value : undefined };
+      });
+      const summary = summarizeFullBase(invoices, { now: today, overdueTotal: overdue.total, openCount, truncated: overdue.truncated });
+      return NextResponse.json({ available: true, period, scope: "full-base", summary });
+    } catch {
+      return NextResponse.json({ available: false, detail: "Consulta financeira do IXC indisponível", period, summary: null });
+    }
+  }
+
   const settled = await Promise.allSettled(runtime.config.ixcAllowlist.map((id) => runtime.provider!.getSnapshot(id, crypto.randomUUID())));
   const snapshots = settled.flatMap((result) => result.status === "fulfilled" ? [result.value] : []);
   const unavailable = settled.length - snapshots.length;
@@ -36,5 +58,5 @@ export async function GET(request: Request) {
     unavailable,
     paymentsSinceIso: new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString(),
   });
-  return NextResponse.json({ available: true, period, allowlistSize: runtime.config.ixcAllowlist.length, summary });
+  return NextResponse.json({ available: true, period, scope: "allowlist", allowlistSize: runtime.config.ixcAllowlist.length, summary });
 }

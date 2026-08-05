@@ -36,6 +36,26 @@ export interface BillingOverview {
   invoicesWithoutDueDate: number;
 }
 
+/**
+ * Posição da base inteira. Diferente do recorte por allowlist: aqui a contagem
+ * de faturas em aberto é exata (vem do `total` do IXC numa consulta só), mas o
+ * **valor** total em aberto fica `null` — somar exigiria varrer ~74 mil
+ * registros a cada abertura de tela. Preferimos dizer que não somamos a
+ * estimar. As vencidas são varridas de verdade, e `truncated` avisa quando a
+ * varredura parou antes do fim.
+ */
+export interface FullBaseBilling {
+  scope: "full-base";
+  openInvoices: number;
+  openValue: null;
+  overdueInvoices: number;
+  overdueValue: number;
+  overdueScanned: number;
+  truncated: boolean;
+  aging: AgingBucket[];
+  invoicesWithoutDueDate: number;
+}
+
 const BUCKETS: Array<Omit<AgingBucket, "invoices" | "value">> = [
   { label: "1–5 dias", minDays: 1, maxDays: 5 },
   { label: "6–15 dias", minDays: 6, maxDays: 15 },
@@ -50,6 +70,35 @@ export function daysOverdue(dueAt: string | undefined, now: Date): number | unde
   if (Number.isNaN(parsed.getTime())) return undefined;
   const today = new Date(`${now.toISOString().slice(0, 10)}T00:00:00Z`);
   return Math.round((today.getTime() - parsed.getTime()) / 86400000);
+}
+
+export function summarizeFullBase(
+  invoices: Array<{ status: string; dueAt?: string; value?: number }>,
+  options: { now: Date; overdueTotal: number; openCount: number; truncated: boolean },
+): FullBaseBilling {
+  const aging: AgingBucket[] = BUCKETS.map((bucket) => ({ ...bucket, invoices: 0, value: 0 }));
+  let overdueValue = 0, invoicesWithoutDueDate = 0;
+
+  for (const invoice of invoices) {
+    const value = invoice.value ?? 0;
+    const days = daysOverdue(invoice.dueAt, options.now);
+    if (days === undefined) { invoicesWithoutDueDate += 1; continue; }
+    overdueValue += value;
+    const bucket = aging.find((item) => days >= item.minDays && (item.maxDays === null || days <= item.maxDays));
+    if (bucket) { bucket.invoices += 1; bucket.value += value; }
+  }
+
+  return {
+    scope: "full-base",
+    openInvoices: options.openCount,
+    openValue: null,
+    overdueInvoices: options.overdueTotal,
+    overdueValue,
+    overdueScanned: invoices.length,
+    truncated: options.truncated,
+    aging,
+    invoicesWithoutDueDate,
+  };
 }
 
 export function summarizeBilling(

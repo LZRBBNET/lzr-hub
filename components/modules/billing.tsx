@@ -6,7 +6,9 @@ export function BillingModule({view}:{view:"cobranca"|"regua"|"campanhas"|"relat
 
 type AgingBucket={label:string;minDays:number;maxDays:number|null;invoices:number;value:number};
 type BillingSummary={scope:string;customersConsulted:number;customersUnavailable:number;openInvoices:number;openValue:number;overdueInvoices:number;overdueValue:number;upcomingInvoices:number;upcomingValue:number;aging:AgingBucket[];paymentsInPeriod:number;paidInPeriod:number;paymentMethods:Record<string,number>;invoicesWithoutDueDate:number};
-type BillingPayload={available:boolean;detail?:string;period:string;allowlistSize?:number;summary:BillingSummary|null};
+type FullBaseSummary={scope:"full-base";openInvoices:number;openValue:null;overdueInvoices:number;overdueValue:number;overdueScanned:number;truncated:boolean;aging:AgingBucket[];invoicesWithoutDueDate:number};
+type BillingPayload={available:boolean;detail?:string;period:string;scope?:"allowlist"|"full-base";allowlistSize?:number;summary:BillingSummary|FullBaseSummary|null};
+const isFullBase=(summary:BillingSummary|FullBaseSummary|null):summary is FullBaseSummary=>summary?.scope==="full-base";
 
 const money=(value:number)=>`R$ ${value.toLocaleString("pt-BR",{minimumFractionDigits:2,maximumFractionDigits:2})}`;
 const PERIODS:[string,string][]=[["24h","24 horas"],["7d","7 dias"],["30d","30 dias"]];
@@ -22,9 +24,10 @@ function useBilling(period:string){
   return {data,state,setState};
 }
 
-/** Toda tela de cobrança precisa dizer que o recorte é a allowlist — senão vira leitura de carteira inteira. */
-function ScopeNote({summary,allowlistSize}:{summary:BillingSummary;allowlistSize?:number}){
-  return <div className="state-card">Recorte: <strong>{summary.customersConsulted} cadastro(s)</strong> da allowlist do IXC{allowlistSize&&allowlistSize!==summary.customersConsulted?` (de ${allowlistSize})`:""}. O ERP não expõe busca aberta da base, então <strong>isto não é a carteira inteira da BBNET</strong>.{summary.customersUnavailable>0&&` ${summary.customersUnavailable} cadastro(s) não responderam e ficaram de fora da conta.`}</div>;
+/** O leitor precisa saber de qual recorte o número saiu — senão lê tudo como carteira inteira. */
+function ScopeNote({summary,allowlistSize}:{summary:BillingSummary|FullBaseSummary;allowlistSize?:number}){
+  if(isFullBase(summary))return <div className="state-card">Base inteira do IXC. As vencidas foram somadas uma a uma ({summary.overdueScanned.toLocaleString("pt-BR")} fatura(s) lidas).{summary.truncated&&<> <strong>A varredura parou antes do fim</strong> — o valor abaixo é parcial e está identificado como tal.</>}</div>;
+  return <div className="state-card">Recorte: <strong>{summary.customersConsulted} cadastro(s)</strong> da allowlist do IXC{allowlistSize&&allowlistSize!==summary.customersConsulted?` (de ${allowlistSize})`:""} — trava nossa, de homologação. <strong>Isto não é a carteira inteira da BBNET.</strong>{summary.customersUnavailable>0&&` ${summary.customersUnavailable} cadastro(s) não responderam e ficaram de fora da conta.`}</div>;
 }
 
 function BillingDashboard(){
@@ -40,10 +43,16 @@ function BillingDashboard(){
     {state==="ready"&&summary&&<>
       <ScopeNote summary={summary} allowlistSize={data?.allowlistSize}/>
       <section className="metrics">
-        <Metric label="Vencido" value={money(summary.overdueValue)} detail={`${summary.overdueInvoices} fatura(s) em atraso`}/>
-        <Metric label="A vencer" value={money(summary.upcomingValue)} detail={`${summary.upcomingInvoices} fatura(s) em aberto no prazo`}/>
-        <Metric label={`Recebido (${PERIODS.find(([v])=>v===period)?.[1]})`} value={money(summary.paidInPeriod)} detail={`${summary.paymentsInPeriod} pagamento(s)`}/>
-        <Metric label="Total em aberto" value={money(summary.openValue)} detail={`${summary.openInvoices} fatura(s)`}/>
+        <Metric label="Vencido" value={money(summary.overdueValue)} detail={isFullBase(summary)&&summary.truncated?`Parcial: ${summary.overdueScanned.toLocaleString("pt-BR")} de ${summary.overdueInvoices.toLocaleString("pt-BR")} faturas`:`${summary.overdueInvoices.toLocaleString("pt-BR")} fatura(s) em atraso`}/>
+        {isFullBase(summary)
+          ? <Metric label="Faturas em aberto" value={summary.openInvoices.toLocaleString("pt-BR")} detail="Contagem exata do IXC"/>
+          : <Metric label="A vencer" value={money(summary.upcomingValue)} detail={`${summary.upcomingInvoices} fatura(s) em aberto no prazo`}/>}
+        {isFullBase(summary)
+          ? <Metric label="Valor total em aberto" value="—" detail="Somar exigiria varrer 74 mil faturas por acesso"/>
+          : <Metric label={`Recebido (${PERIODS.find(([v])=>v===period)?.[1]})`} value={money(summary.paidInPeriod)} detail={`${summary.paymentsInPeriod} pagamento(s)`}/>}
+        {isFullBase(summary)
+          ? <Metric label="Ticket médio das vencidas" value={summary.overdueScanned?money(summary.overdueValue/summary.overdueScanned):"—"} detail="Sobre as faturas efetivamente lidas"/>
+          : <Metric label="Total em aberto" value={money(summary.openValue)} detail={`${summary.openInvoices} fatura(s)`}/>}
       </section>
       <div className="dashboard-grid">
         <section className="data-card"><div className="card-header"><strong>Faixa de atraso</strong><span className="badge blue">Calculado da data real de vencimento</span></div>
@@ -52,12 +61,22 @@ function BillingDashboard(){
             : summary.aging.map(bucket=><div className="aging-row" key={bucket.label}><div><strong>{bucket.label}</strong><span>{bucket.invoices} fatura(s) • {Math.round(bucket.invoices/summary.overdueInvoices*100)}% das vencidas</span></div><b>{money(bucket.value)}</b></div>)}
           {summary.invoicesWithoutDueDate>0&&<div className="state-card" style={{marginTop:12}}>{summary.invoicesWithoutDueDate} fatura(s) em aberto sem data de vencimento legível ficaram fora das faixas, em vez de serem chutadas para uma.</div>}
         </section>
-        <section className="data-card"><div className="card-header"><strong>Como pagaram</strong><span className="badge blue">Últimos {PERIODS.find(([v])=>v===period)?.[1]}</span></div>
+        {isFullBase(summary)
+          ? <section className="data-card"><div className="card-header"><strong>O que ainda não dá para responder</strong></div>
+              <div style={{padding:"4px 0"}}>
+                {[
+                  ["Valor total em aberto","São 73.870 faturas. O IXC devolve a contagem numa consulta, mas não soma valores — só varrendo tudo, o que não cabe numa abertura de tela. Cabe num job noturno."],
+                  ["Pagamentos do período","A tabela de pagamentos se liga à fatura, não ao cliente. Cruzar isso na base inteira tem o mesmo problema de varredura."],
+                  ["Recuperação por campanha","Nenhuma campanha foi executada; não há o que atribuir."],
+                ].map(([title,why])=><div className="aging-row" key={title}><div><strong>{title}</strong><span>{why}</span></div></div>)}
+              </div>
+            </section>
+          : <section className="data-card"><div className="card-header"><strong>Como pagaram</strong><span className="badge blue">Últimos {PERIODS.find(([v])=>v===period)?.[1]}</span></div>
           {summary.paymentsInPeriod===0
             ? <p style={{fontSize:12,color:"#64748b",padding:"12px 0"}}>Nenhum pagamento registrado no período.</p>
             : Object.entries(summary.paymentMethods).sort((a,b)=>b[1]-a[1]).map(([method,count])=><div className="aging-row" key={method}><div><strong>{method}</strong><span>{count} pagamento(s)</span></div><b>{Math.round(count/summary.paymentsInPeriod*100)}%</b></div>)}
           <div style={{marginTop:18,padding:14,background:"#f2f7ff",borderRadius:10,fontSize:11,color:"#40566d",lineHeight:1.6}}><strong style={{display:"block",fontSize:12,color:"#1267e8",marginBottom:4}}>Ainda não medimos</strong>Recuperação atribuída a campanha, conversão e ROI dependem de campanha executada — e campanha não está ligada. Sem isso, qualquer número seria invenção.</div>
-        </section>
+        </section>}
       </div>
     </>}
   </main>;
@@ -161,10 +180,17 @@ function BillingReports(){
     {state==="ready"&&summary&&<>
       <ScopeNote summary={summary} allowlistSize={data?.allowlistSize}/>
       <section className="metrics">
-        <Metric label="Pagamentos recebidos" value={String(summary.paymentsInPeriod)} detail={money(summary.paidInPeriod)}/>
-        <Metric label="Faturas em aberto" value={String(summary.openInvoices)} detail={money(summary.openValue)}/>
-        <Metric label="Vencidas" value={String(summary.overdueInvoices)} detail={money(summary.overdueValue)}/>
-        <Metric label="Cadastros consultados" value={String(summary.customersConsulted)} detail={summary.customersUnavailable?`${summary.customersUnavailable} indisponível(is)`:"Todos responderam"}/>
+        {isFullBase(summary)?<>
+          <Metric label="Faturas em aberto" value={summary.openInvoices.toLocaleString("pt-BR")} detail="Contagem exata do IXC"/>
+          <Metric label="Vencidas" value={summary.overdueInvoices.toLocaleString("pt-BR")} detail={money(summary.overdueValue)+(summary.truncated?" (parcial)":"")}/>
+          <Metric label="Faturas lidas" value={summary.overdueScanned.toLocaleString("pt-BR")} detail="Base da soma acima"/>
+          <Metric label="Pagamentos recebidos" value="—" detail="Exigiria varrer a base; ver ressalva abaixo"/>
+        </>:<>
+          <Metric label="Pagamentos recebidos" value={String(summary.paymentsInPeriod)} detail={money(summary.paidInPeriod)}/>
+          <Metric label="Faturas em aberto" value={String(summary.openInvoices)} detail={money(summary.openValue)}/>
+          <Metric label="Vencidas" value={String(summary.overdueInvoices)} detail={money(summary.overdueValue)}/>
+          <Metric label="Cadastros consultados" value={String(summary.customersConsulted)} detail={summary.customersUnavailable?`${summary.customersUnavailable} indisponível(is)`:"Todos responderam"}/>
+        </>}
       </section>
       <section className="data-card" style={{marginTop:14}}><div className="card-header"><strong>Não está aqui, e por quê</strong></div>
         <div style={{padding:"4px 0"}}>

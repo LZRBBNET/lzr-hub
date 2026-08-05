@@ -7,7 +7,15 @@ import type { IxcCustomerPage, IxcCustomerSnapshot, IxcListResponse, IxcReadOper
 const endpoints:Record<Exclude<IxcReadOperation,"testConnection"|"findCustomer"|"getCustomer"|"listCustomers">,string>={listContracts:"cliente_contrato",getPlan:"vd_contratos",listInvoices:"fn_areceber",listPayments:"fn_movim_finan",listServiceOrders:"su_oss_chamado",getConnection:"radusuarios",getCity:"cidade"};
 export interface IxcTrace { event:string; correlationId:string; durationMs:number; status:"success"|"failed"|"cache-hit"|"blocked"; attributes:Record<string,unknown> }
 export interface IxcReadonlyOptions { baseUrl:string; token:string; allowedCustomerIds:string[]; fullBase?:boolean; timeoutMs?:number; retryLimit?:0|1; cacheTtlMs?:number; cityCacheTtlMs?:number; rateLimitPerMinute?:number; fetcher?:typeof fetch; trace?:(event:IxcTrace)=>void; now?:()=>number }
-interface ReadOptions { oper?:string; page?:number; sortname?:string; sortorder?:"asc"|"desc" }
+interface ReadOptions { oper?:string; page?:number; sortname?:string; sortorder?:"asc"|"desc"; gridParam?:GridFilter[] }
+/**
+ * Filtro composto do IXC. O trio qtype/query/oper só aceita uma condição; para
+ * combinar (ex.: em aberto **e** vencida) o webservice usa `grid_param`.
+ * Validado em homologação: `status=A` sozinho dá 73.870 faturas, com o
+ * vencimento combinado cai para 3.541 — e um valor inválido zera, o que prova
+ * que o filtro é realmente aplicado, e não ignorado.
+ */
+export interface GridFilter { TB:string; OP:string; P:string }
 /** Operações que não são de um cliente específico — não passam pela checagem de allowlist. */
 const GLOBAL_SCOPE_OPERATIONS = new Set<IxcReadOperation>(["testConnection","listCustomers"]);
 
@@ -81,6 +89,30 @@ export class IxcReadonlyProvider {
     await Promise.all(codes.map(async(code)=>{const name=await this.resolveCityName(code,correlationId,"");if(name)names.set(code,name);}));
     return{items:items.map((item,index)=>{const code=String(records[index].cidade??"").trim();const name=names.get(code);return name?{...item,city:name}:item;}),total,page:Math.max(page,1),pageSize:size};
   }
+  /**
+   * Faturas em aberto e já vencidas de toda a base, para a Cobrança.
+   *
+   * O IXC não soma nada por nós: `total` diz quantas faturas existem, mas o
+   * valor só sai varrendo os registros. Em homologação são ~3.500 vencidas,
+   * o que cabe em poucas páginas de 500. As 73 mil "em aberto" (a maioria ainda
+   * não vencida) não caberiam, por isso essa varredura é só das vencidas — e
+   * quem chama recebe `truncated` se bater no teto, em vez de um total menor
+   * apresentado como se fosse completo.
+   */
+  async listOverdueInvoices(todayIso:string,correlationId:string,maxPages=12,pageSize=500){
+    const filters:GridFilter[]=[{TB:"fn_areceber.status",OP:"=",P:"A"},{TB:"fn_areceber.data_vencimento",OP:"<",P:todayIso.slice(0,10)}];
+    const rows:Record<string,unknown>[]=[];let total=0;let page=1;
+    for(;page<=maxPages;page+=1){
+      const result=await this.readPage("listInvoices",endpoints.listInvoices,"fn_areceber.status","A",correlationId,pageSize,"",{oper:"=",page,sortname:"fn_areceber.data_vencimento",gridParam:filters});
+      total=result.total;rows.push(...result.records);
+      if(result.records.length<pageSize||rows.length>=total)break;
+    }
+    return{rows,total,truncated:rows.length<total};
+  }
+  /** Contagem de faturas em aberto na base inteira: uma consulta, sem varrer registro. */
+  async countOpenInvoices(correlationId:string){
+    return (await this.readPage("listInvoices",endpoints.listInvoices,"fn_areceber.status","A",correlationId,1,"",{oper:"=",sortname:"fn_areceber.id"})).total;
+  }
   async getSnapshot(customerId:string,correlationId:string,force=false):Promise<IxcCustomerSnapshot>{
     this.guard.assertCustomer(customerId); const cached=!force?this.cache.get(customerId):undefined;if(cached){this.emit("ixc.snapshot",correlationId,0,"cache-hit",{customerId:"[MASKED]"});return{...cached,cache:"hit",metrics:{...cached.metrics,totalLatencyMs:0}};}this.durations.set(correlationId,{});
     const started=this.now();
@@ -134,7 +166,8 @@ export class IxcReadonlyProvider {
   private async readPage(operation:IxcReadOperation,resource:string,qtype:string,query:string,correlationId:string,rp=20,authorizedCustomerId=query,options?:ReadOptions):Promise<{records:Record<string,unknown>[];total:number}>{
     this.guard.assertOperation(operation);if(!GLOBAL_SCOPE_OPERATIONS.has(operation))this.guard.assertCustomer(authorizedCustomerId);if(!this.breaker.canRequest())throw new Error("IXC_CIRCUIT_OPEN");this.limiter.assert();
     const url=`${this.options.baseUrl.replace(/\/$/,"")}/webservice/v1/${resource}`;let last:unknown;
-    const payload={qtype,query,oper:options?.oper??"=",page:String(options?.page??1),rp:String(rp),sortname:options?.sortname??"id",sortorder:options?.sortorder??"asc"};
+    const payload:Record<string,string>={qtype,query,oper:options?.oper??"=",page:String(options?.page??1),rp:String(rp),sortname:options?.sortname??"id",sortorder:options?.sortorder??"asc"};
+    if(options?.gridParam?.length)payload.grid_param=JSON.stringify(options.gridParam);
     const maxAttempts=1+(this.options.retryLimit??1);for(let attempt=0;attempt<maxAttempts;attempt+=1){const controller=new AbortController();const timer=setTimeout(()=>controller.abort(),this.timeoutMs);const started=this.now();try{const response=await this.fetcher(url,{method:"POST",headers:{Authorization:`Basic ${basicCredential(this.options.token)}`,"Content-Type":"application/json","ixcsoft":"listar","x-correlation-id":correlationId},body:JSON.stringify(payload),signal:controller.signal});clearTimeout(timer);if(!response.ok){const retry=response.status===429||response.status>=500;if(retry&&attempt+1<maxAttempts){last=new IxcReadonlyError(`IXC_HTTP_${response.status}`);continue}throw new IxcReadonlyError(`IXC_HTTP_${response.status}`)}const body=await response.json() as IxcListResponse;const contractError=apiError(body);if(contractError)throw contractError;const records=Array.isArray(body.registros)?body.registros.filter((item):item is Record<string,unknown>=>!!item&&typeof item==="object"):[];const total=Number((body as {total?:unknown}).total??records.length);this.breaker.success();this.emit(`ixc.${operation}`,correlationId,this.now()-started,"success",{count:records.length});return{records,total:Number.isFinite(total)?total:records.length};}catch(error){clearTimeout(timer);last=classifyError(error);if(attempt+1<maxAttempts&&(last as IxcReadonlyError).code==="IXC_TIMEOUT")continue;break;}}
     const failure=classifyError(last);this.breaker.failure();this.emit(`ixc.${operation}`,correlationId,0,"failed",sanitizeTelemetry({error:failure.code}) as Record<string,unknown>);throw failure;
   }

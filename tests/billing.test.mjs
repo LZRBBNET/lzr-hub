@@ -98,3 +98,23 @@ test("salvar a régua cria versão nova em vez de sobrescrever a anterior", asyn
   assert.equal((await repository.getLatest()).name, "v2");
   assert.equal(repository.versions.length, 2, "a versão anterior continua registrada");
 });
+
+test("base inteira: contagem exata, soma só do que foi lido, e nada estimado", async () => {
+  const { summarizeFullBase } = await import("../lib/platform/billing-service.ts");
+  const result = summarizeFullBase([
+    { status:"A", dueAt:"2026-08-01", value:100 },  // 3 dias
+    { status:"A", dueAt:"2026-07-25", value:200 },  // 10 dias
+    { status:"A", dueAt:"", value:70 },             // sem data legível
+  ], { now: NOW, overdueTotal: 3541, openCount: 73870, truncated: true });
+
+  assert.equal(result.openInvoices, 73870, "contagem vem do IXC, não da varredura");
+  assert.equal(result.openValue, null, "somar 74 mil faturas por acesso não é viável — melhor dizer que não somamos");
+  assert.equal(result.overdueInvoices, 3541, "quantas existem");
+  assert.equal(result.overdueScanned, 3, "quantas foram lidas de fato");
+  assert.equal(result.overdueValue, 300, "só soma o que leu, e a fatura sem data não entra");
+  assert.equal(result.invoicesWithoutDueDate, 1);
+  assert.equal(result.truncated, true, "quem lê precisa saber que o valor é parcial");
+  assert.deepEqual(result.aging.map((b) => [b.label, b.invoices]), [
+    ["1–5 dias", 1], ["6–15 dias", 1], ["16–30 dias", 0], ["31+ dias", 0],
+  ]);
+});
