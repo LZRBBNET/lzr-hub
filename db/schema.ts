@@ -40,6 +40,12 @@ export const teams = pgTable("teams", {
   queue: text("queue").notNull(),
   description: text("description"),
   active: boolean("active").notNull().default(true),
+  /**
+   * Motivos de transbordo que a equipe assume, validados contra `HANDOFF_REASONS`.
+   * É o que liga a equipe a dado medido: sem isso a tela não teria como dizer
+   * quantos atendimentos caíram nela.
+   */
+  handoffReasons: jsonb("handoff_reasons").notNull().default([]),
   ...auditColumns,
 }, (table) => [uniqueIndex("teams_name_idx").on(table.name)]);
 

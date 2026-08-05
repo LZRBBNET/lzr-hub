@@ -3,6 +3,161 @@
 import { useCallback, useEffect, useState } from "react";
 import { queueNames, type QueueAction, type QueueSnapshot } from "@/lib/platform/queue-service";
 import { permissions, rolePermissions, roles, type Role } from "@/lib/platform/rbac";
+import { HANDOFF_REASONS, reasonHint, reasonLabel, type Team, type TeamLoad } from "@/lib/platform/teams-shared";
+
+/**
+ * "Equipes e Filas" mostrava só as filas técnicas do BullMQ — `message-inbound`,
+ * `ixc-sync` — que são jobs de infraestrutura, não gente. Equipe de atendimento
+ * nunca existiu. As duas coisas continuam na mesma tela, mas separadas e com o
+ * nome certo cada uma.
+ */
+function TeamsAndQueues() {
+  return <><Teams /><Queues /></>;
+}
+
+type Person = { id: string; name: string; email: string; role: string; active: boolean };
+type TeamsPayload = {
+  available: boolean; detail?: string; period: string;
+  teams: Team[]; load: TeamLoad[]; unclaimed: Array<{ reason: string; count: number }>;
+  totalHandoffs: number; people: Person[];
+};
+const TEAM_PERIODS: [string, string][] = [["7d", "7 dias"], ["30d", "30 dias"], ["90d", "90 dias"]];
+const EMPTY_TEAM = { name: "", queue: "", description: "", handoffReasons: [] as string[] };
+
+function Teams() {
+  const [period, setPeriod] = useState("7d");
+  const [data, setData] = useState<TeamsPayload | null>(null);
+  const [state, setState] = useState<"loading" | "ready" | "error">("loading");
+  const [nonce, setNonce] = useState(0);
+  const [form, setForm] = useState(EMPTY_TEAM);
+  const [editing, setEditing] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    let active = true;
+    fetch(`/api/admin/teams?period=${period}`)
+      .then((response) => response.ok ? response.json() : Promise.reject(new Error("falhou")))
+      .then((payload: TeamsPayload) => { if (active) { setData(payload); setState("ready"); } })
+      .catch(() => { if (active) setState("error"); });
+    return () => { active = false; };
+  }, [period, nonce]);
+
+  async function send(body: Record<string, unknown>) {
+    setBusy(true); setError("");
+    const response = await fetch("/api/admin/teams", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+    if (response.ok) { setForm(EMPTY_TEAM); setEditing(null); setNonce((value) => value + 1); }
+    else { const payload = await response.json().catch(() => ({})); setError(payload.error ?? "Não foi possível concluir a ação"); }
+    setBusy(false);
+  }
+
+  const toggleReason = (reason: string) => setForm((current) => ({
+    ...current,
+    handoffReasons: current.handoffReasons.includes(reason)
+      ? current.handoffReasons.filter((value) => value !== reason)
+      : [...current.handoffReasons, reason],
+  }));
+
+  const loadOf = (id: string) => data?.load.find((item) => item.teamId === id);
+  const coberto = new Set((data?.teams ?? []).filter((team) => team.active).flatMap((team) => team.handoffReasons));
+
+  return <main className="content">
+    <Heading title="Equipes de atendimento" text="Quem assume cada motivo de transbordo, e quantos atendimentos caíram em cada equipe." />
+
+    {/* Sem isto a tela seria lida como roteador. Ela não é. */}
+    <div className="state-card">Registrar equipe <strong>não encaminha atendimento</strong>. Nada no sistema entrega uma conversa para uma fila — quem responde é o fluxo do n8n. O que existe aqui é o registro de quem assume o quê, e a contagem real de transbordos por motivo.</div>
+
+    <section className="filter-bar">
+      <select value={period} onChange={(event) => { setState("loading"); setPeriod(event.target.value); }}>
+        {TEAM_PERIODS.map(([value, label]) => <option key={value} value={value}>Últimos {label}</option>)}
+      </select>
+    </section>
+
+    {state === "loading" && <div className="state-card">Carregando equipes…</div>}
+    {state === "error" && <div className="state-card error">Não foi possível consultar as equipes.</div>}
+    {state === "ready" && data && !data.available && <div className="state-card error">{data.detail}.</div>}
+
+    {state === "ready" && data?.available && <>
+      <section className="metrics">
+        <Metric label="Equipes ativas" value={String(data.teams.filter((team) => team.active).length)} detail={data.teams.length ? `${data.teams.length} cadastrada(s)` : "Nenhuma cadastrada"} />
+        <Metric label="Transbordos no período" value={data.totalHandoffs.toLocaleString("pt-BR")} detail="Medidos nas conversas gravadas" />
+        <Metric label="Motivos cobertos" value={`${coberto.size} de ${HANDOFF_REASONS.length}`} detail="Assumidos por alguma equipe ativa" />
+        <Metric label="Sem equipe" value={String(data.unclaimed.reduce((sum, row) => sum + row.count, 0))} detail={data.unclaimed.length ? `${data.unclaimed.length} motivo(s) descoberto(s)` : "Tudo coberto"} />
+      </section>
+
+      {data.unclaimed.length > 0 && <section className="data-card" style={{ marginTop: 14 }}>
+        <div className="card-header"><strong>Transbordos que ninguém assumiu</strong><span className="badge amber">{data.unclaimed.length} motivo(s)</span></div>
+        <div className="ranked-list">{data.unclaimed.map((row) => <div className="ranked-row" key={row.reason}>
+          <div className="ranked-label"><strong>{reasonLabel(row.reason)}</strong><span>{reasonHint(row.reason)}</span></div>
+          <div className="ranked-bar"><span style={{ width: `${Math.round(row.count / Math.max(data.totalHandoffs, 1) * 100)}%` }} /></div>
+          <b>{row.count}</b>
+        </div>)}</div>
+      </section>}
+
+      <div className="dashboard-grid">
+        <section className="data-card">
+          <div className="card-header"><strong>Equipes</strong><span className="badge blue">{data.teams.length}</span></div>
+          {data.teams.length === 0
+            ? <p className="card-empty">Nenhuma equipe cadastrada. Crie a primeira ao lado.</p>
+            : data.teams.map((team) => <div className="team-row" key={team.id}>
+                <div className="team-head">
+                  <div>
+                    <strong>{team.name}{!team.active && <span className="badge amber" style={{ marginLeft: 8 }}>desativada</span>}</strong>
+                    <span><code>{team.queue}</code>{team.description ? ` • ${team.description}` : ""}</span>
+                  </div>
+                  <div className="team-load"><b>{loadOf(team.id)?.handoffs ?? 0}</b><small>transbordo(s)</small></div>
+                </div>
+                <div className="team-tags">
+                  {team.handoffReasons.length === 0
+                    ? <em>Nenhum motivo assumido — a equipe não recebe contagem.</em>
+                    : team.handoffReasons.map((reason) => <span key={reason} title={reasonHint(reason)}>{reasonLabel(reason)} <b>{loadOf(team.id)?.byReason[reason] ?? 0}</b></span>)}
+                </div>
+                <div className="team-people">
+                  {team.members.length === 0 ? <em>Sem ninguém vinculado.</em> : team.members.map((member) => <span key={member.userId}>
+                    {member.name}<small>{member.role}</small>
+                    <button className="link-button" disabled={busy} onClick={() => void send({ action: "remove-member", teamId: team.id, userId: member.userId })} title={`Remover ${member.name} da equipe`}>remover</button>
+                  </span>)}
+                </div>
+                <div className="team-actions">
+                  <select value="" disabled={busy} onChange={(event) => { if (event.target.value) void send({ action: "add-member", teamId: team.id, userId: event.target.value }); }}>
+                    <option value="">Vincular pessoa…</option>
+                    {data.people.filter((person) => person.active && !team.members.some((member) => member.userId === person.id))
+                      .map((person) => <option key={person.id} value={person.id}>{person.name} — {person.role}</option>)}
+                  </select>
+                  <button className="button secondary" disabled={busy} onClick={() => { setEditing(team.id); setForm({ name: team.name, queue: team.queue, description: team.description ?? "", handoffReasons: [...team.handoffReasons] }); setError(""); }}>Alterar</button>
+                  <button className="button secondary" disabled={busy} onClick={() => void send({ action: "set-active", id: team.id, active: !team.active })}>{team.active ? "Desativar" : "Reativar"}</button>
+                </div>
+              </div>)}
+        </section>
+
+        <section className="data-card">
+          <div className="card-header"><strong>{editing ? "Alterar equipe" : "Nova equipe"}</strong><span className="badge blue">Fica auditado</span></div>
+          <div style={{ padding: 16, display: "grid", gap: 10 }}>
+            <label className="field"><span>Nome</span><input value={form.name} placeholder="ex.: Suporte técnico N1" onChange={(event) => setForm((current) => ({ ...current, name: event.target.value }))} /></label>
+            <label className="field"><span>Fila</span><input value={form.queue} placeholder="ex.: suporte-tecnico" onChange={(event) => setForm((current) => ({ ...current, queue: event.target.value }))} /></label>
+            <label className="field"><span>Descrição (opcional)</span><input value={form.description} placeholder="ex.: primeiro nível, 8h às 18h" onChange={(event) => setForm((current) => ({ ...current, description: event.target.value }))} /></label>
+            <fieldset className="reason-picker">
+              <legend>Motivos de transbordo que esta equipe assume</legend>
+              {HANDOFF_REASONS.map((reason) => <label key={reason} title={reasonHint(reason)}>
+                <input type="checkbox" checked={form.handoffReasons.includes(reason)} onChange={() => toggleReason(reason)} />
+                <span>{reasonLabel(reason)}</span>
+              </label>)}
+            </fieldset>
+            {error && <p className="form-error">{error}</p>}
+            <div style={{ display: "flex", gap: 8 }}>
+              <button className="button" disabled={busy} onClick={() => void send(editing ? { action: "update", id: editing, ...form } : { action: "create", ...form })}>{busy ? "Salvando…" : editing ? "Salvar alteração" : "Criar equipe"}</button>
+              {editing && <button className="button secondary" disabled={busy} onClick={() => { setEditing(null); setForm(EMPTY_TEAM); setError(""); }}>Cancelar</button>}
+            </div>
+          </div>
+          <div className="insight">
+            <strong>Um motivo pode ser assumido por mais de uma equipe.</strong>
+            Nesse caso ele conta para as duas. Como nada roteia de fato, assumir é declaração de responsabilidade, não posse do atendimento.
+          </div>
+        </section>
+      </div>
+    </>}
+  </main>;
+}
 
 type Service = { name: string; state: string; mode: string; detail: string };
 type StatusPayload = { environment: string; auth: { enforced: boolean; detail: string }; services: Service[] };
@@ -11,7 +166,7 @@ export function AdminModule({ view }: { view: "integracoes" | "equipes" | "usuar
   if (view === "integracoes") return <Integrations />;
   if (view === "usuarios") return <Users />;
   if (view === "auditoria") return <Audit />;
-  if (view === "equipes") return <Queues />;
+  if (view === "equipes") return <TeamsAndQueues />;
   return <Settings />;
 }
 
@@ -78,7 +233,7 @@ function Queues() {
   }
 
   const jobs = snapshot?.jobs ?? [];
-  return <main className="content"><Heading title="Equipes, Filas e Jobs" text="Processamento assíncrono real com Redis, BullMQ, idempotência, retries e DLQ." />{snapshot && !snapshot.enabled && <div className="protected-banner"><strong>Filas desabilitadas:</strong> {snapshot.detail ?? "ative FEATURE_QUEUES e configure o serviço."}</div>}{error && <div className="protected-banner"><strong>Falha:</strong> {error}</div>}<div className="queue-pills">{queueNames.map((queue) => <span key={queue}>{queue}<b>{snapshot?.counts[queue] ?? 0}</b></span>)}</div><section className="data-card"><div className="card-header"><strong>Runtime: {snapshot?.runtime ?? "carregando"}</strong><button onClick={() => void load()} disabled={busy !== null}>Atualizar filas</button></div><div className="job-row header"><span>Job / fila</span><span>Status</span><span>Tentativas</span><span>Correlação</span><span>Ações</span></div>{jobs.length === 0 && <div className="job-row"><span><strong>Nenhum job disponível</strong><small>Os jobs reais aparecerão aqui quando as filas estiverem habilitadas.</small></span></div>}{jobs.map((job) => { const key = `${job.queue}:${job.id}`; return <div className="job-row" key={key}><span><strong>{job.name}</strong><small>{job.queue} • {job.idempotencyKey}</small></span><span><i className={`badge ${job.status === "completed" ? "green" : job.status === "failed" ? "" : "blue"}`}>{job.status}</i>{job.error && <small>{job.error}</small>}</span><span>{job.attempts}/{job.maxAttempts}<small>{job.durationMs} ms</small></span><code>{job.correlationId}</code><span>{job.status === "failed" && <button disabled={busy === key} onClick={() => void act({ action: "retry", queue: job.queue, id: job.id })}>Reprocessar</button>}{job.status === "waiting" && job.queue !== "dead-letter" && <button disabled={busy === key} onClick={() => void act({ action: "cancel", queue: job.queue, id: job.id })}>Cancelar</button>}</span></div>; })}</section></main>;
+  return <main className="content"><Heading title="Filas técnicas" text="Jobs de infraestrutura processados por Redis e BullMQ. Não são equipes nem atendimento." />{snapshot && !snapshot.enabled && <div className="protected-banner"><strong>Filas desabilitadas:</strong> {snapshot.detail ?? "ative FEATURE_QUEUES e configure o serviço."}</div>}{error && <div className="protected-banner"><strong>Falha:</strong> {error}</div>}<div className="queue-pills">{queueNames.map((queue) => <span key={queue}>{queue}<b>{snapshot?.counts[queue] ?? 0}</b></span>)}</div><section className="data-card"><div className="card-header"><strong>Runtime: {snapshot?.runtime ?? "carregando"}</strong><button onClick={() => void load()} disabled={busy !== null}>Atualizar filas</button></div><div className="job-row header"><span>Job / fila</span><span>Status</span><span>Tentativas</span><span>Correlação</span><span>Ações</span></div>{jobs.length === 0 && <div className="job-row"><span><strong>Nenhum job disponível</strong><small>Os jobs reais aparecerão aqui quando as filas estiverem habilitadas.</small></span></div>}{jobs.map((job) => { const key = `${job.queue}:${job.id}`; return <div className="job-row" key={key}><span><strong>{job.name}</strong><small>{job.queue} • {job.idempotencyKey}</small></span><span><i className={`badge ${job.status === "completed" ? "green" : job.status === "failed" ? "" : "blue"}`}>{job.status}</i>{job.error && <small>{job.error}</small>}</span><span>{job.attempts}/{job.maxAttempts}<small>{job.durationMs} ms</small></span><code>{job.correlationId}</code><span>{job.status === "failed" && <button disabled={busy === key} onClick={() => void act({ action: "retry", queue: job.queue, id: job.id })}>Reprocessar</button>}{job.status === "waiting" && job.queue !== "dead-letter" && <button disabled={busy === key} onClick={() => void act({ action: "cancel", queue: job.queue, id: job.id })}>Cancelar</button>}</span></div>; })}</section></main>;
 }
 
 type UserRow = { id: string; name: string; email: string; role: string; active: boolean; mustChangePassword: boolean; lastLoginAt: string | null; createdAt: string };
@@ -232,6 +387,10 @@ function Settings() {
   return <main className="content"><Heading title="Configurações" text="Estado do ambiente e políticas que valem hoje." />
     <section className="settings-grid">{rows.map(([label, value, detail]) => <article className="service-card" key={label}><h3>{label}</h3><strong>{value}</strong><p>{detail}</p></article>)}</section>
   </main>;
+}
+
+function Metric({ label, value, detail }: { label: string; value: string; detail: string }) {
+  return <article className="metric"><div className="metric-top"><span>{label}</span><span className="metric-icon">♟</span></div><strong>{value}</strong><small>{detail}</small></article>;
 }
 
 function Heading({ title, text }: { title: string; text: string }) {
