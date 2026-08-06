@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   MemoryIxcWriteOperationsRepository, assertReissuePolicy, requestInvoiceReissue,
-  IxcWritePolicyError, unconfirmedIxcInvoiceReissue,
+  IxcWritePolicyError,
 } from "../lib/platform/ixc-write-service.ts";
 
 const NOW = new Date("2026-08-06T12:00:00.000Z");
@@ -10,7 +10,7 @@ const request = (over = {}) => ({
   invoiceId: "inv-1", customerId: "cust-1", idempotencyKey: "key-1", correlationId: "corr-1",
   requestedBy: "vinicius@bbnet.dev", invoice: { status: "A" }, ...over,
 });
-const fakeIxcCall = async () => ({ documentUrl: "https://exemplo/boleto.pdf", paymentCode: "00190.00009 03384.318402" });
+const fakeIxcCall = async () => ({ raw: { linha_digitavel: "00190.00009 03384.318402", arquivo: "base64-exemplo" } });
 
 test("política recusa fatura que não está aberta", () => {
   assert.throws(() => assertReissuePolicy({ status: "P" }, null, NOW), IxcWritePolicyError);
@@ -73,14 +73,12 @@ test("quando o IXC falha, o resultado é 'failed' e fica registrado — não der
   delete process.env.FEATURE_IXC_WRITE;
 });
 
-test("a implementação real explícita nunca chama nada — sempre falha alto e claro", async () => {
-  await assert.rejects(unconfirmedIxcInvoiceReissue(), /não confirmado/);
-});
-
-test("mesmo com a flag ligada, a implementação real (não confirmada) faz o resultado final ser 'failed', nunca 'success'", async () => {
+test("sucesso guarda a resposta crua do IXC no resultado e no ledger, sem inventar campos", async () => {
   process.env.FEATURE_IXC_WRITE = "true";
   const repository = new MemoryIxcWriteOperationsRepository();
-  const result = await requestInvoiceReissue(request(), repository, unconfirmedIxcInvoiceReissue);
-  assert.equal(result.status, "failed");
+  const result = await requestInvoiceReissue(request(), repository, fakeIxcCall);
+  assert.equal(result.status, "success");
+  assert.deepEqual(result.raw, { linha_digitavel: "00190.00009 03384.318402", arquivo: "base64-exemplo" });
+  assert.match(repository.rows[0].detail, /linha_digitavel/);
   delete process.env.FEATURE_IXC_WRITE;
 });

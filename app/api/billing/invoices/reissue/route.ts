@@ -2,8 +2,9 @@ import { NextResponse } from "next/server";
 import { randomUUID } from "node:crypto";
 import { getDb } from "@/db";
 import { getIxcRuntime } from "@/lib/integrations/ixc/runtime";
+import { fetchBoletoSecondCopy } from "@/lib/integrations/ixc/write-client";
 import {
-  DbIxcWriteOperationsRepository, IXC_WRITE_CATALOG, requestInvoiceReissue, unconfirmedIxcInvoiceReissue,
+  DbIxcWriteOperationsRepository, IXC_WRITE_CATALOG, requestInvoiceReissue,
 } from "@/lib/platform/ixc-write-service";
 import { logUnauthenticatedAction } from "@/lib/platform/audit-log";
 import { authorize } from "@/lib/platform/session-guard";
@@ -62,7 +63,7 @@ export async function POST(request: Request) {
   const result = await requestInvoiceReissue(
     { invoiceId, customerId, idempotencyKey, correlationId, requestedBy: guard.user?.email ?? "não identificado", invoice: { status: invoice.status } },
     new DbIxcWriteOperationsRepository(await getDb()),
-    unconfirmedIxcInvoiceReissue,
+    (id, _customerId, corr) => fetchBoletoSecondCopy({ baseUrl: runtime.config.ixcBaseUrl!, token: runtime.config.ixcToken! }, id, corr),
   );
 
   await logUnauthenticatedAction({

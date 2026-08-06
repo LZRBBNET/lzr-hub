@@ -6,23 +6,21 @@ import { isOpenInvoice } from "./billing-service.ts";
 /**
  * Escrita no IXC (issue #20 — "a mudança mais delicada do projeto").
  *
- * Este arquivo constrói o arcabouço que a issue pede — catálogo, política,
- * idempotência, auditoria — **sem** habilitar escrita real nenhuma. Duas
- * travas independentes da minha continuam de pé, intocadas:
+ * Catálogo, política, idempotência e auditoria para a primeira operação
+ * (segunda via de boleto). Ligada por decisão explícita de reavançar a fase
+ * "não avançar para clientes nem para escrita" registrada em
+ * docs/pilot/phase-3b-results.md — `IXC_WRITE_ENABLED` (trava de boot mais
+ * ampla, "Fase 3A") continua intocada e desligada; `FEATURE_IXC_WRITE` é a
+ * trava própria e mais estreita desta operação específica.
  *
- * 1. `lib/runtime/environment.ts` recusa a aplicação subir se
- *    `IXC_WRITE_ENABLED=true` — "Escrita no IXC é proibida na Fase 3A".
- * 2. `lib/integrations/ixc/guard.ts` bloqueia por nome de operação; nenhuma
- *    operação de escrita está na lista permitida.
- *
- * Isso reflete uma decisão já registrada no projeto, não inventada agora:
- * docs/pilot/phase-3b-results.md e docs/phase-3b-readiness-report.md fecham
- * com "decisão atual: não avançar para clientes nem para escrita". Esta
- * camada soma uma **terceira** trava (`FEATURE_IXC_WRITE`) e, mesmo que as
- * três fossem abertas, a chamada real ao IXC (`callIxc`) não está
- * implementada — o endpoint de segunda via nunca foi confirmado com o
- * provedor, e inventar uma URL seria arriscar gravar algo errado no ERP de
- * um cliente real.
+ * O endpoint real (`POST /webservice/v1/get_boleto`) foi confirmado na
+ * coleção Postman "API - IXC Provedor", não inventado — ver
+ * lib/integrations/ixc/write-client.ts. O que **não** foi confirmado: o
+ * formato exato de uma resposta de sucesso, porque o único cliente da
+ * allowlist não tem fatura nenhuma para testar contra uma chamada real. Por
+ * isso o resultado guarda a resposta crua (`raw`) em vez de campos
+ * específicos inventados — a primeira chamada real, auditada, é quem prova o
+ * formato.
  */
 
 export const IXC_WRITE_CATALOG = [
@@ -131,21 +129,21 @@ export interface ReissueRequest {
 export interface ReissueResult {
   status: IxcWriteStatus;
   detail: string;
-  documentUrl?: string;
-  paymentCode?: string;
+  /** Resposta crua do IXC — os nomes de campo exatos de uma resposta de sucesso ainda não foram confirmados contra um caso real. */
+  raw?: Record<string, unknown>;
   replay?: boolean;
 }
 
 /**
- * `callIxc` é injetado de propósito: a implementação real não existe (ver
- * `unconfirmedIxcInvoiceReissue` abaixo). Testes passam uma versão fake; a
- * rota da API passa a real, que sempre falha alto e claro em vez de adivinhar
- * uma URL do IXC.
+ * `callIxc` é injetado de propósito: quem chama (a rota da API) monta a
+ * função real com a configuração de runtime do IXC; os testes passam uma
+ * versão fake. Isso mantém este arquivo livre de detalhe de HTTP — ver
+ * `lib/integrations/ixc/write-client.ts` para a implementação real.
  */
 export async function requestInvoiceReissue(
   request: ReissueRequest,
   repository: IxcWriteOperationsRepository,
-  callIxc: (invoiceId: string, customerId: string, correlationId: string) => Promise<{ documentUrl: string; paymentCode: string }>,
+  callIxc: (invoiceId: string, customerId: string, correlationId: string) => Promise<{ raw: Record<string, unknown> }>,
 ): Promise<ReissueResult> {
   const existing = await repository.findByIdempotencyKey("invoice.reissue", request.idempotencyKey);
   if (existing) return { status: existing.status, detail: existing.detail ?? "", replay: true };
@@ -165,29 +163,21 @@ export async function requestInvoiceReissue(
   }
 
   if (process.env.FEATURE_IXC_WRITE !== "true") {
-    const detail = "FEATURE_IXC_WRITE desligada — Fase 3A não permite escrita real no IXC (ver docs/pilot/phase-3b-results.md)";
+    const detail = "FEATURE_IXC_WRITE desligada — escrita real no IXC não está ligada";
     await record("blocked", detail);
     return { status: "blocked", detail };
   }
 
   try {
     const result = await callIxc(request.invoiceId, request.customerId, request.correlationId);
-    await record("success", `Documento gerado: ${result.paymentCode}`);
-    return { status: "success", detail: `Documento gerado: ${result.paymentCode}`, ...result };
+    // Guarda a resposta crua no ledger: é o material que confirma (ou não) o
+    // formato de sucesso da primeira chamada real, para revisão humana.
+    const detail = `Boleto retornado pelo IXC: ${JSON.stringify(result.raw).slice(0, 500)}`;
+    await record("success", detail);
+    return { status: "success", detail, raw: result.raw };
   } catch (error) {
     const detail = error instanceof Error ? error.message : "Falha desconhecida ao gerar segunda via";
     await record("failed", detail);
     return { status: "failed", detail };
   }
-}
-
-/**
- * Não é uma integração real — é a lacuna, explícita e visível. O endpoint de
- * segunda via nunca foi confirmado com o provedor do IXC. Mesmo que
- * `FEATURE_IXC_WRITE` fosse ligada (o que já não é possível: `IXC_WRITE_ENABLED`
- * derruba o boot antes disso), esta função ainda recusaria a chamada — inventar
- * uma URL arriscaria gravar algo errado no ERP de um cliente real.
- */
-export async function unconfirmedIxcInvoiceReissue(): Promise<never> {
-  throw new Error("Endpoint real de segunda via no IXC não confirmado com o provedor (issue #20) — nenhuma chamada foi feita");
 }

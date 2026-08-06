@@ -93,13 +93,15 @@ type IxcWriteResult={status:"success"|"blocked"|"failed";detail:string;replay?:b
 type IxcWriteCatalogEntry={operation:string;label:string;implemented:boolean};
 
 /**
- * Escrita real no IXC (issue #20). Três travas independentes bloqueiam isto
- * hoje — arranque da aplicação, guard de operação e esta própria flag — e a
- * chamada ao IXC nem está implementada. Este painel prova o arcabouço
- * (política, idempotência, auditoria) sem fingir que envia algo.
+ * Escrita real no IXC (issue #20). Política, idempotência e auditoria
+ * funcionam de ponta a ponta; o formato exato de uma resposta de sucesso
+ * ainda não foi confirmado contra uma fatura real (o único cliente da
+ * allowlist não tem nenhuma) — por isso o resultado mostra a resposta crua do
+ * IXC em vez de um resumo formatado que poderia estar errado.
  */
 function InvoiceReissuePanel(){
   const [catalog,setCatalog]=useState<IxcWriteCatalogEntry[]>([]);
+  const [writeEnabled,setWriteEnabled]=useState<boolean|null>(null);
   const [invoiceId,setInvoiceId]=useState("");
   const [customerId,setCustomerId]=useState("");
   const [busy,setBusy]=useState(false);
@@ -108,7 +110,7 @@ function InvoiceReissuePanel(){
 
   useEffect(()=>{let active=true;
     fetch("/api/billing/invoices/reissue?period=30d").then(r=>r.ok?r.json():Promise.reject(new Error("falhou")))
-      .then((payload:{catalog:IxcWriteCatalogEntry[]})=>{if(active)setCatalog(payload.catalog??[])}).catch(()=>{});
+      .then((payload:{catalog:IxcWriteCatalogEntry[];writeEnabled:boolean})=>{if(active){setCatalog(payload.catalog??[]);setWriteEnabled(payload.writeEnabled)}}).catch(()=>{});
     return()=>{active=false}},[]);
 
   async function submit(){
@@ -120,11 +122,12 @@ function InvoiceReissuePanel(){
   }
 
   return <section className="data-card" style={{marginTop:14}}>
-    <div className="card-header"><strong>Escrita no IXC</strong><span className="badge amber">Fase 3A — bloqueada</span></div>
+    <div className="card-header"><strong>Escrita no IXC</strong><span className={`badge ${writeEnabled?"green":"amber"}`}>{writeEnabled===null?"consultando…":writeEnabled?"● ligada":"desligada"}</span></div>
     <div style={{padding:16,display:"grid",gap:12}}>
       <p style={{margin:0,fontSize:12,color:"var(--muted)",lineHeight:1.6}}>
-        Catálogo de operações de escrita no ERP (issue #20). Decisão registrada em <code>docs/pilot/phase-3b-results.md</code>:
-        não avançar para escrita real. O arcabouço abaixo (política, idempotência, auditoria) funciona; a chamada final ao IXC não existe.
+        Catálogo de operações de escrita no ERP (issue #20). Só a segunda via de boleto está desenhada; as outras três seguem o mesmo padrão quando chegar a vez delas.
+        O endpoint real (<code>get_boleto</code>) foi confirmado na documentação do provedor — o que ainda não foi confirmado é o formato de uma resposta de <strong>sucesso</strong>,
+        porque não existe fatura real para testar. Por isso o resultado abaixo mostra a resposta crua do IXC, não um resumo.
       </p>
       <div style={{display:"flex",flexWrap:"wrap",gap:8}}>
         {catalog.map(item=><span key={item.operation} className="badge" style={{background:item.implemented?"var(--blue-soft)":"var(--surface-3)",color:item.implemented?"var(--blue)":"var(--text-3)"}}>{item.label}{item.implemented?"":" (não desenhado)"}</span>)}
@@ -137,7 +140,7 @@ function InvoiceReissuePanel(){
       {error&&<p className="form-error">{error}</p>}
       {result&&<div className="state-card">
         <strong>{result.status==="success"?"Gerado":result.status==="blocked"?"Bloqueado":"Falhou"}</strong>{result.replay?" (mesma solicitação de antes, não repetida)":""}
-        <p style={{margin:"6px 0 0",lineHeight:1.6}}>{result.detail}</p>
+        <p style={{margin:"6px 0 0",lineHeight:1.6,wordBreak:"break-all"}}>{result.detail}</p>
       </div>}
     </div>
   </section>;
