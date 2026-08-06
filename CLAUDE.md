@@ -93,22 +93,23 @@ Nunca edite um arquivo de migração já commitado.
 
 ## Feature flags e a regra do fail-closed
 
-O sistema tem várias flags (`FEATURE_*`) e **todas nascem desligadas**. Isso é deliberado, não descuido: o ambiente publicado é acessível e ainda não tem login em uso, então nada que produza efeito real no mundo pode estar ligado por padrão.
+O sistema tem várias flags (`FEATURE_*`) e **nasceram todas desligadas**. Isso foi deliberado, não descuido: o ambiente publicado era acessível e ainda não tinha login em uso, então nada que produzisse efeito real no mundo podia estar ligado por padrão. Várias já foram ligadas em produção desde então — a tabela abaixo é o estado real, checado via `railway variables --service lzr-hub --environment production`, não o estado de nascença.
 
 Flags relevantes:
 
-| Flag | O que libera | Estado hoje |
+| Flag | O que libera | Estado em produção |
 |---|---|---|
-| `FEATURE_AUTH` | Exige login e aplica RBAC nas rotas | **desligada** |
-| `FEATURE_N8N_CHANNEL` | Canal WhatsApp via n8n recebe e registra mensagem | desligada |
+| `FEATURE_AUTH` | Exige login e aplica RBAC nas rotas | **ligada** |
+| `FEATURE_N8N_CHANNEL` | Canal WhatsApp via n8n recebe e registra mensagem | **ligada** (modo observação — ver abaixo) |
 | `FEATURE_N8N_AUTOREPLY` | A IA **responde ao cliente** pelo canal | desligada |
 | `FEATURE_QUEUES` | Filas reais (Redis/BullMQ) | desligada |
 | `FEATURE_IXC_WRITE` | Escrita no ERP | desligada |
-| `FEATURE_IXC_FULL_BASE` | Leitura da **base inteira** do IXC, não só da allowlist | desligada |
-| `FEATURE_LLM_INTENT` | Classificação de intenção por modelo de linguagem (Groq) | desligada |
-| `IXC_MODE` | `disabled` / `staging-readonly` | `disabled` |
+| `FEATURE_IXC_FULL_BASE` | Leitura da **base inteira** do IXC, não só da allowlist | **ligada** |
+| `FEATURE_LLM_INTENT` | Classificação de intenção por modelo de linguagem (Groq) | **ligada** |
+| `FEATURE_TELEGRAM_ALERTS` | Ingestão de alerta de rede real via webhook do Telegram | desligada — pendente criar o bot e chamar `setWebhook` (ver `app/api/integrations/telegram/webhook`) |
+| `IXC_MODE` | `disabled` / `staging-readonly` | `staging-readonly` |
 
-⚠️ **`FEATURE_AUTH=true` é obrigatório antes de qualquer dado real** (milestone M4: escrita no IXC, cobrança, venda). Enquanto desligada, nenhuma rota sabe quem está agindo.
+⚠️ Isto muda o que é verdade no resto deste documento: com `FEATURE_AUTH=true` já ligada, toda rota sabe quem está agindo — o pré-requisito do milestone M4 (escrita no IXC, cobrança, venda) está satisfeito nesse ponto específico. Com `FEATURE_IXC_FULL_BASE=true`, telas que diziam "exige leitura da base inteira" (Chamados, Churn, Relatórios comerciais) agora leem a base cheia de verdade em produção, não só a allowlist.
 
 ### Modo observação do canal (`FEATURE_N8N_CHANNEL` ligada, `FEATURE_N8N_AUTOREPLY` desligada)
 
@@ -193,8 +194,7 @@ Ver [`docs/security/authentication.md`](docs/security/authentication.md).
 - Tempo médio de atendimento também não é medido — a Visão geral escreve isso em vez de estimar
 - Responder pela tela de Atendimentos ainda não existe: quem responde é o fluxo do n8n, então o campo fica desabilitado
 - Conversa do canal não é associada ao cadastro do IXC (faltaria casar o telefone do WhatsApp com o cliente)
-- A lista de Clientes é a allowlist do IXC enquanto `FEATURE_IXC_FULL_BASE` estiver desligada. A trava é **nossa**, de homologação, não do ERP: `scripts/ixc-probe-listing.mjs` pergunta ao IXC se a listagem paginada funciona. Ligar a flag exige `FEATURE_AUTH=true` (o código recusa a subir sem isso)
-- Com `FEATURE_IXC_FULL_BASE` ligada, Chamados mostra a fila real do provedor (OS não fechadas, paginadas). A OS não traz o nome do cliente — só `id_cliente` e endereço — e buscar o nome seria uma consulta por linha da página
+- `FEATURE_IXC_FULL_BASE` está **ligada** em produção (exigia `FEATURE_AUTH=true`, o código recusa subir sem isso — e ambas já estão de pé). A lista de Clientes deixou de ser só a allowlist de homologação; Chamados mostra a fila real do provedor (OS não fechadas, paginadas). A OS não traz o nome do cliente — só `id_cliente` e endereço — e buscar o nome seria uma consulta por linha da página. `scripts/ixc-probe-listing.mjs` foi o que confirmou, antes de ligar, que a listagem paginada do IXC de fato funciona
 - Churn é **realizado**, não previsto: medimos quem saiu, não quem vai sair. Não há score de saúde nem elegibilidade de upgrade — nada disso é calculado, e a tela diz o que faltaria
 - Não existe CRM: leads, funil e origem do contato não são registrados em lugar nenhum
 - O motivo de cancelamento do IXC vem como código numérico e a API não expõe a tabela de tradução
