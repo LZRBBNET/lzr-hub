@@ -152,7 +152,7 @@ export function LzrHubApp({ ixcMode = "disabled" }: { ixcMode?: string }) {
         {view === "training" && <TrainingMode />}
         {["integracoes","equipes","usuarios","auditoria","configuracoes"].includes(view) && <AdminModule view={view as "integracoes"|"equipes"|"usuarios"|"auditoria"|"configuracoes"} />}
         {view === "clientes" && <Customer360Module />}
-        {["monitoramento","mapa-alertas","massivas","chamados"].includes(view) && <SupportModule view={view as "monitoramento"|"mapa-alertas"|"massivas"|"chamados"} />}
+        {["monitoramento","mapa-alertas","massivas","chamados"].includes(view) && <SupportModule view={view as "monitoramento"|"mapa-alertas"|"massivas"|"chamados"} onNavigateMassivas={() => setView("massivas")} />}
         {["cobranca","regua","relatorios-cobranca"].includes(view) && <BillingModule view={view as "cobranca"|"regua"|"relatorios-cobranca"} />}
         {["comercial","metas","relatorios-comercial"].includes(view) && <SalesModule view={view as "comercial"|"metas"|"relatorios-comercial"} />}
         {["churn","conhecimento"].includes(view) && <IntelligenceModule view={view as "churn"|"conhecimento"} />}

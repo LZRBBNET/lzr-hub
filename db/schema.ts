@@ -4,6 +4,34 @@ const auditColumns = { createdAt: text("created_at").notNull(), updatedAt: text(
 export const customers = pgTable("customers", { id:text("id").primaryKey(), externalId:text("external_id").notNull().unique(), maskedDocument:text("masked_document").notNull(), name:text("name").notNull(), city:text("city").notNull(), neighborhood:text("neighborhood").notNull(), ...auditColumns });
 export const networkIncidents = pgTable("network_incidents", { id:text("id").primaryKey(), title:text("title").notNull(), severity:text("severity").notNull(), status:text("status").notNull(), city:text("city").notNull(), neighborhood:text("neighborhood").notNull(), equipment:text("equipment"), affectedCustomers:integer("affected_customers").notNull().default(0), startedAt:text("started_at").notNull(), endedAt:text("ended_at"), ...auditColumns });
 /**
+ * Alerta de rede real, ingerido do grupo do Telegram onde o monitoramento
+ * (fonte exata ainda não confirmada) posta queda e normalização. `equipment`
+ * fica com o código bruto do nome do equipamento — CDB, ARYB, SUP, POV, ESC
+ * parecem indicar local, mas decodificar sem confirmação seria inventar
+ * geografia. `correlationKey` casa o par queda/normalização (por id do evento
+ * quando existe, senão por equipamento+descrição) — sem duplicar a linha, um
+ * update fecha o alerta já aberto. `rawText` nunca é descartado, mesmo quando
+ * o formato não é reconhecido (`parsed:false`): perder o alerta caído por não
+ * bater com a regex é pior do que mostrá-lo cru.
+ */
+export const networkAlerts = pgTable("network_alerts", {
+  id: text("id").primaryKey(),
+  source: text("source").notNull(),
+  kind: text("kind").notNull(),
+  equipment: text("equipment").notNull(),
+  description: text("description"),
+  status: text("status").notNull(),
+  externalEventId: text("external_event_id"),
+  correlationKey: text("correlation_key").notNull(),
+  startedAt: text("started_at").notNull(),
+  resolvedAt: text("resolved_at"),
+  rawText: text("raw_text").notNull(),
+  parsed: boolean("parsed").notNull().default(true),
+  ...auditColumns,
+}, (table) => ({
+  byCorrelation: index("network_alerts_correlation_idx").on(table.correlationKey),
+}));
+/**
  * Ledger de aviso de massiva: uma linha por massiva+cliente+tipo (abertura ou
  * normalização). A unicidade é o que garante que ninguém recebe o mesmo aviso
  * duas vezes — mesma lógica do ledger da régua de cobrança, restrição do banco

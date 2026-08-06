@@ -1,8 +1,8 @@
 "use client";
 import { useCallback, useEffect, useState } from "react";
 
-export function SupportModule({view}:{view:"monitoramento"|"mapa-alertas"|"massivas"|"chamados"}){
-  if(view==="mapa-alertas")return <AlertMap/>; if(view==="massivas")return <MassIncidents/>; if(view==="chamados")return <Tickets/>; return <MonitoringCenter/>;
+export function SupportModule({view,onNavigateMassivas}:{view:"monitoramento"|"mapa-alertas"|"massivas"|"chamados";onNavigateMassivas?:()=>void}){
+  if(view==="mapa-alertas")return <AlertMap/>; if(view==="massivas")return <MassIncidents/>; if(view==="chamados")return <Tickets/>; return <MonitoringCenter onNavigateMassivas={onNavigateMassivas}/>;
 }
 
 type Incident={id:string;title:string;severity:"low"|"medium"|"high"|"critical";status:"investigating"|"monitoring"|"resolved";city:string;neighborhood:string;equipment:string|null;affectedCustomers:number;startedAt:string;endedAt:string|null};
@@ -36,22 +36,45 @@ function useTickets(page:number){
   return {data,state};
 }
 
-function MonitoringCenter(){
+type NetworkAlert={id:string;kind:string;equipment:string;description:string|null;status:"open"|"resolved";startedAt:string;resolvedAt:string|null;parsed:boolean};
+type NetworkAlertsPayload={available:boolean;detail?:string;open:NetworkAlert[];recent:NetworkAlert[];suggestMassiva:boolean;threshold?:number};
+
+/** Alertas reais do Telegram, não simulados — atualiza sozinho, é para ficar aberto num monitor de NOC. */
+function useNetworkAlerts(refreshMs=30_000){
+  const [data,setData]=useState<NetworkAlertsPayload|null>(null);const [state,setState]=useState<"loading"|"ready"|"error">("loading");
+  useEffect(()=>{let active=true;
+    const load=()=>fetch("/api/support/network-alerts?period=24h").then(r=>r.ok?r.json():Promise.reject(new Error("falhou")))
+      .then((payload:NetworkAlertsPayload)=>{if(active){setData(payload);setState("ready")}}).catch(()=>{if(active)setState("error")});
+    load();
+    const timer=setInterval(load,refreshMs);
+    return()=>{active=false;clearInterval(timer)}},[refreshMs]);
+  return {data,state};
+}
+
+const ALERT_KIND_LABELS:Record<string,string>={olt_interface:"Interface de OLT",fiber_link:"Possível rompimento de fibra",unrecognized:"Formato não reconhecido"};
+
+function MonitoringCenter({onNavigateMassivas}:{onNavigateMassivas?:()=>void}){
   const {items,available,state}=useIncidents();
   const {data:tickets,state:ticketState}=useTickets(1);
+  const {data:alerts,state:alertState}=useNetworkAlerts();
   const open=items.filter(i=>i.status!=="resolved");
   // Na base inteira `items` é só a primeira página; a contagem verdadeira é o
   // `total` do IXC. Contar a página daria 25 chamados para um provedor com milhares.
   const fullBase=tickets?.scope==="full-base";
   const openTicketCount=fullBase?(tickets?.total??0):(tickets?.items.filter(t=>isOpenTicket(t.status)).length??0);
+  const openAlerts=alerts?.open??[];
   return <main className="content">
-    <Heading title="Centro de Monitoramento" text="O que existe de medido hoje: massivas registradas pela operação e ordens de serviço do IXC."/>
+    <Heading title="Centro de Monitoramento" text="O que existe de medido hoje: massivas registradas pela operação, alertas reais do Telegram e ordens de serviço do IXC."/>
     <section className="metrics">
       <Metric label="Massivas em aberto" value={state==="ready"&&available?String(open.length):"—"} detail={state==="ready"&&available?(open.length?`${open.reduce((sum,i)=>sum+i.affectedCustomers,0)} clientes estimados`:"Nenhuma massiva aberta"):"Registro indisponível"}/>
       <Metric label="Chamados em aberto" value={ticketState==="ready"&&tickets?.available?openTicketCount.toLocaleString("pt-BR"):"—"} detail={ticketState==="ready"&&tickets?.available?(fullBase?"Fila real do IXC, base inteira":`De ${tickets.items.length} OS dos cadastros da allowlist`):"IXC indisponível"}/>
-      <Metric label="Alertas de rede" value="—" detail="Sem integração de monitoramento conectada"/>
-      <Metric label="Clientes impactados" value="—" detail="Depende do monitoramento de rede"/>
+      <Metric label="Alertas de rede" value={alertState==="ready"&&alerts?.available?String(openAlerts.length):"—"} detail={alertState==="ready"&&alerts?.available?"Abertos agora, via Telegram":alerts?.detail??"Sem integração conectada"}/>
+      <Metric label="Clientes impactados" value="—" detail="Depende de decodificar local do equipamento"/>
     </section>
+    {alerts?.suggestMassiva&&<div className="state-card error" style={{marginTop:14}}>
+      <strong>{openAlerts.length} alertas de rede abertos ao mesmo tempo</strong> — pode ser um problema regional. O nome do equipamento não é decodificado em cidade/bairro automaticamente; confira os alertas abaixo e registre uma massiva se fizer sentido.
+      {onNavigateMassivas&&<div style={{marginTop:8}}><button className="button secondary" onClick={onNavigateMassivas}>Ir para Massivas</button></div>}
+    </div>}
     <AiMetrics/>
     <div className="support-grid">
       <section className="data-card"><div className="card-header"><strong>Massivas registradas</strong><span className={`badge ${open.length?"amber":"green"}`}>{open.length?"● atenção necessária":"● nada em aberto"}</span></div>
@@ -61,32 +84,54 @@ function MonitoringCenter(){
         {state==="ready"&&available&&items.length===0&&<p style={{padding:14,lineHeight:1.6,color:"var(--muted)"}}>Nenhuma massiva registrada. Elas são cadastradas por uma pessoa na tela de Massivas — não existe integração de monitoramento alimentando isso automaticamente.</p>}
         {items.map(i=><IncidentRow incident={i} key={i.id}/>)}
       </section>
-      <section className="data-card"><div className="card-header"><strong>Fontes desta tela</strong><span className="badge blue">Origem declarada</span></div><div style={{padding:16,fontSize:12,lineHeight:1.9,color:"var(--text-2)"}}>
-        <p><strong>Massivas</strong> — banco do LZR HUB, registradas manualmente.</p>
-        <p><strong>Chamados</strong> — ordens de serviço reais do IXC, limitadas aos cadastros da allowlist.</p>
-        <p><strong>IA de Atendimento</strong> — desfechos e avaliações das conversas gravadas.</p>
-        <p style={{marginTop:12,paddingTop:12,borderTop:"1px solid var(--line)"}}><strong>O que não temos:</strong> alerta de rede, potência de ONU em massa e correlação geográfica automática. Isso exigiria integrar o monitoramento da rede (SmartOLT, Zabbix ou equivalente), que ainda não está conectado. Enquanto não estiver, esses campos ficam em branco em vez de estimados.</p>
-      </div></section>
+      <section className="data-card"><div className="card-header"><strong>Alertas de rede (Telegram)</strong><span className="badge blue">{alertState==="ready"&&alerts?.available?`${openAlerts.length} aberto(s)`:"origem declarada"}</span></div>
+        {alertState==="loading"&&<p style={{padding:14}}>Carregando…</p>}
+        {alertState==="ready"&&!alerts?.available&&<p style={{padding:14,lineHeight:1.6,color:"var(--muted)"}}>{alerts?.detail}.</p>}
+        {alertState==="ready"&&alerts?.available&&openAlerts.length===0&&<p style={{padding:14,color:"var(--muted)"}}>Nenhum alerta aberto agora.</p>}
+        {openAlerts.map(a=><NetworkAlertRow alert={a} key={a.id}/>)}
+      </section>
     </div>
+    <section className="data-card" style={{marginTop:14}}><div className="card-header"><strong>Fontes desta tela</strong><span className="badge blue">Origem declarada</span></div><div style={{padding:16,fontSize:12,lineHeight:1.9,color:"var(--text-2)"}}>
+      <p><strong>Massivas</strong> — banco do LZR HUB, registradas manualmente.</p>
+      <p><strong>Alertas de rede</strong> — grupo de Telegram onde o monitoramento posta queda e normalização, recebido por webhook. O código do equipamento (OLT-ZTE-CDB-SUP-02, por exemplo) não é decodificado em cidade/bairro: mostrar o código bruto é mais honesto que adivinhar geografia.</p>
+      <p><strong>Chamados</strong> — ordens de serviço reais do IXC, limitadas aos cadastros da allowlist.</p>
+      <p><strong>IA de Atendimento</strong> — desfechos e avaliações das conversas gravadas.</p>
+      <p style={{marginTop:12,paddingTop:12,borderTop:"1px solid var(--line)"}}><strong>O que ainda não temos:</strong> potência de ONU em massa e correlação geográfica automática dos alertas. Isso exigiria uma tabela de tradução do código do equipamento para cidade/bairro, que ainda não existe.</p>
+    </div></section>
   </main>;
+}
+
+function NetworkAlertRow({alert:a}:{alert:NetworkAlert}){
+  return <div className="incident-row">
+    <i className={`severity-dot ${a.kind==="unrecognized"?"medium":"high"}`}/>
+    <div><strong>{a.equipment}</strong><span>{ALERT_KIND_LABELS[a.kind]??a.kind}{a.description?` • ${a.description}`:""}</span><small>desde {new Date(a.startedAt).toLocaleString("pt-BR")}</small></div>
+    <div><i className={`severity ${a.kind==="unrecognized"?"medium":"high"}`}>{a.status==="open"?"Aberto":"Resolvido"}</i></div>
+  </div>;
 }
 
 function AlertMap(){
   const {items,available,state}=useIncidents();
+  const {data:alerts,state:alertState}=useNetworkAlerts();
   const open=items.filter(i=>i.status!=="resolved");
+  const openAlerts=alerts?.open??[];
   const byCity=Object.entries(open.reduce<Record<string,{count:number;affected:number}>>((acc,i)=>{const key=`${i.city} • ${i.neighborhood}`;acc[key]={count:(acc[key]?.count??0)+1,affected:(acc[key]?.affected??0)+i.affectedCustomers};return acc},{}));
   return <main className="content">
     <Heading title="Mapa de Alertas" text="Agrupamento por cidade e bairro das massivas registradas. Sem coordenada de cliente."/>
     {state==="loading"&&<div className="state-card">Carregando…</div>}
     {state==="error"&&<div className="state-card error">Não foi possível consultar as massivas.</div>}
     {state==="ready"&&!available&&<div className="state-card error">Registro de massivas indisponível.</div>}
-    {state==="ready"&&available&&open.length===0&&<div className="state-card"><strong>Nenhuma região com massiva aberta.</strong><p style={{marginTop:6,lineHeight:1.6}}>Este mapa mostra as massivas que a operação registrar. Um mapa de alertas automático dependeria de integrar o monitoramento da rede, que ainda não existe aqui — por isso não há pino de exemplo.</p></div>}
+    {state==="ready"&&available&&open.length===0&&<div className="state-card"><strong>Nenhuma região com massiva aberta.</strong><p style={{marginTop:6,lineHeight:1.6}}>Este mapa mostra as massivas que a operação registrar. Um mapa de alertas automático dependeria de decodificar o código do equipamento em cidade/bairro, que ainda não existe — por isso não há pino de exemplo.</p></div>}
     {open.length>0&&<div className="support-grid">
       <section className="data-card"><div className="card-header"><strong>Regiões afetadas</strong><span className="badge amber">{byCity.length} região(ões)</span></div>
         {byCity.map(([region,{count,affected}])=><div className="incident-row" key={region}><i className="severity-dot high"/><div><strong>{region}</strong><span>{count} massiva(s) em aberto</span></div><div><b>{affected}</b><small>clientes</small></div></div>)}
       </section>
       <section className="data-card"><div className="card-header"><strong>Massivas em aberto</strong></div>{open.map(i=><IncidentRow incident={i} key={i.id}/>)}</section>
     </div>}
+    {alertState==="ready"&&alerts?.available&&openAlerts.length>0&&<section className="data-card" style={{marginTop:14}}>
+      <div className="card-header"><strong>Alertas de rede sem local decodificado</strong><span className="badge blue">{openAlerts.length} aberto(s)</span></div>
+      <p style={{padding:"0 16px",margin:"10px 0",fontSize:11,color:"var(--muted)",lineHeight:1.6}}>Estes alertas vêm do Telegram com o código bruto do equipamento — sem tradução confirmada para cidade/bairro, não entram no agrupamento por região acima.</p>
+      {openAlerts.map(a=><NetworkAlertRow alert={a} key={a.id}/>)}
+    </section>}
   </main>;
 }
 
