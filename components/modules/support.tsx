@@ -113,7 +113,7 @@ function MassIncidents(){
 
   const set=(key:keyof typeof EMPTY_FORM)=>(event:{target:{value:string}})=>setForm(current=>({...current,[key]:event.target.value}));
   return <main className="content">
-    <Heading title="Massivas" text="Registre e encerre incidentes de rede. O registro fica auditado; nenhum cliente é comunicado por aqui."/>
+    <Heading title="Massivas" text="Registre, avise a área afetada e encerre incidentes de rede. Tudo fica auditado."/>
     <div className="support-grid">
       <section className="data-card"><div className="card-header"><strong>Registrar massiva</strong><span className="badge blue">Fica auditado</span></div>
         <div style={{padding:16,display:"grid",gap:10}}>
@@ -126,7 +126,7 @@ function MassIncidents(){
           <label className="field"><span>Severidade</span><select value={form.severity} onChange={set("severity")}><option value="low">Baixa</option><option value="medium">Média</option><option value="high">Alta</option><option value="critical">Crítica</option></select></label>
           {error&&<p style={{color:"var(--bad)",fontSize:12}}>{error}</p>}
           <button className="button" disabled={busy} onClick={()=>void submit()}>{busy?"Registrando…":"Registrar massiva"}</button>
-          <p style={{fontSize:11,color:"var(--muted)",lineHeight:1.6}}>A estimativa de clientes é sua: o sistema não consegue calcular isso sozinho enquanto não houver integração com o monitoramento da rede.</p>
+          <p style={{fontSize:11,color:"var(--muted)",lineHeight:1.6}}>A estimativa de clientes é sua: o sistema não consegue calcular isso sozinho enquanto não houver integração com o monitoramento da rede. Avisar, abaixo, casa a área da massiva com a cidade e bairro reais do cadastro — não com esta estimativa.</p>
         </div>
       </section>
       <section className="data-card"><div className="card-header"><strong>Massivas registradas</strong><span className="badge green">{items.length} registro(s)</span></div>
@@ -134,10 +134,48 @@ function MassIncidents(){
         {state==="error"&&<p style={{padding:14}}>Não foi possível consultar as massivas.</p>}
         {state==="ready"&&!available&&<p style={{padding:14}}>Registro de massivas indisponível.</p>}
         {state==="ready"&&available&&items.length===0&&<p style={{padding:14,color:"var(--muted)",lineHeight:1.6}}>Nenhuma massiva registrada ainda.</p>}
-        {items.map(i=><div key={i.id}><IncidentRow incident={i}/>{i.status!=="resolved"&&<div style={{padding:"0 16px 14px"}}><button className="button secondary" disabled={busy} onClick={()=>void close(i.id)}>Encerrar</button></div>}</div>)}
+        {items.map(i=><div key={i.id}>
+          <IncidentRow incident={i}/>
+          <div style={{padding:"0 16px 14px",display:"flex",gap:8,flexWrap:"wrap"}}>
+            <NotifyButton incidentId={i.id} kind="opened" label="Avisar clientes da área" busy={busy}/>
+            {i.status==="resolved"&&<NotifyButton incidentId={i.id} kind="closed" label="Avisar normalização" busy={busy}/>}
+            {i.status!=="resolved"&&<button className="button secondary" disabled={busy} onClick={()=>void close(i.id)}>Encerrar</button>}
+          </div>
+        </div>)}
       </section>
     </div>
   </main>;
+}
+
+type NoticeResult={kind:"opened"|"closed";matched:number;recorded:number;duplicates:number;enqueued:number;queueEnabled:boolean;capped:boolean};
+
+/**
+ * Avisa quem está na área da massiva, revalidando cidade e bairro contra o
+ * cadastro real na hora do clique — não contra a estimativa digitada no
+ * formulário. Ver mass-notice-service.ts para o limite do que "avisar"
+ * significa sem ponte de envio ligada ao WhatsApp.
+ */
+function NotifyButton({incidentId,kind,label,busy}:{incidentId:string;kind:"opened"|"closed";label:string;busy:boolean}){
+  const [running,setRunning]=useState(false);
+  const [result,setResult]=useState<NoticeResult|null>(null);
+  const [error,setError]=useState<string|null>(null);
+
+  async function run(){
+    setRunning(true);setError(null);setResult(null);
+    const response=await fetch("/api/support/incidents",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({action:"notify",id:incidentId,kind})});
+    const payload=await response.json();
+    if(response.ok)setResult(payload);else setError(payload.error??"Não foi possível avisar.");
+    setRunning(false);
+  }
+
+  return <div style={{display:"grid",gap:4}}>
+    <button className="button secondary" disabled={busy||running} onClick={()=>void run()}>{running?"Avisando…":label}</button>
+    {error&&<small style={{color:"var(--bad)"}}>{error}</small>}
+    {result&&<small style={{color:"var(--text-3)",maxWidth:260}}>
+      {result.matched} na área, {result.recorded} novo(s){result.duplicates>0?`, ${result.duplicates} já avisado(s) antes`:""}.
+      {result.queueEnabled?` ${result.enqueued} enfileirado(s).`:" Fila de envio desligada — só registrado."}
+    </small>}
+  </div>;
 }
 
 function Tickets(){

@@ -50,6 +50,13 @@
       "when": 1786017816907,
       "tag": "0006_parched_paladin",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1786018924205,
+      "tag": "0007_green_sunset_bain",
+      "breakpoints": true
     }
   ]
 }

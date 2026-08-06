@@ -3,6 +3,23 @@ import { boolean, index, integer, jsonb, pgTable, text, uniqueIndex } from "driz
 const auditColumns = { createdAt: text("created_at").notNull(), updatedAt: text("updated_at").notNull() };
 export const customers = pgTable("customers", { id:text("id").primaryKey(), externalId:text("external_id").notNull().unique(), maskedDocument:text("masked_document").notNull(), name:text("name").notNull(), city:text("city").notNull(), neighborhood:text("neighborhood").notNull(), ...auditColumns });
 export const networkIncidents = pgTable("network_incidents", { id:text("id").primaryKey(), title:text("title").notNull(), severity:text("severity").notNull(), status:text("status").notNull(), city:text("city").notNull(), neighborhood:text("neighborhood").notNull(), equipment:text("equipment"), affectedCustomers:integer("affected_customers").notNull().default(0), startedAt:text("started_at").notNull(), endedAt:text("ended_at"), ...auditColumns });
+/**
+ * Ledger de aviso de massiva: uma linha por massiva+cliente+tipo (abertura ou
+ * normalização). A unicidade é o que garante que ninguém recebe o mesmo aviso
+ * duas vezes — mesma lógica do ledger da régua de cobrança, restrição do banco
+ * em vez de promessa da lógica de cima.
+ */
+export const massNoticeDispatches = pgTable("mass_notice_dispatches", {
+  id: text("id").primaryKey(),
+  incidentId: text("incident_id").notNull(),
+  customerId: text("customer_id").notNull(),
+  kind: text("kind").notNull(),
+  status: text("status").notNull(),
+  correlationId: text("correlation_id").notNull(),
+  ...auditColumns,
+}, (table) => ({
+  onceByKind: uniqueIndex("mass_notice_dispatches_once").on(table.incidentId, table.customerId, table.kind),
+}));
 export const collectionRules = pgTable("collection_rules", { id:text("id").primaryKey(), name:text("name").notNull(), status:text("status").notNull(), version:integer("version").notNull().default(1), authorId:text("author_id").notNull(), ...auditColumns });
 export const collectionRuleSteps = pgTable("collection_rule_steps", { id:text("id").primaryKey(), ruleId:text("rule_id").notNull(), offsetDays:integer("offset_days").notNull(), channel:text("channel").notNull(), templateId:text("template_id").notNull(), attempts:integer("attempts").notNull().default(1), active:boolean("active").notNull().default(true), ...auditColumns });
 /**
