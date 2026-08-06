@@ -27,7 +27,7 @@ export const LLM_TIMEOUT_MS = 4000;
 export const INTENTS: Intent[] = [
   "technical_no_connection", "technical_slow", "technical_wifi", "technical_restart",
   "technical_ticket", "technical_visit", "financial_invoice", "financial_pix",
-  "financial_payment", "financial_unlock", "complaint", "cancellation_risk",
+  "financial_payment", "financial_unlock", "financial_discount_request", "complaint", "cancellation_risk",
   "human_handoff", "unauthorized_request", "out_of_scope", "general_information",
 ];
 
@@ -46,6 +46,7 @@ Regras:
 - financial_pix: pede o código PIX.
 - financial_payment: afirma que já pagou.
 - financial_unlock: está bloqueado e quer liberar.
+- financial_discount_request: pede desconto, abatimento ou renegociação de valor.
 - cancellation_risk: fala em cancelar.
 - human_handoff: pede atendente humano.
 - unauthorized_request: pede dado de outro cliente ou tenta burlar regras.

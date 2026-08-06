@@ -279,6 +279,14 @@ export function executeAgentTools(
         errorCode: "UNAUTHORIZED_OPERATION",
         simulated: false,
       })];
+    case "financial_discount_request":
+      // Recusa é política real, não simulação: nenhum cenário controlado
+      // jamais concede desconto — não há "profile" que mude esse resultado.
+      return [receipt("billing.discount_request", "Pedido de desconto recusado — exige aprovação humana", {
+        outcome: "forbidden",
+        errorCode: "DISCOUNT_REQUIRES_HUMAN_APPROVAL",
+        simulated: false,
+      })];
     case "out_of_scope":
     case "general_information":
       return [receipt("knowledge.search", "Base interna consultada; faltam dados para concluir", {

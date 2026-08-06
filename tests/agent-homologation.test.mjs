@@ -80,9 +80,13 @@ for (const scenario of homologationScenarios) {
   });
 }
 
-test("matriz contém exatamente os 60 cenários obrigatórios e IDs únicos", () => {
-  assert.equal(homologationScenarios.length, 60);
-  assert.equal(new Set(homologationScenarios.map((scenario) => scenario.id)).size, 60);
+// A matriz original (issue #3) certificou 60 cenários — ver
+// docs/issue-3-agent-pipeline-homologation-report.md, registro histórico de
+// uma revisão já fechada, que não deve ser reescrito. B29 (pedido de desconto,
+// issue #16) estendeu a matriz depois dessa certificação; o teto sobe junto.
+test("matriz contém exatamente os 61 cenários obrigatórios e IDs únicos", () => {
+  assert.equal(homologationScenarios.length, 61);
+  assert.equal(new Set(homologationScenarios.map((scenario) => scenario.id)).size, 61);
 });
 
 test("timeout, erro, vazio, parcial, proibido e modo demonstrativo nunca viram sucesso real", async () => {

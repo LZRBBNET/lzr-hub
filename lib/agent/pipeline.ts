@@ -27,6 +27,9 @@ export function analyzeIntent(message: string): {
   if (/reinici|reboot|desliga.*equipamento/.test(text)) return { intent: "technical_restart", confidence: 0.96, goal: "Avaliar reinicialização segura" };
   if (/abrir chamado|abr[ae].*chamado|chamado tecnico|chamado técnico|protocolo tecnico|protocolo técnico/.test(text)) return { intent: "technical_ticket", confidence: 0.97, goal: "Preparar chamado técnico" };
   if (/visita|agendar|agenda.*tecnico|agenda.*técnico|horario.*tecnico|horário.*técnico/.test(text)) return { intent: "technical_visit", confidence: 0.96, goal: "Preparar visita técnica" };
+  // Checado antes de financial_invoice/financial_payment: "desconto no boleto"
+  // também bate com "boleto", e desconto exige recusa+transbordo, não segunda via.
+  if (/desconto|abater|abatimento|diminui.*(valor|preco|preço)|baixa.*(valor|preco|preço)|negocia.*(valor|preco|preço)/.test(text)) return { intent: "financial_discount_request", confidence: 0.96, goal: "Recusar desconto sem aprovação humana e transferir" };
   if (/ja paguei|já paguei|pagamento|paguei|nao reconheceu|não reconheceu/.test(text)) return { intent: "financial_payment", confidence: 0.97, goal: "Verificar reconhecimento do pagamento" };
   if (/pix|copia e cola|qr code/.test(text)) return { intent: "financial_pix", confidence: 0.98, goal: "Preparar PIX da fatura" };
   if (/boleto|segunda via|fatura|vencimento/.test(text)) return { intent: "financial_invoice", confidence: 0.97, goal: "Preparar segunda via" };
@@ -130,6 +133,8 @@ function responseFor(input: {
       return "Preparei o transbordo com um resumo sanitizado e um protocolo simulado. Nenhuma transferência externa foi executada neste ambiente.";
     case "unauthorized_request":
       return "Não posso acessar dados de outro cliente nem executar ações sem autorização. A tentativa foi bloqueada e registrada sem expor dados pessoais.";
+    case "financial_discount_request":
+      return "Não posso conceder desconto nem renegociar valor sozinho — isso exige aprovação de um humano. Vou transferir você agora, com o contexto já registrado.";
     case "out_of_scope":
       return "Consigo ajudar com internet, Wi-Fi, cadastro e financeiro do provedor. Para esse outro assunto, não tenho uma fonte confiável e prefiro não inventar.";
     default:

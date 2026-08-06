@@ -32,6 +32,7 @@ export function decideHandoff(input: {
   else if (input.intent === "cancellation_risk") reason = "cancellation_risk";
   else if (input.intent === "unauthorized_request") reason = "unauthorized_request";
   else if (input.intent === "financial_unlock") reason = "sensitive_action";
+  else if (input.intent === "financial_discount_request") reason = "sensitive_action";
   else if (input.confidence < 0.6) reason = "low_intent_confidence";
   else if (input.repeatedWithoutResolution) reason = "repetition_without_resolution";
   else if (/idiota|incompetente|raiva|absurdo|porcaria|processo|anatel/.test(text)) reason = "customer_irritated";

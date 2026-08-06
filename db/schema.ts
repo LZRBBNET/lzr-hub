@@ -70,6 +70,23 @@ export const ixcWriteOperations = pgTable("ixc_write_operations", {
 }, (table) => ({
   onceByKey: uniqueIndex("ixc_write_operations_idempotency").on(table.operation, table.idempotencyKey),
 }));
+/**
+ * Promessa de pagamento (issue #16). Registrada no HUB, nunca no IXC — a
+ * issue é explícita: "para gerar negociação DENTRO do IXC depende do épico de
+ * escrita, até lá a IA registra a promessa só no HUB". `status` começa
+ * "pending" e só muda quando alguém consulta contra a fatura real: "fulfilled"
+ * se a fatura fechou, "broken" se a data passou e a fatura segue aberta.
+ */
+export const paymentPromises = pgTable("payment_promises", {
+  id: text("id").primaryKey(),
+  invoiceId: text("invoice_id").notNull(),
+  customerId: text("customer_id").notNull(),
+  promisedFor: text("promised_for").notNull(),
+  status: text("status").notNull(),
+  registeredBy: text("registered_by").notNull(),
+  correlationId: text("correlation_id").notNull(),
+  ...auditColumns,
+});
 export const collectionRules = pgTable("collection_rules", { id:text("id").primaryKey(), name:text("name").notNull(), status:text("status").notNull(), version:integer("version").notNull().default(1), authorId:text("author_id").notNull(), ...auditColumns });
 export const collectionRuleSteps = pgTable("collection_rule_steps", { id:text("id").primaryKey(), ruleId:text("rule_id").notNull(), offsetDays:integer("offset_days").notNull(), channel:text("channel").notNull(), templateId:text("template_id").notNull(), attempts:integer("attempts").notNull().default(1), active:boolean("active").notNull().default(true), ...auditColumns });
 /**

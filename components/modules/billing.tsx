@@ -85,8 +85,80 @@ function BillingDashboard(){
         </section>}
       </div>
       <InvoiceReissuePanel/>
+      <PaymentPromisePanel/>
     </>}
   </main>;
+}
+
+type PaymentPromiseRow={id:string;invoiceId:string;customerId:string;promisedFor:string;status:"pending"|"fulfilled"|"broken"};
+const PROMISE_STATUS_LABEL:Record<string,string>={pending:"Pendente",fulfilled:"Cumprida",broken:"Quebrada — precisa recontato"};
+
+/**
+ * Promessa de pagamento (issue #16). Registrada só no HUB — negociação
+ * dentro do IXC depende do catálogo de escrita cobrir essa operação, o que
+ * ainda não aconteceu. "Revisar promessas" checa contra o IXC de verdade;
+ * "quebrada" nunca dispara mensagem nenhuma, só sinaliza quem precisa de
+ * recontato manual.
+ */
+function PaymentPromisePanel(){
+  const [pending,setPending]=useState<PaymentPromiseRow[]>([]);
+  const [state,setState]=useState<"loading"|"ready"|"error">("loading");
+  const [form,setForm]=useState({invoiceId:"",customerId:"",promisedFor:""});
+  const [busy,setBusy]=useState(false);
+  const [error,setError]=useState<string|null>(null);
+  const [reviewResult,setReviewResult]=useState<{fulfilled:string[];broken:string[];stillPending:string[]}|null>(null);
+  const [nonce,setNonce]=useState(0);
+
+  useEffect(()=>{let active=true;
+    fetch("/api/billing/promises?period=30d").then(r=>r.ok?r.json():Promise.reject(new Error("falhou")))
+      .then((payload:{available:boolean;pending:PaymentPromiseRow[]})=>{if(active){setPending(payload.pending??[]);setState(payload.available?"ready":"error")}})
+      .catch(()=>{if(active)setState("error")});
+    return()=>{active=false}},[nonce]);
+
+  async function submit(){
+    setBusy(true);setError(null);
+    const response=await fetch("/api/billing/promises",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({action:"create",...form})});
+    const payload=await response.json();
+    if(response.ok){setForm({invoiceId:"",customerId:"",promisedFor:""});setNonce(n=>n+1)}
+    else setError(payload.error??"Não foi possível registrar.");
+    setBusy(false);
+  }
+
+  async function review(){
+    setBusy(true);setError(null);setReviewResult(null);
+    const response=await fetch("/api/billing/promises",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({action:"review"})});
+    const payload=await response.json();
+    if(response.ok){setReviewResult(payload);setNonce(n=>n+1)}
+    else setError(payload.error??"Não foi possível revisar.");
+    setBusy(false);
+  }
+
+  return <section className="data-card" style={{marginTop:14}}>
+    <div className="card-header"><strong>Promessas de pagamento</strong><span className="badge blue">Fica auditado</span></div>
+    <div style={{padding:16,display:"grid",gap:12}}>
+      <p style={{margin:0,fontSize:12,color:"var(--muted)",lineHeight:1.6}}>
+        Registrada só no HUB — negociação dentro do IXC depende do catálogo de escrita cobrir isso, o que ainda não aconteceu.
+        &quot;Revisar promessas&quot; confere cada uma contra a fatura real; promessa quebrada não dispara mensagem nenhuma, só sinaliza quem precisa de recontato manual.
+      </p>
+      <div style={{display:"grid",gap:10,maxWidth:420,gridTemplateColumns:"1fr 1fr"}}>
+        <label className="field"><span>ID da fatura</span><input placeholder="ex.: 4821" value={form.invoiceId} onChange={e=>setForm(f=>({...f,invoiceId:e.target.value}))}/></label>
+        <label className="field"><span>ID do cliente</span><input placeholder="ex.: 21857" value={form.customerId} onChange={e=>setForm(f=>({...f,customerId:e.target.value}))}/></label>
+        <label className="field" style={{gridColumn:"1 / -1"}}><span>Promete pagar em</span><input type="date" value={form.promisedFor} onChange={e=>setForm(f=>({...f,promisedFor:e.target.value}))}/></label>
+      </div>
+      <div style={{display:"flex",gap:10,flexWrap:"wrap"}}>
+        <button className="button secondary" disabled={busy||!form.invoiceId||!form.customerId||!form.promisedFor} onClick={()=>void submit()}>{busy?"Enviando…":"Registrar promessa"}</button>
+        <button className="button secondary" disabled={busy} onClick={()=>void review()}>Revisar promessas pendentes</button>
+      </div>
+      {error&&<p className="form-error">{error}</p>}
+      {reviewResult&&<div className="state-card">{reviewResult.fulfilled.length} cumprida(s), <strong>{reviewResult.broken.length} quebrada(s) — precisam de recontato</strong>, {reviewResult.stillPending.length} ainda pendente(s).</div>}
+      <div>
+        {state==="loading"&&<p className="card-empty">Carregando…</p>}
+        {state==="error"&&<p className="card-empty">Promessas indisponíveis.</p>}
+        {state==="ready"&&pending.length===0&&<p className="card-empty">Nenhuma promessa pendente.</p>}
+        {state==="ready"&&pending.map(p=><div className="aging-row" key={p.id}><div><strong>Fatura {p.invoiceId}</strong><span>Cliente {p.customerId} • promete pagar em {new Date(p.promisedFor+"T00:00:00Z").toLocaleDateString("pt-BR")}</span></div><b>{PROMISE_STATUS_LABEL[p.status]}</b></div>)}
+      </div>
+    </div>
+  </section>;
 }
 
 type IxcWriteResult={status:"success"|"blocked"|"failed";detail:string;replay?:boolean};

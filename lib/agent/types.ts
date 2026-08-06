@@ -9,6 +9,7 @@ export type Intent =
   | "financial_pix"
   | "financial_payment"
   | "financial_unlock"
+  | "financial_discount_request"
   | "complaint"
   | "cancellation_risk"
   | "human_handoff"

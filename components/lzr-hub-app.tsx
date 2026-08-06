@@ -169,7 +169,7 @@ type Overview = { period:string; available:boolean; detail?:string; metrics:Over
 const INTENT_LABELS: Record<string,string> = {
   technical_no_connection:"Sem conexão", technical_slow:"Lentidão", technical_wifi:"Wi-Fi", technical_restart:"Reinício de equipamento",
   technical_ticket:"Abertura de chamado", technical_visit:"Visita técnica", financial_invoice:"Fatura / segunda via", financial_pix:"PIX",
-  financial_payment:"Pagamento", financial_unlock:"Desbloqueio", complaint:"Reclamação", cancellation_risk:"Risco de cancelamento",
+  financial_payment:"Pagamento", financial_unlock:"Desbloqueio", financial_discount_request:"Pedido de desconto", complaint:"Reclamação", cancellation_risk:"Risco de cancelamento",
   human_handoff:"Pedido de atendente", unauthorized_request:"Pedido não autorizado", out_of_scope:"Fora de escopo", general_information:"Informação geral",
 };
 const HANDOFF_LABELS: Record<string,string> = {
