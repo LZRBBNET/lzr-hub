@@ -5,6 +5,26 @@ export const customers = pgTable("customers", { id:text("id").primaryKey(), exte
 export const networkIncidents = pgTable("network_incidents", { id:text("id").primaryKey(), title:text("title").notNull(), severity:text("severity").notNull(), status:text("status").notNull(), city:text("city").notNull(), neighborhood:text("neighborhood").notNull(), equipment:text("equipment"), affectedCustomers:integer("affected_customers").notNull().default(0), startedAt:text("started_at").notNull(), endedAt:text("ended_at"), ...auditColumns });
 export const collectionRules = pgTable("collection_rules", { id:text("id").primaryKey(), name:text("name").notNull(), status:text("status").notNull(), version:integer("version").notNull().default(1), authorId:text("author_id").notNull(), ...auditColumns });
 export const collectionRuleSteps = pgTable("collection_rule_steps", { id:text("id").primaryKey(), ruleId:text("rule_id").notNull(), offsetDays:integer("offset_days").notNull(), channel:text("channel").notNull(), templateId:text("template_id").notNull(), attempts:integer("attempts").notNull().default(1), active:boolean("active").notNull().default(true), ...auditColumns });
+/**
+ * Ledger de disparo da régua: uma linha por fatura+etapa+data. A unicidade
+ * (invoiceId, stepId, scheduledFor) é o que garante "zero duplicidade de
+ * cobrança" — não como promessa da lógica de cima, mas como restrição do
+ * banco. Rodar o disparo do dia duas vezes por engano não duplica nada.
+ */
+export const collectionDispatches = pgTable("collection_dispatches", {
+  id: text("id").primaryKey(),
+  invoiceId: text("invoice_id").notNull(),
+  customerId: text("customer_id").notNull(),
+  ruleId: text("rule_id").notNull(),
+  stepId: text("step_id").notNull(),
+  scheduledFor: text("scheduled_for").notNull(),
+  status: text("status").notNull(),
+  channel: text("channel").notNull(),
+  correlationId: text("correlation_id").notNull(),
+  ...auditColumns,
+}, (table) => ({
+  onceByStep: uniqueIndex("collection_dispatches_once").on(table.invoiceId, table.stepId, table.scheduledFor),
+}));
 export const collectionCampaigns = pgTable("collection_campaigns", { id:text("id").primaryKey(), name:text("name").notNull(), segment:text("segment").notNull(), status:text("status").notNull(), audience:integer("audience").notNull().default(0), recoveredCents:integer("recovered_cents").notNull().default(0), ...auditColumns });
 export const leads = pgTable("leads", { id:text("id").primaryKey(), name:text("name").notNull(), maskedPhone:text("masked_phone").notNull(), city:text("city").notNull(), neighborhood:text("neighborhood").notNull(), source:text("source").notNull(), stage:text("stage").notNull(), score:integer("score").notNull().default(0), ownerId:text("owner_id"), ...auditColumns });
 /**

@@ -43,6 +43,13 @@
       "when": 1785951862923,
       "tag": "0005_military_korvac",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1786017816907,
+      "tag": "0006_parched_paladin",
+      "breakpoints": true
     }
   ]
 }

@@ -147,8 +147,68 @@ function RuleBuilder(){
               <button onClick={()=>remove(index)}>Remover</button>
             </div>
           </article>)}</section>}
+      <DispatchPanel hasRule={steps.length>0}/>
     </>}
   </main>;
+}
+
+type DispatchPreview={available:boolean;detail?:string;period:string;scope?:"allowlist"|"unavailable";today:{scheduledFor:string;candidates:number}|null;indicators:{total:number;byStep:Record<string,number>}|null};
+type DispatchRun={scheduledFor:string;businessHour:boolean;candidates:number;recorded:number;duplicates:number;enqueued:number;queueEnabled:boolean};
+
+/**
+ * Disparo real (issue #15), no limite do que existe hoje: calcula quem
+ * receberia contato agora, revalidando pagamento, sem duplicar — e registra
+ * isso no ledger mesmo que a fila de envio esteja desligada. É o mesmo espírito
+ * do modo observação do canal de entrada, só que para a saída.
+ */
+function DispatchPanel({hasRule}:{hasRule:boolean}){
+  const [preview,setPreview]=useState<DispatchPreview|null>(null);
+  const [state,setState]=useState<"loading"|"ready"|"error">("loading");
+  const [running,setRunning]=useState(false);
+  const [result,setResult]=useState<DispatchRun|null>(null);
+  const [runError,setRunError]=useState<string|null>(null);
+
+  useEffect(()=>{let active=true;
+    fetch("/api/billing/collections/dispatch?period=30d").then(r=>r.ok?r.json():Promise.reject(new Error("falhou")))
+      .then((payload:DispatchPreview)=>{if(active){setPreview(payload);setState("ready")}})
+      .catch(()=>{if(active)setState("error")});
+    return()=>{active=false}},[]);
+
+  async function run(){
+    setRunning(true);setRunError(null);
+    const response=await fetch("/api/billing/collections/dispatch",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({action:"run"})});
+    const payload=await response.json();
+    if(response.ok)setResult(payload);else setRunError(payload.error??"Não foi possível rodar o disparo.");
+    setRunning(false);
+  }
+
+  if(!hasRule)return null;
+  return <section className="data-card" style={{marginTop:14}}>
+    <div className="card-header"><strong>Disparo real</strong><span className="badge blue">Fica auditado</span></div>
+    {state==="loading"&&<p className="card-empty">Consultando faturas no IXC…</p>}
+    {state==="error"&&<p className="card-empty">Não foi possível consultar o disparo.</p>}
+    {state==="ready"&&preview&&!preview.available&&<p className="card-empty">{preview.detail}.</p>}
+    {state==="ready"&&preview?.available&&<div style={{padding:"14px 18px",display:"grid",gap:12}}>
+      <p style={{margin:0,color:"var(--muted)",fontSize:12,lineHeight:1.6}}>
+        Hoje ({preview.today?.scheduledFor}), <strong>{preview.today?.candidates??0}</strong> fatura(s) casam com alguma etapa ativa da régua,
+        revalidando pagamento na hora — quem já pagou não entra. Nos últimos {preview.period}, {preview.indicators?.total??0} disparo(s) foram registrados no ledger.
+      </p>
+      <div style={{display:"flex",gap:10,alignItems:"center",flexWrap:"wrap"}}>
+        <button className="button" disabled={running} onClick={()=>void run()}>{running?"Rodando…":"Rodar disparo de hoje"}</button>
+        <a className="button secondary" href="/api/billing/collections/dispatch?format=csv" download>Exportar CSV</a>
+      </div>
+      {runError&&<p className="form-error">{runError}</p>}
+      {result&&<div className="state-card">
+        {result.businessHour
+          ? <>Rodado: {result.candidates} candidato(s), <strong>{result.recorded}</strong> novo(s) registrado(s){result.duplicates>0?`, ${result.duplicates} já tinha(m) sido registrado(s) hoje`:""}.
+              {result.queueEnabled?` ${result.enqueued} enfileirado(s) para envio.`:" A fila de envio está desligada (FEATURE_QUEUES) — ficou registrado, mas nada foi enfileirado."}</>
+          : <>Fora do horário comercial: {result.candidates} candidato(s) seriam contatados, mas nada foi registrado. Rode novamente entre 8h e 20h, dia de semana.</>}
+      </div>}
+      <p style={{margin:0,color:"var(--text-3)",fontSize:11}}>
+        Sem ponte de envio ligada ao WhatsApp, o registro aqui prova a decisão — não a entrega. Quando o worker de fila mandar a mensagem de verdade, ele consome do que fica enfileirado aqui.
+      </p>
+    </div>}
+  </section>;
 }
 
 function Campaigns(){
