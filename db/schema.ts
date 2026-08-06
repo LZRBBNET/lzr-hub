@@ -48,6 +48,28 @@ export const massNoticeDispatches = pgTable("mass_notice_dispatches", {
 }, (table) => ({
   onceByKind: uniqueIndex("mass_notice_dispatches_once").on(table.incidentId, table.customerId, table.kind),
 }));
+/**
+ * Ledger de escrita no IXC (issue #20). Uma linha por tentativa, não só por
+ * sucesso: "blocked" (política ou fase recusou) e "failed" (IXC respondeu erro)
+ * ficam registrados do mesmo jeito que "success" — é a trilha de auditoria que
+ * a issue exige, e ela precisa existir mesmo enquanto nada é escrito de
+ * verdade. Único por (operation, idempotencyKey): reenviar a mesma chave
+ * nunca dispara duas vezes.
+ */
+export const ixcWriteOperations = pgTable("ixc_write_operations", {
+  id: text("id").primaryKey(),
+  operation: text("operation").notNull(),
+  idempotencyKey: text("idempotency_key").notNull(),
+  customerId: text("customer_id").notNull(),
+  invoiceId: text("invoice_id"),
+  status: text("status").notNull(),
+  requestedBy: text("requested_by").notNull(),
+  detail: text("detail"),
+  correlationId: text("correlation_id").notNull(),
+  ...auditColumns,
+}, (table) => ({
+  onceByKey: uniqueIndex("ixc_write_operations_idempotency").on(table.operation, table.idempotencyKey),
+}));
 export const collectionRules = pgTable("collection_rules", { id:text("id").primaryKey(), name:text("name").notNull(), status:text("status").notNull(), version:integer("version").notNull().default(1), authorId:text("author_id").notNull(), ...auditColumns });
 export const collectionRuleSteps = pgTable("collection_rule_steps", { id:text("id").primaryKey(), ruleId:text("rule_id").notNull(), offsetDays:integer("offset_days").notNull(), channel:text("channel").notNull(), templateId:text("template_id").notNull(), attempts:integer("attempts").notNull().default(1), active:boolean("active").notNull().default(true), ...auditColumns });
 /**

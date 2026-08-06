@@ -84,8 +84,63 @@ function BillingDashboard(){
           <div style={{marginTop:18,padding:14,background:"var(--blue-soft)",borderRadius:10,fontSize:11,color:"var(--text-2)",lineHeight:1.6}}><strong style={{display:"block",fontSize:12,color:"var(--blue)",marginBottom:4}}>Ainda não medimos</strong>Recuperação atribuída a campanha, conversão e ROI dependem de campanha executada — e campanha não está ligada. Sem isso, qualquer número seria invenção.</div>
         </section>}
       </div>
+      <InvoiceReissuePanel/>
     </>}
   </main>;
+}
+
+type IxcWriteResult={status:"success"|"blocked"|"failed";detail:string;replay?:boolean};
+type IxcWriteCatalogEntry={operation:string;label:string;implemented:boolean};
+
+/**
+ * Escrita real no IXC (issue #20). Três travas independentes bloqueiam isto
+ * hoje — arranque da aplicação, guard de operação e esta própria flag — e a
+ * chamada ao IXC nem está implementada. Este painel prova o arcabouço
+ * (política, idempotência, auditoria) sem fingir que envia algo.
+ */
+function InvoiceReissuePanel(){
+  const [catalog,setCatalog]=useState<IxcWriteCatalogEntry[]>([]);
+  const [invoiceId,setInvoiceId]=useState("");
+  const [customerId,setCustomerId]=useState("");
+  const [busy,setBusy]=useState(false);
+  const [result,setResult]=useState<IxcWriteResult|null>(null);
+  const [error,setError]=useState<string|null>(null);
+
+  useEffect(()=>{let active=true;
+    fetch("/api/billing/invoices/reissue?period=30d").then(r=>r.ok?r.json():Promise.reject(new Error("falhou")))
+      .then((payload:{catalog:IxcWriteCatalogEntry[]})=>{if(active)setCatalog(payload.catalog??[])}).catch(()=>{});
+    return()=>{active=false}},[]);
+
+  async function submit(){
+    setBusy(true);setError(null);setResult(null);
+    const response=await fetch("/api/billing/invoices/reissue",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({invoiceId,customerId,idempotencyKey:`${customerId}:${invoiceId}:${Date.now()}`})});
+    const payload=await response.json();
+    if(response.ok)setResult(payload);else setError(payload.error??"Não foi possível processar.");
+    setBusy(false);
+  }
+
+  return <section className="data-card" style={{marginTop:14}}>
+    <div className="card-header"><strong>Escrita no IXC</strong><span className="badge amber">Fase 3A — bloqueada</span></div>
+    <div style={{padding:16,display:"grid",gap:12}}>
+      <p style={{margin:0,fontSize:12,color:"var(--muted)",lineHeight:1.6}}>
+        Catálogo de operações de escrita no ERP (issue #20). Decisão registrada em <code>docs/pilot/phase-3b-results.md</code>:
+        não avançar para escrita real. O arcabouço abaixo (política, idempotência, auditoria) funciona; a chamada final ao IXC não existe.
+      </p>
+      <div style={{display:"flex",flexWrap:"wrap",gap:8}}>
+        {catalog.map(item=><span key={item.operation} className="badge" style={{background:item.implemented?"var(--blue-soft)":"var(--surface-3)",color:item.implemented?"var(--blue)":"var(--text-3)"}}>{item.label}{item.implemented?"":" (não desenhado)"}</span>)}
+      </div>
+      <div style={{display:"grid",gap:10,maxWidth:420}}>
+        <label className="field"><span>ID da fatura (IXC)</span><input placeholder="ex.: 4821" value={invoiceId} onChange={e=>setInvoiceId(e.target.value)}/></label>
+        <label className="field"><span>ID do cliente (IXC)</span><input placeholder="ex.: 21857" value={customerId} onChange={e=>setCustomerId(e.target.value)}/></label>
+        <button className="button secondary" disabled={busy||!invoiceId||!customerId} onClick={()=>void submit()}>{busy?"Verificando…":"Solicitar segunda via"}</button>
+      </div>
+      {error&&<p className="form-error">{error}</p>}
+      {result&&<div className="state-card">
+        <strong>{result.status==="success"?"Gerado":result.status==="blocked"?"Bloqueado":"Falhou"}</strong>{result.replay?" (mesma solicitação de antes, não repetida)":""}
+        <p style={{margin:"6px 0 0",lineHeight:1.6}}>{result.detail}</p>
+      </div>}
+    </div>
+  </section>;
 }
 
 const EMPTY_STEP:RuleStepInput={offsetDays:1,channel:"WhatsApp",templateId:"",attempts:1,active:false};
