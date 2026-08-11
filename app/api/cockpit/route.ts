@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { getDb } from "@/db";
 import { getIxcRuntime } from "@/lib/integrations/ixc/runtime";
-import { businessToday, summarizeFullBase } from "@/lib/platform/billing-service";
+import { businessToday } from "@/lib/platform/billing-service";
 import { buildCockpitSnapshot } from "@/lib/platform/cockpit-service";
 import { DbIncidentsRepository } from "@/lib/platform/incidents-service";
 import { DbSalesGoalsRepository, currentPeriod, periodRange } from "@/lib/platform/sales-goals-service";
@@ -47,10 +47,12 @@ export async function GET(request: Request) {
   ] = await Promise.allSettled([
     provider ? provider.countActiveContracts(crypto.randomUUID()) : Promise.reject(new Error("IXC off")),
     provider ? provider.countOpenInvoices(crypto.randomUUID()) : Promise.reject(new Error("IXC off")),
-    // Só na base inteira: na allowlist o "vencido" seria de um cadastro só e
-    // enganaria quem lê um painel de gestor.
+    // Uma página de um registro só: o que interessa aqui é o `total` do IXC,
+    // que já vem exato. Varrer as ~3,5 mil vencidas para somar o valor levava
+    // até 12 consultas e estourava o tempo ao abrir a tela — a soma continua
+    // na tela de Cobrança, onde a espera se justifica.
     provider && fullBase
-      ? provider.listOverdueInvoices(businessToday(new Date()), crypto.randomUUID())
+      ? provider.listOverdueInvoices(businessToday(new Date()), crypto.randomUUID(), 1, 1)
       : Promise.reject(new Error("full base off")),
     db ? getSupportMetrics(new DbSupportMetricsRepository(db), since) : Promise.reject(new Error("db off")),
     db ? new DbIncidentsRepository(db).list(INCIDENT_LIMIT) : Promise.reject(new Error("db off")),
@@ -61,17 +63,6 @@ export async function GET(request: Request) {
   ]);
 
   const overdueRows = settled(overdue);
-  const overdueValue = overdueRows
-    ? summarizeFullBase(
-        overdueRows.rows.map((row) => {
-          const raw = row as Record<string, unknown>;
-          const value = Number(String(raw.valor ?? "").replace(",", "."));
-          return { status: String(raw.status ?? ""), dueAt: String(raw.data_vencimento ?? "") || undefined, value: Number.isFinite(value) ? value : undefined };
-        }),
-        { now: new Date(), overdueTotal: overdueRows.total, openCount: 0, truncated: overdueRows.truncated },
-      ).overdueValue
-    : null;
-
   const goalRow = settled(goal);
   const snapshot = buildCockpitSnapshot({
     period, since,
@@ -85,7 +76,7 @@ export async function GET(request: Request) {
         : "IXC não respondeu",
     activeContracts: settled(activeContracts),
     openInvoices: settled(openInvoices),
-    overdueValue,
+    overdueInvoices: overdueRows ? overdueRows.total : null,
     support: settled(support),
     incidents: settled(incidents),
     goal: goalRow ? { targetContracts: goalRow.targetContracts, realizedContracts: settled(realized) } : null,

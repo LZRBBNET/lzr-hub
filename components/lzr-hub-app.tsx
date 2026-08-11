@@ -202,7 +202,7 @@ const PERIOD_LABELS: [string,string][] = [["24h","24 horas"],["7d","7 dias"],["3
 type CockpitMetric = { value:number|null; detail:string };
 type Cockpit = {
   available:boolean; period:string;
-  activeCustomers:CockpitMetric; openInvoices:CockpitMetric; overdueValue:CockpitMetric;
+  activeCustomers:CockpitMetric; openInvoices:CockpitMetric; overdueInvoices:CockpitMetric;
   conversations:CockpitMetric; resolutionRate:CockpitMetric; csat:CockpitMetric;
   openIncidents:CockpitMetric; affectedCustomers:CockpitMetric; goalProgressPercent:CockpitMetric; aiCost:CockpitMetric;
   recentActivity:Array<{id:string;action:string;entity:string;result:string;createdAt:string;actorId:string}>;
@@ -353,14 +353,15 @@ function CockpitPanel({ period }: { period:string }) {
     <section className="metrics">
       <CockpitCard label="Clientes ativos" metric={data.activeCustomers} icon="◉" />
       <CockpitCard label="Faturas em aberto" metric={data.openInvoices} icon="$" />
-      <CockpitCard label="Vencido (lido)" metric={data.overdueValue} icon="$" format={brl} />
+      <CockpitCard label="Faturas vencidas" metric={data.overdueInvoices} icon="$" />
       <CockpitCard label="Meta do mês" metric={data.goalProgressPercent} icon="◎" format={(v)=>`${v}%`} />
     </section>
-    <section className="metrics" style={{marginTop:14}}>
+    {/* "Conversas no período" fica só na seção de atendimento, logo abaixo, que
+        já a mostra junto de resolução e CSAT — repetir aqui era ruído. */}
+    <section className="metrics" style={{marginTop:14,gridTemplateColumns:"repeat(3, 1fr)"}}>
       <CockpitCard label="Massivas abertas" metric={data.openIncidents} icon="⚠" />
       <CockpitCard label="Clientes impactados" metric={data.affectedCustomers} icon="⚠" />
-      <CockpitCard label="Conversas no período" metric={data.conversations} icon="◫" />
-      <CockpitCard label="Custo de IA" metric={data.aiCost} icon="✦" />
+      <CockpitCard label="Custo de IA" metric={data.aiCost} icon="✦" format={brl} />
     </section>
     {data.recentActivity.length>0 && <section className="card" style={{marginTop:14}}>
       <div className="card-header"><strong>Atividades recentes da operação</strong><span className="badge blue">Do rastro de auditoria</span></div>

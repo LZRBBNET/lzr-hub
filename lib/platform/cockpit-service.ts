@@ -25,7 +25,8 @@ export interface CockpitSnapshot {
   activeCustomers: CockpitMetric;
   /** Faturas em aberto na base inteira — contagem exata, sem somar valor (ver billing-service). */
   openInvoices: CockpitMetric;
-  overdueValue: CockpitMetric;
+  /** Contagem de faturas vencidas. O **valor** somado fica na tela de Cobrança: somar exige varrer milhares de registros, caro demais para abrir um painel. */
+  overdueInvoices: CockpitMetric;
   conversations: CockpitMetric;
   resolutionRate: CockpitMetric;
   csat: CockpitMetric;
@@ -80,7 +81,7 @@ export function buildCockpitSnapshot(input: {
   aiCost?: { cost: number; observations: number } | null;
   activeContracts?: number | null;
   openInvoices?: number | null;
-  overdueValue?: number | null;
+  overdueInvoices?: number | null;
   support?: { conversations: number; resolutionRate: number | null; csatAverage: number | null; csatCount: number } | null;
   incidents?: Array<{ status: string; affectedCustomers: number }> | null;
   goal?: { targetContracts: number; realizedContracts: number | null } | null;
@@ -98,9 +99,9 @@ export function buildCockpitSnapshot(input: {
     ? unavailable(ixcReason)
     : { value: input.openInvoices, detail: "Faturas em aberto na base" };
 
-  const overdueValue = input.overdueValue === null || input.overdueValue === undefined
+  const overdueInvoices = input.overdueInvoices === null || input.overdueInvoices === undefined
     ? unavailable(ixcReason)
-    : { value: input.overdueValue, detail: "Somado das faturas vencidas lidas" };
+    : { value: input.overdueInvoices, detail: "Contagem exata do IXC" };
 
   let conversations: CockpitMetric, resolutionRate: CockpitMetric, csat: CockpitMetric;
   if (!input.support) {
@@ -144,7 +145,7 @@ export function buildCockpitSnapshot(input: {
   return {
     period: input.period,
     since: input.since,
-    activeCustomers, openInvoices, overdueValue,
+    activeCustomers, openInvoices, overdueInvoices,
     conversations, resolutionRate, csat,
     openIncidents, affectedCustomers,
     goalProgressPercent,

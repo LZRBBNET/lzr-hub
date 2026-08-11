@@ -7,7 +7,7 @@ const base = {
   since: "2026-08-01T00:00:00.000Z",
   activeContracts: 8500,
   openInvoices: 73870,
-  overdueValue: 128900.5,
+  overdueInvoices: 3541,
   support: { conversations: 18, resolutionRate: 0.5, csatAverage: 4.2, csatCount: 6 },
   incidents: [{ status: "investigating", affectedCustomers: 340 }, { status: "resolved", affectedCustomers: 120 }],
   goal: { targetContracts: 260, realizedContracts: 130 },
@@ -36,7 +36,7 @@ test("progresso da meta é calculado do realizado real, não estimado", () => {
 });
 
 test("IXC fora do ar não zera nada nem derruba o resto do cockpit", () => {
-  const snapshot = buildCockpitSnapshot({ ...base, activeContracts: null, openInvoices: null, overdueValue: null });
+  const snapshot = buildCockpitSnapshot({ ...base, activeContracts: null, openInvoices: null, overdueInvoices: null });
   assert.equal(snapshot.activeCustomers.value, null, "nunca zero: zero seria lido como 'não há clientes'");
   assert.match(snapshot.activeCustomers.detail, /indisponível/i);
   assert.deepEqual(snapshot.degraded, ["IXC"]);
@@ -46,7 +46,7 @@ test("IXC fora do ar não zera nada nem derruba o resto do cockpit", () => {
 
 test("o motivo do IXC é repassado: modo allowlist não vira 'indisponível'", () => {
   const snapshot = buildCockpitSnapshot({
-    ...base, activeContracts: null, openInvoices: null, overdueValue: null,
+    ...base, activeContracts: null, openInvoices: null, overdueInvoices: null,
     ixcUnavailableReason: "Exige leitura da base inteira (FEATURE_IXC_FULL_BASE)",
   });
   // Sem isto, quem lê o cockpit em ambiente de allowlist procuraria defeito na
