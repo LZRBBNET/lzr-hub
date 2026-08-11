@@ -199,6 +199,27 @@ function relativeTime(iso:string) {
 
 const PERIOD_LABELS: [string,string][] = [["24h","24 horas"],["7d","7 dias"],["30d","30 dias"]];
 
+type CockpitMetric = { value:number|null; detail:string };
+type Cockpit = {
+  available:boolean; period:string;
+  activeCustomers:CockpitMetric; openInvoices:CockpitMetric; overdueValue:CockpitMetric;
+  conversations:CockpitMetric; resolutionRate:CockpitMetric; csat:CockpitMetric;
+  openIncidents:CockpitMetric; affectedCustomers:CockpitMetric; goalProgressPercent:CockpitMetric; aiCost:CockpitMetric;
+  recentActivity:Array<{id:string;action:string;entity:string;result:string;createdAt:string;actorId:string}>;
+  degraded:string[];
+};
+
+const brl = (value:number) => `R$ ${value.toLocaleString("pt-BR",{minimumFractionDigits:2,maximumFractionDigits:2})}`;
+
+/**
+ * Cartão do cockpit. Indisponível nunca vira zero: mostra "—" e o motivo, para
+ * um painel de gestor não ser lido como "não há inadimplente" quando na verdade
+ * a fonte não respondeu.
+ */
+function CockpitCard({ label, metric, icon, format }: { label:string; metric:CockpitMetric; icon:string; format?:(value:number)=>string }) {
+  return <Metric label={label} value={metric.value===null?"—":(format?format(metric.value):metric.value.toLocaleString("pt-BR"))} detail={metric.detail} icon={icon} />;
+}
+
 function Dashboard({ onOpen }: { onOpen: () => void }) {
   const [period,setPeriod] = useState("7d");
   const [data,setData] = useState<Overview|null>(null);
@@ -215,8 +236,9 @@ function Dashboard({ onOpen }: { onOpen: () => void }) {
   const metrics = data?.metrics ?? null;
   const percent = (value:number|null) => value===null ? "—" : `${Math.round(value*100)}%`;
   return <main className="content">
-    <div className="page-heading"><div><h1>Olá, equipe BBNET.</h1><p>Números medidos nos atendimentos registrados. O que não é medido aparece como não medido.</p></div><button className="button" onClick={onOpen}>Abrir central de atendimento</button></div>
+    <div className="page-heading"><div><h1>Olá, equipe BBNET.</h1><p>Números medidos em cada módulo. O que não é medido aparece como não medido.</p></div><button className="button" onClick={onOpen}>Abrir central de atendimento</button></div>
     <section className="filter-bar"><select value={period} onChange={(e)=>{setState("loading");setPeriod(e.target.value)}}>{PERIOD_LABELS.map(([value,label])=><option key={value} value={value}>Últimos {label}</option>)}</select></section>
+    <CockpitPanel period={period} />
     {state==="loading" && <div className="state-card">Carregando indicadores…</div>}
     {state==="error" && <div className="state-card error">Não foi possível carregar os indicadores.</div>}
     {state==="ready" && data && !data.available && <div className="state-card error">{data.detail ?? "Fonte de indicadores indisponível"} — nenhum número é exibido para não induzir a erro.</div>}
@@ -295,6 +317,61 @@ function PasswordDialog({ onClose, forced = false }: { onClose: () => void; forc
           </div>}
     </div>
   </div>;
+}
+
+const ACTION_LABELS: Record<string,string> = {
+  "billing.rule.save":"Régua salva", "billing.collections.dispatch":"Disparo da régua", "billing.promise.create":"Promessa registrada",
+  "billing.promise.review":"Promessas revisadas", "ixc.write.invoice_reissue":"Segunda via de boleto",
+  "support.incident.create":"Massiva registrada", "support.incident.close":"Massiva encerrada", "support.incident.notify":"Aviso de massiva",
+  "sales.goal.save":"Meta salva", "channel.message.processed":"Mensagem do canal", "integrations.telegram.alert":"Alerta de rede",
+};
+
+/**
+ * Cockpit do gestor (issue #22): os números de todos os módulos numa tela só,
+ * cada fonte consultada em paralelo e com falha isolada. Uma fonte fora do ar
+ * mostra "—" com o motivo, e as outras continuam aparecendo.
+ */
+function CockpitPanel({ period }: { period:string }) {
+  const [data,setData] = useState<Cockpit|null>(null);
+  const [state,setState] = useState<"loading"|"ready"|"error">("loading");
+  useEffect(() => {
+    let active = true;
+    fetch(`/api/cockpit?period=${period}`)
+      .then((response) => response.ok ? response.json() : Promise.reject(new Error("falhou")))
+      .then((payload: Cockpit) => { if (active) { setData(payload); setState("ready"); } })
+      .catch(() => { if (active) setState("error"); });
+    return () => { active = false; };
+  }, [period]);
+
+  if (state==="loading") return <div className="state-card">Consultando os módulos…</div>;
+  if (state==="error" || !data) return <div className="state-card error">Não foi possível montar o cockpit.</div>;
+
+  return <>
+    {data.degraded.length>0 && <div className="state-card" style={{marginBottom:14}}>
+      <strong>Fonte(s) indisponível(is): {data.degraded.join(", ")}.</strong> Os cartões dessas fontes aparecem como não medidos — nenhum deles vira zero.
+    </div>}
+    <section className="metrics">
+      <CockpitCard label="Clientes ativos" metric={data.activeCustomers} icon="◉" />
+      <CockpitCard label="Faturas em aberto" metric={data.openInvoices} icon="$" />
+      <CockpitCard label="Vencido (lido)" metric={data.overdueValue} icon="$" format={brl} />
+      <CockpitCard label="Meta do mês" metric={data.goalProgressPercent} icon="◎" format={(v)=>`${v}%`} />
+    </section>
+    <section className="metrics" style={{marginTop:14}}>
+      <CockpitCard label="Massivas abertas" metric={data.openIncidents} icon="⚠" />
+      <CockpitCard label="Clientes impactados" metric={data.affectedCustomers} icon="⚠" />
+      <CockpitCard label="Conversas no período" metric={data.conversations} icon="◫" />
+      <CockpitCard label="Custo de IA" metric={data.aiCost} icon="✦" />
+    </section>
+    {data.recentActivity.length>0 && <section className="card" style={{marginTop:14}}>
+      <div className="card-header"><strong>Atividades recentes da operação</strong><span className="badge blue">Do rastro de auditoria</span></div>
+      <div className="card-body">
+        {data.recentActivity.map((item)=><div className="aging-row" key={item.id}>
+          <div><strong>{ACTION_LABELS[item.action] ?? item.action}</strong><span>{item.actorId} • {item.entity}</span></div>
+          <b style={{fontSize:11,color:item.result==="success"?"var(--ok)":"var(--muted)"}}>{relativeTime(item.createdAt)}</b>
+        </div>)}
+      </div>
+    </section>}
+  </>;
 }
 
 function Metric({ label, value, detail, icon }: { label:string; value:string; detail:string; icon:string }) { return <article className="metric"><div className="metric-top"><span>{label}</span><span className="metric-icon">{icon}</span></div><strong>{value}</strong><small>{detail}</small></article>; }
