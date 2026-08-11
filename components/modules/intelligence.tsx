@@ -27,8 +27,9 @@ function Churn(){
 
   return <main className="content">
     <Heading title="Churn" text="Contratos que a BBNET perdeu, lidos do IXC."/>
-    {/* A distinção importa: perda medida é fato, risco é previsão que ninguém faz aqui. */}
-    <div className="state-card">Esta tela mostra o churn <strong>realizado</strong> — quem já saiu. Ela não prevê quem vai sair: isso exigiria sinal que não é coletado (consumo, reincidência de chamado, atraso recorrente).</div>
+    {/* A distinção importa: perda medida é fato; sinal de risco é indício, e a
+        seção de baixo diz explicitamente que não é previsão validada. */}
+    <div className="state-card">Os números abaixo são o churn <strong>realizado</strong> — quem já saiu, lido do IXC. A fila de risco, no fim da tela, é outra coisa: sinais observados em quem <em>ainda não</em> saiu.</div>
     <section className="filter-bar"><select value={period} onChange={e=>{setState("loading");setPeriod(e.target.value)}}>{CHURN_PERIODS.map(([v,l])=><option key={v} value={v}>Últimos {l}</option>)}</select></section>
     {state==="loading"&&<div className="state-card">Consultando o IXC…</div>}
     {state==="error"&&<div className="state-card error">Não foi possível consultar os cancelamentos.</div>}
@@ -54,7 +55,63 @@ function Churn(){
         </section>
       </div>
     </>}
+    <ChurnRiskQueue/>
   </main>;
+}
+
+type ChurnRiskRow={customerId:string;customerName:string|null;score:number;level:string;mainReason:string;suggestedAction:string;factors:Array<{points:number;reason:string}>};
+type ChurnRiskPayload={available:boolean;detail?:string;queue:ChurnRiskRow[];missingSignals:string[];caveats?:string[];scope?:{candidatesFromOpenTickets:number;scored:number;unavailable:number;detail:string}};
+
+const RISK_BADGE:Record<string,string>={"crítico":"red","alto":"amber","médio":"amber","baixo":"green"};
+
+/**
+ * Fila de ação por risco (issue #19, item 3).
+ *
+ * Deliberadamente **não** chamada de "previsão": os pesos nunca foram
+ * comparados contra quem de fato cancelou. Chamar de previsão antes de medir o
+ * acerto (item 5 da issue) seria vender adivinhação como ciência.
+ */
+function ChurnRiskQueue(){
+  const [data,setData]=useState<ChurnRiskPayload|null>(null);
+  const [state,setState]=useState<"loading"|"ready"|"error">("loading");
+  useEffect(()=>{let active=true;
+    fetch("/api/intelligence/churn-risk").then(r=>r.ok?r.json():Promise.reject(new Error("falhou")))
+      .then((payload:ChurnRiskPayload)=>{if(active){setData(payload);setState("ready")}})
+      .catch(()=>{if(active)setState("error")});
+    return()=>{active=false}},[]);
+
+  return <section className="data-card" style={{marginTop:14}}>
+    <div className="card-header"><strong>Fila de risco de cancelamento</strong><span className="badge amber">Sinais, não previsão</span></div>
+    <div style={{padding:"14px 18px 0"}}>
+      <p style={{margin:0,fontSize:12,color:"var(--muted)",lineHeight:1.6}}>
+        Cada cliente abaixo soma sinais que costumam preceder cancelamento, com o peso de cada um visível.
+        <strong> Isto não é previsão validada</strong> — os pesos nunca foram comparados contra quem de fato cancelou, então não há taxa de acerto para mostrar ainda.
+      </p>
+    </div>
+    {state==="loading"&&<p className="card-empty">Consultando chamados e faturas…</p>}
+    {state==="error"&&<p className="card-empty">Não foi possível montar a fila.</p>}
+    {state==="ready"&&data&&!data.available&&<p className="card-empty">{data.detail}.</p>}
+    {state==="ready"&&data?.available&&<>
+      {data.queue.length===0
+        ? <p className="card-empty">Nenhum cliente com sinal de risco entre os avaliados.</p>
+        : data.queue.map(row=><div className="team-row" key={row.customerId}>
+            <div className="team-head">
+              <div>
+                <strong>{row.customerName ?? `Cliente ${row.customerId}`}<span className={`badge ${RISK_BADGE[row.level]??"blue"}`} style={{marginLeft:8}}>{row.level}</span></strong>
+                <span>{row.mainReason}</span>
+              </div>
+              <div className="team-load"><b>{row.score}</b><small>de 100</small></div>
+            </div>
+            <div className="team-tags">{row.factors.map((f,i)=><span key={i}>{f.reason} <b>+{f.points}</b></span>)}</div>
+            <div style={{fontSize:11,color:"var(--blue)"}}>➜ {row.suggestedAction}</div>
+          </div>)}
+      <div className="insight">
+        <strong>Como ler estes números.</strong>
+        {data.caveats?.map((c,i)=><span key={i} style={{display:"block"}}>• {c}</span>)}
+        <span style={{display:"block",marginTop:6}}>{data.scope?.detail} Sinais não coletados: {data.missingSignals.join("; ")}.</span>
+      </div>
+    </>}
+  </section>;
 }
 
 // Saúde do Cliente, Upgrade e Customer Intelligence saíram do menu: nenhuma

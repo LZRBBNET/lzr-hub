@@ -152,6 +152,8 @@ button { cursor: pointer; }
 .badge.green { background: var(--ok-bg); color: var(--ok); }
 .badge.amber { background: var(--warn-bg); color: var(--warn); }
 .badge.blue { background: var(--blue-soft); color: var(--blue); }
+/* Risco crítico precisa se distinguir de "alto" (âmbar) num relance. */
+.badge.red { background: var(--bad-bg); color: var(--bad); }
 .bar-row { margin: 14px 0; }
 .bar-label { display: flex; justify-content: space-between; color: var(--text-2); font-size: 12px; margin-bottom: 7px; }
 .bar { height: 7px; background: var(--surface-3); border-radius: 10px; overflow: hidden; }
