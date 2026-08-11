@@ -64,10 +64,30 @@ test("banco fora do ar deixa conversas e massivas indisponíveis, mas o IXC segu
   assert.deepEqual(snapshot.recentActivity, []);
 });
 
-test("custo de IA nasce indisponível e diz que depende do Langfuse", () => {
+test("sem Langfuse ligado, o custo é indisponível e diz por quê", () => {
   const snapshot = buildCockpitSnapshot(base);
   assert.equal(snapshot.aiCost.value, null);
   assert.match(snapshot.aiCost.detail, /Langfuse/);
+});
+
+test("Langfuse ligado mas sem rastro no período não vira R$ 0,00", () => {
+  const snapshot = buildCockpitSnapshot({ ...base, aiCost: { cost: 0, observations: 0 } });
+  assert.equal(snapshot.aiCost.value, null);
+  assert.match(snapshot.aiCost.detail, /Nenhum rastro/i);
+});
+
+test("rastro existe mas sem custo de modelo: continua '—', não R$ 0,00", () => {
+  // É o estado real hoje: a IA responde com texto fixo e o classificador não
+  // reporta uso. "R$ 0,00" seria lido como "a IA não custa nada".
+  const snapshot = buildCockpitSnapshot({ ...base, aiCost: { cost: 0, observations: 2 } });
+  assert.equal(snapshot.aiCost.value, null);
+  assert.match(snapshot.aiCost.detail, /nenhum com custo de modelo/i);
+});
+
+test("com custo real registrado, o valor aparece", () => {
+  const snapshot = buildCockpitSnapshot({ ...base, aiCost: { cost: 0.42, observations: 130 } });
+  assert.equal(snapshot.aiCost.value, 0.42);
+  assert.match(snapshot.aiCost.detail, /130 rastro/);
 });
 
 test("sem meta registrada, o progresso não vira zero por cento", () => {

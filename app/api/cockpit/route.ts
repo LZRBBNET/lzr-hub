@@ -7,6 +7,7 @@ import { DbIncidentsRepository } from "@/lib/platform/incidents-service";
 import { DbSalesGoalsRepository, currentPeriod, periodRange } from "@/lib/platform/sales-goals-service";
 import { summarizeSales } from "@/lib/platform/sales-service";
 import { DbSupportMetricsRepository, getSupportMetrics } from "@/lib/platform/support-metrics";
+import { fetchLangfuseCost, langfuseCostOptionsFromEnv } from "@/lib/observability/langfuse-cost";
 import { listAuditEvents } from "@/lib/platform/audit-log";
 import { authorize } from "@/lib/platform/session-guard";
 
@@ -40,8 +41,9 @@ export async function GET(request: Request) {
   const db = await getDb().catch(() => null);
   const goalPeriod = currentPeriod();
 
+  const langfuse = langfuseCostOptionsFromEnv();
   const [
-    activeContracts, openInvoices, overdue, support, incidents, goal, realized, audit,
+    activeContracts, openInvoices, overdue, support, incidents, goal, realized, audit, aiCost,
   ] = await Promise.allSettled([
     provider ? provider.countActiveContracts(crypto.randomUUID()) : Promise.reject(new Error("IXC off")),
     provider ? provider.countOpenInvoices(crypto.randomUUID()) : Promise.reject(new Error("IXC off")),
@@ -55,6 +57,7 @@ export async function GET(request: Request) {
     db ? new DbSalesGoalsRepository(db).findByPeriod(goalPeriod) : Promise.reject(new Error("db off")),
     realizedContractsFor(goalPeriod, provider, fullBase),
     listAuditEvents(ACTIVITY_LIMIT),
+    langfuse ? fetchLangfuseCost(langfuse, since, new Date().toISOString()) : Promise.reject(new Error("langfuse off")),
   ]);
 
   const overdueRows = settled(overdue);
@@ -87,6 +90,7 @@ export async function GET(request: Request) {
     incidents: settled(incidents),
     goal: goalRow ? { targetContracts: goalRow.targetContracts, realizedContracts: settled(realized) } : null,
     audit: settled(audit),
+    aiCost: settled(aiCost),
   });
 
   return NextResponse.json({ available: true, ...snapshot });

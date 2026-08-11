@@ -42,6 +42,23 @@ export interface CockpitSnapshot {
 const unavailable = (detail: string): CockpitMetric => ({ value: null, detail });
 
 /**
+ * O cartão de custo de IA é o mais fácil de mentir sem querer.
+ *
+ * Hoje a IA responde com texto fixo — só o classificador de intenção usa
+ * modelo, e ele não reporta uso ao Langfuse. Então o custo somado é zero por
+ * **falta de instrumentação**, não porque a IA seja gratuita. Exibir
+ * "R$ 0,00" seria lido como "a IA não custa nada", que é justamente o tipo de
+ * número inventado que este projeto recusa. Zero só vira zero na tela quando
+ * houver rastro com custo de modelo de verdade.
+ */
+function aiCostMetric(input: { cost: number; observations: number } | null | undefined): CockpitMetric {
+  if (!input) return unavailable("Langfuse desligado ou fora do ar");
+  if (input.observations === 0) return unavailable("Nenhum rastro registrado no período");
+  if (input.cost === 0) return unavailable(`${input.observations} rastro(s), nenhum com custo de modelo — o classificador não reporta uso`);
+  return { value: input.cost, detail: `${input.observations} rastro(s) no período` };
+}
+
+/**
  * Monta o snapshot a partir de resultados já resolvidos. Função pura de
  * propósito: dá para provar o comportamento de degradação (uma fonte cai, as
  * outras seguem) sem banco e sem rede.
@@ -55,6 +72,12 @@ export function buildCockpitSnapshot(input: {
    * precisa saber qual das duas, senão vai procurar defeito no lugar errado.
    */
   ixcUnavailableReason?: string;
+  /**
+   * Custo lido do Langfuse. `observations` distingue as três situações que um
+   * número sozinho confundiria: não medimos, medimos e não houve rastro, ou
+   * medimos e o custo é de fato zero.
+   */
+  aiCost?: { cost: number; observations: number } | null;
   activeContracts?: number | null;
   openInvoices?: number | null;
   overdueValue?: number | null;
@@ -125,9 +148,7 @@ export function buildCockpitSnapshot(input: {
     conversations, resolutionRate, csat,
     openIncidents, affectedCustomers,
     goalProgressPercent,
-    // Nasce indisponível e continua até o Langfuse existir. Não é falha: é a
-    // verdade sobre o que ainda não medimos.
-    aiCost: unavailable("Requer Langfuse (issue #6)"),
+    aiCost: aiCostMetric(input.aiCost),
     recentActivity: input.audit ?? [],
     degraded,
   };
