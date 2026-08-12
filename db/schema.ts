@@ -87,6 +87,48 @@ export const paymentPromises = pgTable("payment_promises", {
   correlationId: text("correlation_id").notNull(),
   ...auditColumns,
 });
+/**
+ * Chat interno entre a equipe (issue #10). Existe para o atendente tirar dúvida
+ * com o técnico sem sair da tela e sem usar WhatsApp pessoal — e para essa
+ * conversa ficar registrada junto do atendimento, em vez de sumir.
+ *
+ * `linkedConversationId` é opcional e guarda o `externalConversationId` do
+ * atendimento discutido, quando houver. Fica solto de propósito: uma conversa
+ * interna pode ser sobre um cliente, sobre um problema de rede, ou sobre nada
+ * em particular.
+ */
+export const internalThreads = pgTable("internal_threads", {
+  id: text("id").primaryKey(),
+  subject: text("subject").notNull(),
+  linkedConversationId: text("linked_conversation_id"),
+  createdBy: text("created_by").notNull(),
+  lastMessageAt: text("last_message_at").notNull(),
+  ...auditColumns,
+});
+/**
+ * Quem participa de cada conversa. É a tabela que faz o RBAC valer: quem não
+ * tem linha aqui não lê a conversa, e a consulta parte daqui — nunca da lista
+ * de conversas filtrada depois.
+ */
+export const internalParticipants = pgTable("internal_participants", {
+  threadId: text("thread_id").notNull(),
+  userId: text("user_id").notNull(),
+  /** Última leitura, para marcar mensagem nova sem precisar de outra tabela. */
+  lastReadAt: text("last_read_at"),
+  ...auditColumns,
+}, (table) => ({
+  once: uniqueIndex("internal_participants_once").on(table.threadId, table.userId),
+  byUser: index("internal_participants_user_idx").on(table.userId),
+}));
+export const internalMessages = pgTable("internal_messages", {
+  id: text("id").primaryKey(),
+  threadId: text("thread_id").notNull(),
+  authorId: text("author_id").notNull(),
+  body: text("body").notNull(),
+  ...auditColumns,
+}, (table) => ({
+  byThread: index("internal_messages_thread_idx").on(table.threadId, table.createdAt),
+}));
 export const collectionRules = pgTable("collection_rules", { id:text("id").primaryKey(), name:text("name").notNull(), status:text("status").notNull(), version:integer("version").notNull().default(1), authorId:text("author_id").notNull(), ...auditColumns });
 export const collectionRuleSteps = pgTable("collection_rule_steps", { id:text("id").primaryKey(), ruleId:text("rule_id").notNull(), offsetDays:integer("offset_days").notNull(), channel:text("channel").notNull(), templateId:text("template_id").notNull(), attempts:integer("attempts").notNull().default(1), active:boolean("active").notNull().default(true), ...auditColumns });
 /**

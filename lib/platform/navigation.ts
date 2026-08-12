@@ -12,7 +12,7 @@ export type View =
   | "cobranca" | "regua" | "relatorios-cobranca"
   | "comercial" | "metas" | "relatorios-comercial"
   | "training" | "conhecimento" | "churn" | "avaliacoes" | "prompts"
-  | "integracoes" | "equipes" | "usuarios" | "auditoria" | "configuracoes";
+  | "integracoes" | "equipes" | "usuarios" | "auditoria" | "configuracoes" | "chat-interno";
 
 export interface NavItem { id: View; label: string; icon: string; group?: string }
 export const navigation: NavItem[] = [
@@ -34,7 +34,8 @@ export const navigation: NavItem[] = [
   { id:"churn", label:"Churn", icon:"⚑" },
   { id:"avaliacoes", label:"Avaliações da IA", icon:"✓" },
   { id:"prompts", label:"Prompts e versões", icon:"{ }" },
-  { id:"integracoes", label:"Integrações", icon:"⌁", group:"Administração" },
+  { id:"chat-interno", label:"Chat da equipe", icon:"◈", group:"Administração" },
+  { id:"integracoes", label:"Integrações", icon:"⌁" },
   { id:"equipes", label:"Equipes e Filas", icon:"♟" },
   { id:"usuarios", label:"Usuários e Permissões", icon:"⚿" },
   { id:"auditoria", label:"Auditoria", icon:"▧" },
