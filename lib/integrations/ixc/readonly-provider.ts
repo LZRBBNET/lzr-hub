@@ -2,11 +2,11 @@ import { IxcConnectionMapper, IxcContractMapper, IxcCustomerMapper, IxcInvoiceMa
 import { sanitizeTelemetry } from "./masking.ts";
 import { ReadonlyIxcGuard } from "./guard.ts";
 import { CircuitBreaker, SlidingWindowRateLimiter, TtlCache } from "./resilience.ts";
-import type { IxcCustomerPage, IxcCustomerSnapshot, IxcListResponse, IxcOsSubjectDto, IxcReadOperation, IxcSectorDto } from "./types.ts";
+import type { IxcCollectionWalletDto, IxcCustomerPage, IxcCustomerSnapshot, IxcListResponse, IxcOsSubjectDto, IxcPaymentTermDto, IxcReadOperation, IxcSectorDto } from "./types.ts";
 
 // `listOsCatalog` fica de fora porque não tem um endpoint só: a mesma operação
 // lê `su_oss_assunto` e `empresa_setor`, e o recurso vai explícito na chamada.
-const endpoints:Record<Exclude<IxcReadOperation,"testConnection"|"findCustomer"|"getCustomer"|"listCustomers"|"listOsCatalog">,string>={listContracts:"cliente_contrato",getPlan:"vd_contratos",listInvoices:"fn_areceber",listPayments:"fn_movim_finan",listServiceOrders:"su_oss_chamado",getConnection:"radusuarios",getCity:"cidade"};
+const endpoints:Record<Exclude<IxcReadOperation,"testConnection"|"findCustomer"|"getCustomer"|"listCustomers"|"listOsCatalog"|"listFinanceCatalog">,string>={listContracts:"cliente_contrato",getPlan:"vd_contratos",listInvoices:"fn_areceber",listPayments:"fn_movim_finan",listServiceOrders:"su_oss_chamado",getConnection:"radusuarios",getCity:"cidade"};
 export interface IxcTrace { event:string; correlationId:string; durationMs:number; status:"success"|"failed"|"cache-hit"|"blocked"; attributes:Record<string,unknown> }
 export interface IxcReadonlyOptions { baseUrl:string; token:string; allowedCustomerIds:string[]; fullBase?:boolean; timeoutMs?:number; retryLimit?:0|1; cacheTtlMs?:number; cityCacheTtlMs?:number; rateLimitPerMinute?:number; fetcher?:typeof fetch; trace?:(event:IxcTrace)=>void; now?:()=>number }
 interface ReadOptions { oper?:string; page?:number; sortname?:string; sortorder?:"asc"|"desc"; gridParam?:GridFilter[] }
@@ -19,7 +19,7 @@ interface ReadOptions { oper?:string; page?:number; sortname?:string; sortorder?
  */
 export interface GridFilter { TB:string; OP:string; P:string }
 /** Operações que não são de um cliente específico — não passam pela checagem de allowlist. */
-const GLOBAL_SCOPE_OPERATIONS = new Set<IxcReadOperation>(["testConnection","listCustomers","listOsCatalog"]);
+const GLOBAL_SCOPE_OPERATIONS = new Set<IxcReadOperation>(["testConnection","listCustomers","listOsCatalog","listFinanceCatalog"]);
 
 /**
  * Traduz o que a pessoa digitou na busca para o filtro do IXC.
@@ -145,6 +145,28 @@ export class IxcReadonlyProvider {
   async listSectors(correlationId:string):Promise<IxcSectorDto[]>{
     const {records}=await this.readPage("listOsCatalog","empresa_setor","empresa_setor.id","0",correlationId,100,"",{oper:">",sortname:"empresa_setor.id"});
     return records.map((raw)=>({id:String(raw.id??"").trim(),name:String(raw.setor??"").trim()})).filter((item)=>item.id&&item.name);
+  }
+  /**
+   * Carteiras de cobrança e condições de pagamento, para a renegociação de dívida.
+   *
+   * Na base da BBNET são 27 carteiras (Banco do Brasil, CAIXA, BANESE, carnês,
+   * PIX) e 87 condições ("A vista", "30,60 dias", "Entrada + 1 vez"…). A
+   * carteira define **juro e multa**; a condição define **em quantas parcelas**.
+   * Os dois decidem quanto o cliente vai pagar — fixar qualquer um no código
+   * seria arbitrar dinheiro alheio.
+   */
+  async listCollectionWallets(correlationId:string):Promise<IxcCollectionWalletDto[]>{
+    const {records}=await this.readPage("listFinanceCatalog","fn_carteira_cobranca","fn_carteira_cobranca.id","0",correlationId,100,"",{oper:">",sortname:"fn_carteira_cobranca.id"});
+    return records.map((raw)=>({id:String(raw.id??"").trim(),name:String(raw.descricao??raw.titulo??"").trim()})).filter((item)=>item.id&&item.name);
+  }
+  async listPaymentTerms(correlationId:string):Promise<IxcPaymentTermDto[]>{
+    const {records}=await this.readPage("listFinanceCatalog","condicoes_pagamento","condicoes_pagamento.id","0",correlationId,200,"",{oper:">",sortname:"condicoes_pagamento.id"});
+    return records
+      // Condição desativada no IXC não deve aparecer para escolha: ela foi
+      // desligada por alguém, e oferecer de volta desfaz essa decisão.
+      .filter((raw)=>String(raw.ativo??"S").trim().toUpperCase()!=="N")
+      .map((raw)=>{const installments=Number(String(raw.n_parcelas??"").trim());return{id:String(raw.id??"").trim(),name:String(raw.nome??"").trim(),installments:Number.isFinite(installments)&&installments>0?installments:undefined}})
+      .filter((item)=>item.id&&item.name);
   }
   /**
    * Contratos ativados no período: é o que a BBNET vendeu.

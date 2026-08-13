@@ -154,5 +154,5 @@ test("o catálogo declara a abertura de OS como implementada", () => {
   const entry = IXC_WRITE_CATALOG.find((item) => item.operation === "service_order.open");
   assert.equal(entry.implemented, true);
   const naoFeitas = IXC_WRITE_CATALOG.filter((item) => !item.implemented).map((item) => item.operation);
-  assert.deepEqual(naoFeitas, ["negotiation.register", "customer.create"], "o catálogo não pode dizer pronto o que não está");
+  assert.deepEqual(naoFeitas, ["customer.create"], "o catálogo não pode dizer pronto o que não está");
 });

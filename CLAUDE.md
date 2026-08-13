@@ -157,7 +157,13 @@ Ver [`docs/integrations/ixc-data-mapping.md`](docs/integrations/ixc-data-mapping
 
 ### Escrita no IXC: o que já existe e o que não
 
-Duas operações do catálogo estão implementadas (`lib/platform/ixc-write-service.ts`): **segunda via de boleto** (`POST /webservice/v1/get_boleto`) e **abertura de OS** (`POST /webservice/v1/su_oss_chamado`). As outras duas — registrar negociação e cadastrar cliente — continuam `implemented: false`, e o catálogo na tela diz isso.
+Três operações do catálogo estão implementadas (`lib/platform/ixc-write-service.ts`): **segunda via de boleto** (`POST /webservice/v1/get_boleto`), **abertura de OS** (`POST /webservice/v1/su_oss_chamado`) e **renegociação de dívida** (wizard de 5 passos). Cadastrar cliente continua `implemented: false`, e o catálogo na tela diz isso.
+
+⚠️ **A renegociação não é atômica, e isso muda como ela falha.** O primeiro passo (`renegociar_selecionados`) **já cria o registro no ERP** e devolve `id_renegociacao`; os passos seguintes calculam juro/multa e finalizam. Se algo falhar no meio, o cliente fica com uma renegociação pela metade grudada nas faturas reais, e a API do IXC não tem endpoint de desfazer. Por isso o ledger grava o `id_renegociacao` e o passo alcançado, com o detalhe começando em `PENDENTE DE CONFERÊNCIA MANUAL`. Um `failed` seco ali esconderia um rastro que ficou no ERP.
+
+Nenhum valor é calculado por nós: o total é a soma das faturas lidas do IXC e o acréscimo é o que o próprio IXC devolve em `calcula_juros_multa`. `valor_descontos` é sempre `"0,00"` — conceder desconto é justamente o que o projeto se recusa a automatizar, e o pipeline do agente já transborda para humano nesse caso.
+
+Quem dispara precisa reenviar o **total que viu na tela**; se não bater com o que o IXC devolve naquele instante, a operação é recusada. Tela com dado velho não renegocia.
 
 Toda escrita passa pela mesma régua, nesta ordem: idempotência → política → `FEATURE_IXC_WRITE` → chamada. Bloqueio também entra no ledger `ixc_write_operations`: auditoria existe para provar decisão, não só sucesso.
 
@@ -193,7 +199,7 @@ O formato da **resposta de sucesso** das duas operações não está confirmado 
 npm run typecheck && npm run lint && npm test
 ```
 
-Os três precisam passar. Hoje a suíte tem **454 testes**.
+Os três precisam passar. Hoje a suíte tem **470 testes**.
 
 ## Segurança — pontos já decididos
 

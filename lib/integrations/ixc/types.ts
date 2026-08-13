@@ -11,14 +11,20 @@ export type IxcReadOperation =
   | "getConnection"
   | "getCity"
   /** Assuntos e setores de OS: configuração do provedor, não dado de cliente. */
-  | "listOsCatalog";
+  | "listOsCatalog"
+  /** Carteiras de cobrança e condições de pagamento: definem juro, multa e parcelamento. */
+  | "listFinanceCatalog";
 
 /** Assunto de ordem de serviço (`su_oss_assunto`) — é o `id_assunto` que a OS exige. */
 export interface IxcOsSubjectDto { id:string; name:string }
 /** Setor (`empresa_setor`) — é o campo `setor` da OS, a fila que vai receber o chamado. */
 export interface IxcSectorDto { id:string; name:string }
+/** Carteira de cobrança (`fn_carteira_cobranca`) — é ela que define juro e multa da renegociação. */
+export interface IxcCollectionWalletDto { id:string; name:string }
+/** Condição de pagamento (`condicoes_pagamento`) — define em quantas parcelas a dívida é dividida. */
+export interface IxcPaymentTermDto { id:string; name:string; installments?:number }
 
-export interface IxcCustomerDto { id:string; name:string; document:string; phone:string; email:string; city:string; neighborhood:string; address:string; status:string; customerSince?:string; updatedAt?:string; /** `filial_id` do cadastro. A BBNET tem 21 filiais — abrir OS numa constante mandaria o chamado para a empresa errada. */ branchId?:string }
+export interface IxcCustomerDto { id:string; name:string; document:string; phone:string; email:string; city:string; neighborhood:string; address:string; status:string; customerSince?:string; updatedAt?:string; /** `filial_id` do cadastro. A BBNET tem 21 filiais — abrir OS numa constante mandaria o chamado para a empresa errada. */ branchId?:string; /** `id_conta` do cadastro, exigido pelo wizard de renegociação. É por cliente, não do provedor. */ accountId?:string }
 export interface IxcContractDto { id:string; customerId:string; planId?:string; planName:string; status:string; dueDay?:number; monthlyValue?:number; activatedAt?:string }
 export interface IxcPlanDto { id:string; name:string; speed?:string; value?:number }
 export interface IxcInvoiceDto { id:string; customerId:string; contractId?:string; status:string; dueAt?:string; value?:number; paymentCode?:string }

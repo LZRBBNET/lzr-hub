@@ -51,6 +51,7 @@ export class IxcCustomerMapper {
       // cliente porque é lá que a verdade mora; constante mandaria o chamado
       // para a empresa errada do grupo.
       branchId:str(raw,"filial_id")||undefined,
+      accountId:str(raw,"id_conta")||undefined,
     };
   }
 }

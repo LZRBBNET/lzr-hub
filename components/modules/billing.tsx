@@ -85,6 +85,7 @@ function BillingDashboard(){
         </section>}
       </div>
       <InvoiceReissuePanel/>
+      <RenegotiationPanel/>
       <PaymentPromisePanel/>
     </>}
   </main>;
@@ -197,9 +198,8 @@ function InvoiceReissuePanel(){
     <div className="card-header"><strong>Escrita no IXC</strong><span className={`badge ${writeEnabled?"green":"amber"}`}>{writeEnabled===null?"consultando…":writeEnabled?"● ligada":"desligada"}</span></div>
     <div style={{padding:16,display:"grid",gap:12}}>
       <p style={{margin:0,fontSize:12,color:"var(--muted)",lineHeight:1.6}}>
-        Catálogo de operações de escrita no ERP (issue #20). Só a segunda via de boleto está desenhada; as outras três seguem o mesmo padrão quando chegar a vez delas.
-        O endpoint real (<code>get_boleto</code>) foi confirmado na documentação do provedor — o que ainda não foi confirmado é o formato de uma resposta de <strong>sucesso</strong>,
-        porque não existe fatura real para testar. Por isso o resultado abaixo mostra a resposta crua do IXC, não um resumo.
+        Catálogo de operações de escrita no ERP (issue #20). Os endpoints reais foram confirmados na documentação do provedor — o que ainda não foi confirmado é o formato de uma
+        resposta de <strong>sucesso</strong>, porque nenhuma operação chegou a ser executada em produção. Por isso o resultado abaixo mostra a resposta crua do IXC, não um resumo.
       </p>
       <div style={{display:"flex",flexWrap:"wrap",gap:8}}>
         {catalog.map(item=><span key={item.operation} className="badge" style={{background:item.implemented?"var(--blue-soft)":"var(--surface-3)",color:item.implemented?"var(--blue)":"var(--text-3)"}}>{item.label}{item.implemented?"":" (não desenhado)"}</span>)}
@@ -213,6 +213,109 @@ function InvoiceReissuePanel(){
       {result&&<div className="state-card">
         <strong>{result.status==="success"?"Gerado":result.status==="blocked"?"Bloqueado":"Falhou"}</strong>{result.replay?" (mesma solicitação de antes, não repetida)":""}
         <p style={{margin:"6px 0 0",lineHeight:1.6,wordBreak:"break-all"}}>{result.detail}</p>
+      </div>}
+    </div>
+  </section>;
+}
+
+type RenegotiationData={available:boolean;detail?:string;invoices:{id:string;dueAt:string|null;value:number}[];wallets:{id:string;name:string}[];paymentTerms:{id:string;name:string;installments?:number}[];customer?:{id:string;name:string;hasAccount:boolean;hasBranch:boolean};contractId?:string|null;writeEnabled?:boolean};
+
+/**
+ * Renegociação de dívida (issue #20, operação `negotiation.register`).
+ *
+ * É a única tela do sistema que consolida faturas reais e recalcula juro e
+ * multa. Três coisas aqui não são enfeite:
+ *
+ * 1. O total exibido é reenviado ao servidor, que o compara com o que o IXC
+ *    devolve naquele instante. Tela com dado velho não renegocia.
+ * 2. O aviso de que o passo 1 já grava no ERP fica visível **antes** do botão,
+ *    porque falhar no meio deixa renegociação pela metade nas faturas do cliente.
+ * 3. Não há campo de desconto. Conceder desconto é decisão que o projeto se
+ *    recusa a automatizar — quem precisa fazer isso faz no IXC, com nome e rosto.
+ */
+/** Fora do componente: gerar a chave é efeito, e dentro do corpo o compilador o trata como impureza em render. */
+const renegotiationKey=(customer:string,ids:string[])=>`reneg-${customer}-${[...ids].sort().join("_")}-${Date.now()}`;
+
+function RenegotiationPanel(){
+  const [customerId,setCustomerId]=useState("");
+  const [query,setQuery]=useState("");
+  const [data,setData]=useState<RenegotiationData|null>(null);
+  // Carregando é derivado, não estado próprio: marcar loading dentro do efeito
+  // seria setState síncrono ali, o que dispara renderização em cascata.
+  const [loadedQuery,setLoadedQuery]=useState<string|null>(null);
+  const [selected,setSelected]=useState<string[]>([]);
+  const [walletId,setWalletId]=useState("");
+  const [termId,setTermId]=useState("");
+  const [busy,setBusy]=useState(false);
+  const [result,setResult]=useState<IxcWriteResult|null>(null);
+  const [error,setError]=useState<string|null>(null);
+
+  useEffect(()=>{let active=true;
+    fetch(`/api/billing/renegotiations${query?`?customerId=${encodeURIComponent(query)}`:""}`)
+      .then(r=>r.ok?r.json():Promise.reject(new Error("falhou")))
+      .then((payload:RenegotiationData)=>{if(active){setData(payload);setLoadedQuery(query)}})
+      .catch(()=>{if(active){setData({available:false,detail:"Não foi possível consultar o IXC",invoices:[],wallets:[],paymentTerms:[]});setLoadedQuery(query)}});
+    return()=>{active=false}},[query]);
+  const loading=loadedQuery!==query;
+
+  const total=(data?.invoices??[]).filter(i=>selected.includes(i.id)).reduce((sum,i)=>sum+i.value,0);
+  const brl=(value:number)=>value.toLocaleString("pt-BR",{style:"currency",currency:"BRL"});
+  const blocked=data?.customer&&(!data.customer.hasAccount||!data.customer.hasBranch||!data.contractId);
+
+  async function submit(){
+    setBusy(true);setError(null);setResult(null);
+    try{
+      const response=await fetch("/api/billing/renegotiations",{method:"POST",headers:{"content-type":"application/json"},
+        body:JSON.stringify({customerId:query,invoiceIds:selected,walletId,paymentTermId:termId,expectedTotal:total,
+          idempotencyKey:renegotiationKey(query,selected)})});
+      const payload=await response.json();
+      if(response.ok)setResult(payload);else setError(payload.error??"Não foi possível renegociar.");
+    }catch{setError("O IXC não respondeu.")}
+    finally{setBusy(false)}
+  }
+
+  return <section className="data-card" style={{marginTop:14}}>
+    <div className="card-header"><strong>Renegociar dívida no IXC</strong>
+      <span className={`badge ${data?.writeEnabled?"green":"amber"}`}>{data?.writeEnabled?"● escrita ligada":"FEATURE_IXC_WRITE desligada"}</span>
+    </div>
+    <div style={{padding:16,display:"grid",gap:12}}>
+      <div className="state-card" style={{margin:0}}>
+        <strong>Isto altera o financeiro do cliente.</strong>
+        <p style={{margin:"6px 0 0",lineHeight:1.6}}>O IXC cria a renegociação já no primeiro passo, antes de calcular juro e multa. Se a sequência falhar no meio, fica um registro pela metade preso às faturas — e o ledger mostra o número dele para conferência manual. Não há campo de desconto: isso não se automatiza.</p>
+      </div>
+      <div style={{display:"flex",gap:8,alignItems:"flex-end",flexWrap:"wrap"}}>
+        <label className="field" style={{maxWidth:220}}><span>Código do cliente no IXC</span><input value={customerId} placeholder="ex.: 21857" onChange={e=>setCustomerId(e.target.value)}/></label>
+        <button className="button secondary" disabled={!customerId.trim()||loading} onClick={()=>{setQuery(customerId.trim());setSelected([]);setResult(null);setError(null)}}>{loading?"Consultando…":"Buscar faturas"}</button>
+      </div>
+
+      {data&&!data.available&&<p className="form-error">{data.detail}.</p>}
+      {data?.available&&query&&<>
+        {blocked&&<p className="form-error">Este cadastro não pode ser renegociado: {[!data.customer?.hasBranch&&"não tem filial",!data.customer?.hasAccount&&"não tem conta (id_conta)",!data.contractId&&"não tem contrato"].filter(Boolean).join(", ")}.</p>}
+        {data.invoices.length===0
+          ? <p style={{fontSize:12,color:"var(--muted)"}}>Nenhuma fatura em aberto neste cadastro.</p>
+          : <>
+              <fieldset className="reason-picker">
+                <legend>Faturas em aberto ({data.customer?.name})</legend>
+                {data.invoices.map(invoice=><label key={invoice.id}>
+                  <input type="checkbox" checked={selected.includes(invoice.id)} onChange={()=>setSelected(current=>current.includes(invoice.id)?current.filter(id=>id!==invoice.id):[...current,invoice.id])}/>
+                  <span>Fatura {invoice.id} • vence {invoice.dueAt??"—"} • {brl(invoice.value)}</span>
+                </label>)}
+              </fieldset>
+              <div style={{display:"grid",gap:10,maxWidth:460}}>
+                <label className="field"><span>Carteira de cobrança ({data.wallets.length} do IXC) — define juro e multa</span>
+                  <select value={walletId} onChange={e=>setWalletId(e.target.value)}><option value="">Escolha…</option>{data.wallets.map(w=><option key={w.id} value={w.id}>{w.name}</option>)}</select></label>
+                <label className="field"><span>Condição de pagamento — define o parcelamento</span>
+                  <select value={termId} onChange={e=>setTermId(e.target.value)}><option value="">Escolha…</option>{data.paymentTerms.map(t=><option key={t.id} value={t.id}>{t.name}</option>)}</select></label>
+                <p style={{margin:0,fontSize:12}}>Total das faturas escolhidas: <strong>{brl(total)}</strong> <small style={{color:"var(--muted)"}}>— o juro e a multa quem calcula é o IXC, e o valor final aparece no resultado.</small></p>
+                <button className="button" disabled={busy||blocked||selected.length===0||!walletId||!termId} onClick={()=>void submit()}>{busy?"Renegociando…":`Renegociar ${selected.length} fatura(s)`}</button>
+              </div>
+            </>}
+      </>}
+
+      {error&&<p className="form-error">{error}</p>}
+      {result&&<div className={`state-card ${result.status==="success"?"":"error"}`}>
+        <strong>{result.status==="success"?"Renegociação concluída no IXC":result.status==="blocked"?"Bloqueado":"Falhou"}</strong>{result.replay?" (mesma solicitação de antes, não repetida)":""}
+        <p style={{margin:"6px 0 0",lineHeight:1.6,wordBreak:"break-word"}}>{result.detail}</p>
       </div>}
     </div>
   </section>;

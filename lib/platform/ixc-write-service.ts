@@ -26,7 +26,7 @@ import { isOpenInvoice } from "./billing-service.ts";
 export const IXC_WRITE_CATALOG = [
   { operation: "invoice.reissue", label: "Gerar segunda via de boleto", implemented: true },
   { operation: "service_order.open", label: "Abrir ordem de serviço", implemented: true },
-  { operation: "negotiation.register", label: "Registrar promessa/negociação", implemented: false },
+  { operation: "negotiation.register", label: "Renegociar dívida", implemented: true },
   { operation: "customer.create", label: "Cadastrar cliente novo", implemented: false },
 ] as const;
 
@@ -216,6 +216,49 @@ export async function requestInvoiceReissue(
   }
 }
 
+/**
+ * Política da renegociação de dívida — a operação mais perigosa do catálogo.
+ *
+ * Ela consolida faturas reais, recalcula juro e multa e cria parcelas novas.
+ * Errar aqui não gera um chamado a mais: gera cobrança errada.
+ *
+ * A trava que menos se parece com uma trava é a do **valor conferido**: quem
+ * dispara precisa mandar de volta o total que viu na tela, e ele tem que bater
+ * com o que o servidor somou a partir do IXC. Isso prova que a pessoa e o
+ * sistema estão olhando o mesmo número — um clique num botão que carregou dado
+ * velho não renegocia nada.
+ */
+export const RENEGOTIATION_TOTAL_TOLERANCE = 0.01;
+
+export function assertRenegotiationPolicy(input: {
+  invoiceIds: string[];
+  eligibleIds: Set<string>;
+  originalTotal: number;
+  expectedTotal: number;
+  walletId: string;
+  paymentTermId: string;
+  knownWalletIds: Set<string>;
+  knownPaymentTermIds: Set<string>;
+  branchId: string | undefined;
+  accountId: string | undefined;
+  contractId: string | undefined;
+}): void {
+  if (input.invoiceIds.length === 0) throw new IxcWritePolicyError("Escolha pelo menos uma fatura para renegociar");
+  // Fatura que não é do cliente, ou que já foi paga, não entra: renegociar uma
+  // fatura paga recria a dívida de quem já pagou.
+  const foreign = input.invoiceIds.filter((id) => !input.eligibleIds.has(id));
+  if (foreign.length > 0) throw new IxcWritePolicyError(`Fatura(s) fora do que pode ser renegociado neste cadastro: ${foreign.join(", ")}`);
+  if (!input.knownWalletIds.has(input.walletId)) throw new IxcWritePolicyError("Carteira de cobrança não existe no catálogo do IXC");
+  if (!input.knownPaymentTermIds.has(input.paymentTermId)) throw new IxcWritePolicyError("Condição de pagamento não existe no catálogo do IXC");
+  if (!input.branchId) throw new IxcWritePolicyError("O cadastro do cliente não informa filial");
+  if (!input.accountId) throw new IxcWritePolicyError("O cadastro do cliente não informa conta (id_conta), exigida pelo wizard");
+  if (!input.contractId) throw new IxcWritePolicyError("O cliente não tem contrato para vincular à renegociação");
+  if (!(input.originalTotal > 0)) throw new IxcWritePolicyError("As faturas escolhidas somam zero — não há dívida a renegociar");
+  if (Math.abs(input.originalTotal - input.expectedTotal) > RENEGOTIATION_TOTAL_TOLERANCE) {
+    throw new IxcWritePolicyError(`O total conferido (${input.expectedTotal.toFixed(2)}) não bate com o que o IXC devolve agora (${input.originalTotal.toFixed(2)}). Recarregue e confira antes de renegociar`);
+  }
+}
+
 export interface ServiceOrderRequest {
   customerId: string;
   subjectId: string;
@@ -274,6 +317,77 @@ export async function requestServiceOrderOpen(
     return { status: "success", detail, raw: result.raw };
   } catch (error) {
     const detail = error instanceof Error ? error.message : "Falha desconhecida ao abrir ordem de serviço";
+    await record("failed", detail);
+    return { status: "failed", detail };
+  }
+}
+
+export interface RenegotiationServiceRequest {
+  customerId: string;
+  invoiceIds: string[];
+  idempotencyKey: string;
+  correlationId: string;
+  requestedBy: string;
+  policy: Parameters<typeof assertRenegotiationPolicy>[0];
+}
+
+export interface RenegotiationCallResult { raw: Record<string, unknown>; renegotiationId: string; surcharge: string; dueDate: string }
+
+/**
+ * Renegocia dívida no IXC.
+ *
+ * Difere das outras escritas num ponto que muda tudo: **o passo 1 já grava no
+ * ERP**. Quando algo falha depois dele, não existe "nada aconteceu" — existe uma
+ * renegociação pela metade nas faturas do cliente. O ledger por isso registra o
+ * `id_renegociacao` e o passo alcançado, para alguém achar e resolver na mão. Um
+ * `failed` sem essas duas informações seria pior que inútil: esconderia um
+ * rastro que ficou no ERP.
+ */
+export async function requestRenegotiation(
+  request: RenegotiationServiceRequest,
+  repository: IxcWriteOperationsRepository,
+  callIxc: (
+    correlationId: string,
+    onProgress: (progress: { step: number; renegotiationId?: string; note: string }) => void,
+  ) => Promise<RenegotiationCallResult>,
+): Promise<ReissueResult> {
+  const existing = await repository.findByIdempotencyKey("negotiation.register", request.idempotencyKey);
+  if (existing) return { status: existing.status, detail: existing.detail ?? "", replay: true };
+
+  let progress: { step: number; renegotiationId?: string; note: string } = { step: 0, note: "nada enviado ao IXC" };
+  const record = (status: IxcWriteStatus, detail: string) => repository.record({
+    operation: "negotiation.register", idempotencyKey: request.idempotencyKey, customerId: request.customerId,
+    // Enquanto não há renegociação, o ledger guarda as faturas envolvidas; assim
+    // que o IXC devolve o id, é ele que identifica o que ficou lá.
+    invoiceId: progress.renegotiationId ? `renegociacao:${progress.renegotiationId}` : `faturas:${request.invoiceIds.join(",")}`.slice(0, 200),
+    status, requestedBy: request.requestedBy, detail, correlationId: request.correlationId,
+  });
+
+  try {
+    assertRenegotiationPolicy(request.policy);
+  } catch (error) {
+    const detail = error instanceof IxcWritePolicyError ? error.message : "Política recusou a operação";
+    await record("blocked", detail);
+    return { status: "blocked", detail };
+  }
+
+  if (process.env.FEATURE_IXC_WRITE !== "true") {
+    const detail = "FEATURE_IXC_WRITE desligada — escrita real no IXC não está ligada";
+    await record("blocked", detail);
+    return { status: "blocked", detail };
+  }
+
+  try {
+    const result = await callIxc(request.correlationId, (update) => { progress = update; });
+    progress = { ...progress, renegotiationId: result.renegotiationId };
+    const detail = `Renegociação ${result.renegotiationId} concluída no IXC. Acréscimo ${result.surcharge}, vencimento ${result.dueDate || "não informado"}. Resposta: ${JSON.stringify(result.raw).slice(0, 300)}`;
+    await record("success", detail);
+    return { status: "success", detail, raw: result.raw };
+  } catch (error) {
+    const cause = error instanceof Error ? error.message : "Falha desconhecida";
+    const detail = progress.renegotiationId
+      ? `PENDENTE DE CONFERÊNCIA MANUAL — a renegociação ${progress.renegotiationId} foi criada no IXC e a sequência parou no passo ${progress.step} (${progress.note}). Causa: ${cause}. Verifique no IXC antes de tentar de novo.`
+      : `Falhou antes de gravar qualquer coisa no IXC (passo ${progress.step}). Causa: ${cause}`;
     await record("failed", detail);
     return { status: "failed", detail };
   }
