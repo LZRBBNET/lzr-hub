@@ -226,6 +226,21 @@ button.data-row:hover { background:var(--blue-soft); }
 .info-line { display: flex; justify-content: space-between; gap: 12px; margin: 9px 0; font-size: 11px; }
 .info-line span { color: var(--muted); }
 
+/* Copiloto do atendente (issue #11), dentro do painel lateral de Atendimentos. */
+.copilot-note { margin: 0 0 10px; color: var(--muted); font-size: 11px; line-height: 1.55; }
+.copilot-actions { display: grid; gap: 6px; }
+.copilot-actions .button, .copilot-answer .button { width: 100%; font-size: 11px; padding: 7px 10px; }
+.copilot-ask { display: flex; gap: 6px; margin-top: 8px; }
+.copilot-ask input { flex: 1; min-width: 0; border: 1px solid var(--line); background: var(--surface-2); color: var(--text); border-radius: 8px; padding: 7px 9px; font-size: 11px; outline: 0; }
+.copilot-ask .button { width: auto; white-space: nowrap; }
+.copilot-answer { margin-top: 12px; display: grid; gap: 8px; }
+.copilot-answer pre { margin: 0; white-space: pre-wrap; word-break: break-word; font: inherit; font-size: 12px; line-height: 1.6; background: var(--surface-2); border: 1px solid var(--line); border-radius: 9px; padding: 10px; }
+.copilot-caveat { color: var(--warn); font-size: 10px; line-height: 1.5; }
+.copilot-source { border-left: 3px solid var(--blue); background: var(--blue-soft); border-radius: 0 8px 8px 0; padding: 8px 10px; display: grid; gap: 3px; }
+.copilot-source strong { font-size: 11px; }
+.copilot-source span { color: var(--muted); font-size: 10px; }
+.copilot-source em { color: var(--text-2); font-size: 11px; line-height: 1.55; font-style: normal; }
+
 .training-grid { display: grid; grid-template-columns: minmax(520px, 1fr) 390px; gap: 14px; min-height: calc(100vh - 150px); }
 .training-chat { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; display: flex; flex-direction: column; overflow: hidden; min-height: 650px; }
 .training-header { padding: 16px 18px; border-bottom: 1px solid var(--line); display: flex; justify-content: space-between; align-items: center; }

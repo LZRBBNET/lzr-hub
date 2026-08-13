@@ -26,9 +26,17 @@ export interface ConversationSummary {
 
 export interface ConversationMessage { role: ConversationRole; content: string; createdAt: string }
 
+export interface ConversationOutcome { intent: string; finalStatus: string; handoff: boolean }
+
 export interface ConversationsRepository {
   listConversations(limit: number): Promise<ConversationSummary[]>;
   getMessages(channel: string, externalConversationId: string, limit: number): Promise<ConversationMessage[]>;
+  /**
+   * Último desfecho de uma conversa só. O copiloto precisa disto vindo do banco:
+   * a tela já tem esses campos, mas resumo que repete o que o navegador mandou
+   * pode ser resumo forjado — e ele é escrito para outra pessoa ler e confiar.
+   */
+  getOutcome(channel: string, externalConversationId: string): Promise<ConversationOutcome | undefined>;
 }
 
 const role = (value: string): ConversationRole =>
@@ -109,6 +117,18 @@ export class DbConversationsRepository implements ConversationsRepository {
       role: role(row.role), content: row.content, createdAt: row.createdAt,
     })).reverse();
   }
+
+  async getOutcome(channel: string, externalConversationId: string): Promise<ConversationOutcome | undefined> {
+    const rows = await this.db.select({
+      intent: conversationOutcomes.intent,
+      finalStatus: conversationOutcomes.finalStatus,
+      handoff: conversationOutcomes.handoff,
+    }).from(conversationOutcomes)
+      .where(and(eq(conversationOutcomes.channel, channel), eq(conversationOutcomes.externalConversationId, externalConversationId)))
+      .orderBy(desc(conversationOutcomes.createdAt))
+      .limit(1);
+    return rows[0];
+  }
 }
 
 export class MemoryConversationsRepository implements ConversationsRepository {
@@ -134,4 +154,6 @@ export class MemoryConversationsRepository implements ConversationsRepository {
       .slice(-limit)
       .map(({ role: value, content, createdAt }) => ({ role: value, content, createdAt }));
   }
+  readonly outcomes = new Map<string, ConversationOutcome>();
+  async getOutcome(channel: string, externalConversationId: string) { return this.outcomes.get(`${channel}:${externalConversationId}`); }
 }

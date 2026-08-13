@@ -382,6 +382,75 @@ function Progress({ label, value }: { label:string; value:number }) { return <di
 
 type ConversationMessage = { role:"customer"|"agent"|"suggestion"; content:string; createdAt:string };
 
+type CopilotSource = { id:string; title:string; category:string; version:number; excerpt:string; score:number };
+type CopilotResult = { kind:"answer"|"summary"; written:"llm"|"excerpt"|"none"; text:string; caveat:string|null; sources:CopilotSource[] };
+
+/**
+ * Copiloto do atendente (issue #11): pergunta à base de conhecimento, sugere
+ * resposta para a conversa aberta e resume o caso para passar a um colega.
+ *
+ * O botão é "Copiar", não "Enviar": responder pela tela não existe, e um botão
+ * de enviar que não envia seria a mentira mais cara desta tela. Copiar é o que
+ * de fato acontece — e é isso que vai para a auditoria.
+ */
+function Copilot({ channel, conversationId }: { channel:string; conversationId:string }) {
+  const [question,setQuestion] = useState("");
+  const [busy,setBusy] = useState<null|"ask"|"suggest"|"summary">(null);
+  const [result,setResult] = useState<CopilotResult|null>(null);
+  const [error,setError] = useState<string|null>(null);
+  const [copied,setCopied] = useState(false);
+
+  async function run(action:"ask"|"suggest"|"summary") {
+    setBusy(action); setError(null); setCopied(false);
+    try {
+      const response = await fetch("/api/copilot", { method:"POST", headers:{"content-type":"application/json"},
+        body:JSON.stringify({ action, channel, conversationId, question }) });
+      const payload = await response.json() as { answer?:string; summary?:string; written?:"llm"|"excerpt"|"none"; caveat?:string|null; sources?:CopilotSource[]; error?:string; detail?:string };
+      if (!response.ok) { setError(payload.error ?? payload.detail ?? "O copiloto não respondeu."); setResult(null); return; }
+      setResult(action==="summary"
+        ? { kind:"summary", written:"none", text:payload.summary ?? "", caveat:null, sources:[] }
+        : { kind:"answer", written:payload.written ?? "none", text:payload.answer ?? "", caveat:payload.caveat ?? null, sources:payload.sources ?? [] });
+    } catch { setError("O copiloto não respondeu."); setResult(null); }
+    finally { setBusy(null); }
+  }
+
+  async function copy() {
+    if (!result) return;
+    try { await navigator.clipboard.writeText(result.text); }
+    // Sem cópia não houve uso: registrar "usada" aqui gravaria o que não aconteceu.
+    catch { setError("Não consegui copiar. Selecione o texto acima e copie à mão."); return; }
+    setCopied(true); setError(null);
+    void fetch("/api/copilot", { method:"POST", headers:{"content-type":"application/json"},
+      body:JSON.stringify({ action:"used", channel, conversationId, kind:result.kind }) });
+  }
+
+  return <div className="info-section">
+    <h4>Copiloto</h4>
+    <p className="copilot-note">Responde a partir da base de conhecimento e cita a fonte. Sem documento que sustente, diz que não sabe.</p>
+    <div className="copilot-actions">
+      <button className="button secondary" disabled={busy!==null} onClick={()=>void run("suggest")}>{busy==="suggest"?"Buscando…":"Sugerir resposta"}</button>
+      <button className="button secondary" disabled={busy!==null} onClick={()=>void run("summary")}>{busy==="summary"?"Resumindo…":"Resumir para transferir"}</button>
+    </div>
+    <div className="copilot-ask">
+      <input value={question} placeholder="Pergunte: como resolvo lentidão em fibra?" onChange={(e)=>setQuestion(e.target.value)}
+        onKeyDown={(e)=>{ if(e.key==="Enter"&&question.trim().length>2&&busy===null){ e.preventDefault(); void run("ask"); } }} />
+      <button className="button" disabled={busy!==null||question.trim().length<3} onClick={()=>void run("ask")}>{busy==="ask"?"…":"Perguntar"}</button>
+    </div>
+    {error && <p className="form-error" style={{marginTop:10}}>{error}</p>}
+    {result && <div className="copilot-answer">
+      {/* Em modo trecho a resposta *é* a fonte logo abaixo — repetir o mesmo
+          texto duas vezes faria o atendente ler duas vezes por engano. */}
+      {result.written!=="excerpt" && <pre>{result.text}</pre>}
+      {result.caveat && <small className="copilot-caveat">{result.caveat}</small>}
+      {result.sources.map((source)=><div className="copilot-source" key={source.id}>
+        <strong>{source.title}</strong><span>{source.category} • versão {source.version}</span>
+        <em>{source.excerpt}</em>
+      </div>)}
+      <button className="button secondary" onClick={()=>void copy()}>{copied?"Copiado ✓":"Copiar"}</button>
+    </div>}
+  </div>;
+}
+
 /**
  * Atendimentos mostra o que realmente entrou pelos canais. Não há conversa de
  * exemplo: sem histórico gravado, a tela explica por quê. O envio pela tela
@@ -447,6 +516,9 @@ function Conversation() {
     </section>
     <aside className="customer-panel">
       <div className="customer-head"><Avatar initials={selected?conversationLabel(selected.externalConversationId).slice(-2):"—"} /><h3>{selected?conversationLabel(selected.externalConversationId):"—"}</h3><p>Identificador do canal • {selected?.channel}</p></div>
+      {/* `key` troca o copiloto inteiro ao mudar de conversa: sem isso a resposta
+          de um cliente ficaria na tela ao lado do histórico de outro. */}
+      {selected && <Copilot key={`${selected.channel}:${selected.externalConversationId}`} channel={selected.channel} conversationId={selected.externalConversationId} />}
       <Info title="Conversa" rows={[["Mensagens",String(selected?.messages ?? 0)],["Última",selected?relativeTime(selected.lastAt):"—"],["Intenção",selected?.intent?intentLabel(selected.intent):"Não registrada"],["Desfecho",selected?.finalStatus ?? "Não registrado"]]} />
       <Info title="Cadastro" rows={[["Vínculo com o IXC","Não associado"],["Como associar","Depende de casar o telefone do canal com o cadastro do IXC — ainda não implementado"]]} />
     </aside>

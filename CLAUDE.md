@@ -106,6 +106,7 @@ Flags relevantes:
 | `FEATURE_IXC_WRITE` | Escrita no ERP | desligada |
 | `FEATURE_IXC_FULL_BASE` | Leitura da **base inteira** do IXC, não só da allowlist | **ligada** |
 | `FEATURE_LLM_INTENT` | Classificação de intenção por modelo de linguagem (Groq) | **ligada** |
+| `FEATURE_COPILOT_LLM` | O copiloto do atendente **redige** a resposta a partir dos trechos citados | desligada — sem ela o copiloto mostra os trechos como estão |
 | `FEATURE_TELEGRAM_ALERTS` | Ingestão de alerta de rede real via webhook do Telegram | desligada — pendente criar o bot e chamar `setWebhook` (ver `app/api/integrations/telegram/webhook`) |
 | `IXC_MODE` | `disabled` / `staging-readonly` | `staging-readonly` |
 
@@ -132,6 +133,14 @@ O problema medido está na **classificação**: em 13 conversas reais, 11 transb
 **Groq foi escolhido em vez do Gemini por privacidade**: na camada gratuita do Gemini o Google usa o conteúdo enviado para treinar modelos e revisor humano pode ver. A Groq não treina com dado de cliente em nenhuma camada. Ainda assim, a mensagem sai **sanitizada** (`sanitizeHandoffText` remove e-mail, CPF e telefone) — o provedor não precisa disso para entender a intenção.
 
 Fail-closed em três camadas: sem `GROQ_API_KEY` não há chamada; erro ou demora acima de 4s cai na regex; resposta inválida é descartada. Em nenhum caso o atendimento para.
+
+### O copiloto do atendente é outra coisa
+
+`lib/platform/copilot-service.ts` **não usa** `runAgentPipeline`, e isso é deliberado. O pipeline escreve texto de homologação ("preparei a segunda via *fictícia*"); oferecer isso ao atendente como "resposta pronta para enviar" entregaria a palavra *fictícia* a um cliente real.
+
+O copiloto responde a partir da **base de conhecimento** e cita título e versão do documento. Sem trecho que sustente, ele diz que não sabe — e o modelo nem chega a ser chamado. Com `FEATURE_COPILOT_LLM` ligada o modelo reescreve os trechos, mas recebe **só** eles, devolve `NAO_SEI` quando não dão conta, e os trechos continuam na tela ao lado da resposta.
+
+A busca é por palavra, não semântica (`FEATURE_PGVECTOR` desligada). O cliente escreve "ta sem net" e o documento se chama "cliente sem conexão" — por isso a **intenção já classificada** entra como busca separada, fazendo a ponte entre os dois vocabulários. Somar os termos numa busca só não funcionaria: aumentaria o divisor da pontuação e afundaria o documento certo.
 
 ⚠️ `intentOverride` é **contexto operacional**: a rota do agente o recusa com 403 se vier do cliente, junto com `channel` e `simulationProfile`. Quem escolhe a própria intenção contorna a decisão de transbordo.
 
@@ -172,7 +181,7 @@ Ver [`docs/integrations/ixc-data-mapping.md`](docs/integrations/ixc-data-mapping
 npm run typecheck && npm run lint && npm test
 ```
 
-Os três precisam passar. Hoje a suíte tem **221 testes**.
+Os três precisam passar. Hoje a suíte tem **436 testes**.
 
 ## Segurança — pontos já decididos
 
@@ -192,7 +201,8 @@ Ver [`docs/security/authentication.md`](docs/security/authentication.md).
 - O rate limit de login é **memória do processo**: com mais de uma instância cada uma conta a sua parte. Migra para Redis quando houver escala horizontal
 - Custo por atendimento não é medido (depende do Langfuse, issue #6)
 - Tempo médio de atendimento também não é medido — a Visão geral escreve isso em vez de estimar
-- Responder pela tela de Atendimentos ainda não existe: quem responde é o fluxo do n8n, então o campo fica desabilitado
+- Responder pela tela de Atendimentos ainda não existe: quem responde é o fluxo do n8n, então o campo fica desabilitado. É por isso que o copiloto tem botão **"Copiar"** e não "Enviar", e por isso a auditoria registra `copilot.suggestion.used` como *copiada*, não como enviada
+- A base de conhecimento **não é segmentada por perfil**: todo documento publicado é visível a quem tem `customer.read`. Não existe conceito de documento restrito
 - Conversa do canal não é associada ao cadastro do IXC (faltaria casar o telefone do WhatsApp com o cliente)
 - `FEATURE_IXC_FULL_BASE` está **ligada** em produção (exigia `FEATURE_AUTH=true`, o código recusa subir sem isso — e ambas já estão de pé). A lista de Clientes deixou de ser só a allowlist de homologação; Chamados mostra a fila real do provedor (OS não fechadas, paginadas). A OS não traz o nome do cliente — só `id_cliente` e endereço — e buscar o nome seria uma consulta por linha da página. `scripts/ixc-probe-listing.mjs` foi o que confirmou, antes de ligar, que a listagem paginada do IXC de fato funciona
 - Churn é **realizado**, não previsto: medimos quem saiu, não quem vai sair. Não há score de saúde nem elegibilidade de upgrade — nada disso é calculado, e a tela diz o que faltaria
