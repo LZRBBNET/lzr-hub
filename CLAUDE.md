@@ -181,7 +181,7 @@ Ver [`docs/integrations/ixc-data-mapping.md`](docs/integrations/ixc-data-mapping
 npm run typecheck && npm run lint && npm test
 ```
 
-Os três precisam passar. Hoje a suíte tem **436 testes**.
+Os três precisam passar. Hoje a suíte tem **439 testes**.
 
 ## Segurança — pontos já decididos
 

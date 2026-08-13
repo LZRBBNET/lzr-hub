@@ -217,6 +217,26 @@ const INTENT_PT: Record<string, string> = {
   unauthorized_request: "pedido não autorizado", out_of_scope: "fora de escopo", general_information: "informação geral",
 };
 
+/**
+ * A fala do cliente que a sugestão deve responder.
+ *
+ * Não é simplesmente a última: depois do atendimento ela costuma ser a **nota do
+ * CSAT** ("1", "5") ou uma saudação solta ("oi", "ok"). Responder a "1" com
+ * procedimento é responder a coisa nenhuma — e foi o que aconteceu na primeira
+ * versão, numa conversa real de produção. Anda para trás até achar conteúdo.
+ */
+export function lastQuestionFrom(messages: Array<{ role: string; content: string }>): string | undefined {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (message.role !== "customer") continue;
+    const text = message.content.trim();
+    if (text.length < 3) continue;
+    if (/^\d+$/.test(text)) continue;
+    return text;
+  }
+  return undefined;
+}
+
 /** Rótulo em português da intenção classificada — é ele que vira termo de busca. */
 export const intentTerms = (intent: string | undefined) => (intent ? INTENT_PT[intent] ?? "" : "");
 

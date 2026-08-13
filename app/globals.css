@@ -236,6 +236,7 @@ button.data-row:hover { background:var(--blue-soft); }
 .copilot-answer { margin-top: 12px; display: grid; gap: 8px; }
 .copilot-answer pre { margin: 0; white-space: pre-wrap; word-break: break-word; font: inherit; font-size: 12px; line-height: 1.6; background: var(--surface-2); border: 1px solid var(--line); border-radius: 9px; padding: 10px; }
 .copilot-caveat { color: var(--warn); font-size: 10px; line-height: 1.5; }
+.copilot-basedon { color: var(--muted); font-size: 10px; line-height: 1.5; font-style: italic; }
 .copilot-source { border-left: 3px solid var(--blue); background: var(--blue-soft); border-radius: 0 8px 8px 0; padding: 8px 10px; display: grid; gap: 3px; }
 .copilot-source strong { font-size: 11px; }
 .copilot-source span { color: var(--muted); font-size: 10px; }

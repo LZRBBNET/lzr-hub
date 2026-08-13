@@ -4,7 +4,7 @@ import { logUnauthenticatedAction } from "@/lib/platform/audit-log";
 import { DbConversationsRepository } from "@/lib/platform/conversations-service";
 import { DbKnowledgeRepository } from "@/lib/platform/knowledge-service";
 import { CHANNEL_NAME } from "@/lib/platform/n8n-channel-service";
-import { askCopilot, copilotLlmConfigFromEnv, intentTerms, summarizeConversation } from "@/lib/platform/copilot-service";
+import { askCopilot, copilotLlmConfigFromEnv, intentTerms, lastQuestionFrom, summarizeConversation } from "@/lib/platform/copilot-service";
 import { authorize } from "@/lib/platform/session-guard";
 
 const KNOWLEDGE_LIMIT = 200;
@@ -44,9 +44,13 @@ export async function POST(request: Request) {
           repository.getMessages(channel, conversationId, MESSAGE_LIMIT),
           repository.getOutcome(channel, conversationId),
         ]);
-        const lastCustomer = [...messages].reverse().find((message) => message.role === "customer");
-        if (!lastCustomer) return NextResponse.json({ error: "Esta conversa não tem mensagem do cliente para responder." }, { status: 400 });
-        question = lastCustomer.content;
+        const lastQuestion = lastQuestionFrom(messages);
+        if (!lastQuestion) {
+          return NextResponse.json({
+            error: "Nenhuma fala do cliente aqui tem conteúdo para responder — a última é saudação ou nota de avaliação. Use o campo de pergunta.",
+          }, { status: 400 });
+        }
+        question = lastQuestion;
         // O cliente escreve "ta sem net"; o documento se chama "sem conexão". A
         // intenção já classificada é a ponte entre os dois vocabulários.
         hint = intentTerms(outcome?.intent);

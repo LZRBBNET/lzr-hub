@@ -2,7 +2,8 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   NOT_FOUND_ANSWER, REFUSAL_TOKEN, answerFromExcerpts, askCopilot, bestExcerpt,
-  copilotLlmConfigFromEnv, findSources, intentTerms, meaningfulQuery, summarizeConversation, writeGroundedAnswer,
+  copilotLlmConfigFromEnv, findSources, intentTerms, lastQuestionFrom, meaningfulQuery,
+  summarizeConversation, writeGroundedAnswer,
 } from "../lib/platform/copilot-service.ts";
 
 const doc = (over = {}) => ({
@@ -122,6 +123,28 @@ test("resposta por trechos existe mesmo sem modelo nenhum", () => {
 });
 
 const msg = (role, content, createdAt) => ({ role, content, createdAt });
+
+test("a sugestão não responde à nota do CSAT", () => {
+  // Conversa real de produção: a última fala do cliente era "1", a nota. A
+  // primeira versão tentou responder a isso e devolveu "Escreva a pergunta".
+  const conversa = [
+    msg("customer", "oi", "2026-08-04T10:57:00.000Z"),
+    msg("agent", "Ainda não tenho evidência suficiente…", "2026-08-04T10:57:10.000Z"),
+    msg("customer", "quero a segunda via do boleto", "2026-08-04T10:57:20.000Z"),
+    msg("agent", "…de 1 a 5, como você avalia este atendimento?", "2026-08-04T10:57:30.000Z"),
+    msg("customer", "1", "2026-08-04T10:57:40.000Z"),
+  ];
+  assert.equal(lastQuestionFrom(conversa), "quero a segunda via do boleto");
+});
+
+test("saudação solta também não é a pergunta a responder", () => {
+  assert.equal(lastQuestionFrom([msg("customer", "boleto vencido", ""), msg("customer", "oi", ""), msg("customer", "ok", "")]), "boleto vencido");
+});
+
+test("conversa sem nenhuma fala com conteúdo devolve nada, não um palpite", () => {
+  assert.equal(lastQuestionFrom([msg("customer", "oi", ""), msg("customer", "5", "")]), undefined);
+  assert.equal(lastQuestionFrom([msg("agent", "posso ajudar?", "")]), undefined, "resposta da IA não é pergunta do cliente");
+});
 
 test("resumo é montado dos fatos gravados", () => {
   const summary = summarizeConversation({

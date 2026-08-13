@@ -383,7 +383,7 @@ function Progress({ label, value }: { label:string; value:number }) { return <di
 type ConversationMessage = { role:"customer"|"agent"|"suggestion"; content:string; createdAt:string };
 
 type CopilotSource = { id:string; title:string; category:string; version:number; excerpt:string; score:number };
-type CopilotResult = { kind:"answer"|"summary"; written:"llm"|"excerpt"|"none"; text:string; caveat:string|null; sources:CopilotSource[] };
+type CopilotResult = { kind:"answer"|"summary"; written:"llm"|"excerpt"|"none"; text:string; caveat:string|null; sources:CopilotSource[]; basedOn?:string };
 
 /**
  * Copiloto do atendente (issue #11): pergunta à base de conhecimento, sugere
@@ -405,11 +405,14 @@ function Copilot({ channel, conversationId }: { channel:string; conversationId:s
     try {
       const response = await fetch("/api/copilot", { method:"POST", headers:{"content-type":"application/json"},
         body:JSON.stringify({ action, channel, conversationId, question }) });
-      const payload = await response.json() as { answer?:string; summary?:string; written?:"llm"|"excerpt"|"none"; caveat?:string|null; sources?:CopilotSource[]; error?:string; detail?:string };
+      const payload = await response.json() as { answer?:string; summary?:string; written?:"llm"|"excerpt"|"none"; caveat?:string|null; sources?:CopilotSource[]; question?:string; error?:string; detail?:string };
       if (!response.ok) { setError(payload.error ?? payload.detail ?? "O copiloto não respondeu."); setResult(null); return; }
       setResult(action==="summary"
         ? { kind:"summary", written:"none", text:payload.summary ?? "", caveat:null, sources:[] }
-        : { kind:"answer", written:payload.written ?? "none", text:payload.answer ?? "", caveat:payload.caveat ?? null, sources:payload.sources ?? [] });
+        // `basedOn` é a fala do cliente que o servidor escolheu responder. Sem
+        // mostrá-la, uma sugestão fora de contexto vira mistério — e foi o que
+        // aconteceu na primeira versão, respondendo à nota de avaliação.
+        : { kind:"answer", written:payload.written ?? "none", text:payload.answer ?? "", caveat:payload.caveat ?? null, sources:payload.sources ?? [], basedOn:payload.question });
     } catch { setError("O copiloto não respondeu."); setResult(null); }
     finally { setBusy(null); }
   }
@@ -438,6 +441,7 @@ function Copilot({ channel, conversationId }: { channel:string; conversationId:s
     </div>
     {error && <p className="form-error" style={{marginTop:10}}>{error}</p>}
     {result && <div className="copilot-answer">
+      {result.basedOn && <small className="copilot-basedon">Respondendo a: “{result.basedOn}”</small>}
       {/* Em modo trecho a resposta *é* a fonte logo abaixo — repetir o mesmo
           texto duas vezes faria o atendente ler duas vezes por engano. */}
       {result.written!=="excerpt" && <pre>{result.text}</pre>}
