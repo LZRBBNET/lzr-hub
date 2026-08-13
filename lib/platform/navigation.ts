@@ -10,7 +10,7 @@
 export type View =
   | "dashboard" | "atendimento" | "clientes" | "monitoramento" | "mapa-alertas" | "massivas" | "chamados"
   | "cobranca" | "regua" | "relatorios-cobranca"
-  | "comercial" | "metas" | "relatorios-comercial"
+  | "comercial" | "funil" | "metas" | "relatorios-comercial"
   | "training" | "conhecimento" | "churn" | "avaliacoes" | "prompts"
   | "integracoes" | "equipes" | "usuarios" | "auditoria" | "configuracoes" | "chat-interno";
 
@@ -27,6 +27,7 @@ export const navigation: NavItem[] = [
   { id:"regua", label:"Régua", icon:"≋" },
   { id:"relatorios-cobranca", label:"Relatórios", icon:"▥" },
   { id:"comercial", label:"Dashboard", icon:"↗", group:"Comercial" },
+  { id:"funil", label:"Funil", icon:"⚟" },
   { id:"metas", label:"Metas", icon:"◎" },
   { id:"relatorios-comercial", label:"Relatórios", icon:"▥" },
   { id:"training", label:"AI Training Mode", icon:"✦", group:"Inteligência" },

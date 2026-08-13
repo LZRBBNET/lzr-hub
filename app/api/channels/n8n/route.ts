@@ -3,6 +3,8 @@ import { randomUUID } from "node:crypto";
 import { getDb } from "@/db";
 import { D1ChannelRepository, MAX_MESSAGE_LENGTH, processChannelMessage } from "@/lib/platform/n8n-channel-service";
 import { DbSupportMetricsRepository } from "@/lib/platform/support-metrics";
+import { DbCrmRepository, captureLeadFromContact } from "@/lib/platform/crm-service";
+import { getIxcRuntime } from "@/lib/integrations/ixc/runtime";
 import { authorize } from "@/lib/platform/session-guard";
 
 /**
@@ -48,6 +50,18 @@ export async function POST(request: Request) {
     { externalConversationId, text, idempotencyKey, correlationId },
     new DbSupportMetricsRepository(db),
     { autoReply: autoReplyEnabled() },
+    // Captação de lead (issue #17): quem escreve e não tem cadastro no IXC vira
+    // lead no funil. Sem IXC ligado não há como saber se é cliente — e criar
+    // lead na dúvida encheria o funil de quem já compra há anos.
+    (input) => captureLeadFromContact(
+      new DbCrmRepository(db),
+      input,
+      async (phone) => {
+        const runtime = getIxcRuntime();
+        if (!runtime.provider) throw new Error("IXC indisponível");
+        return runtime.provider.findCustomerByPhone(phone, correlationId);
+      },
+    ),
   );
   return NextResponse.json(result);
 }

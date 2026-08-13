@@ -237,6 +237,23 @@ button.data-row:hover { background:var(--blue-soft); }
 .copilot-answer pre { margin: 0; white-space: pre-wrap; word-break: break-word; font: inherit; font-size: 12px; line-height: 1.6; background: var(--surface-2); border: 1px solid var(--line); border-radius: 9px; padding: 10px; }
 .copilot-caveat { color: var(--warn); font-size: 10px; line-height: 1.5; }
 .copilot-basedon { color: var(--muted); font-size: 10px; line-height: 1.5; font-style: italic; }
+
+/* ---------- Kanban do funil comercial (issue #17) ---------- */
+.kanban { margin-top: 14px; display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 10px; align-items: start; }
+.kanban-column { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 12px; min-height: 160px; display: grid; gap: 8px; align-content: start; }
+.kanban-column header { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
+.kanban-column header strong { font-size: 12px; }
+.kanban-column header span { font-size: 11px; color: var(--muted); background: var(--surface-2); border-radius: 999px; padding: 1px 8px; }
+.kanban-hint { margin: 0; font-size: 10px; color: var(--text-3); line-height: 1.5; }
+.kanban-card { background: var(--surface-2); border: 1px solid var(--line); border-radius: 9px; padding: 9px; display: grid; gap: 6px; cursor: grab; }
+.kanban-card:active { cursor: grabbing; }
+.kanban-card-open { background: none; border: 0; padding: 0; text-align: left; cursor: pointer; display: grid; gap: 3px; color: inherit; font: inherit; }
+.kanban-card-open strong { font-size: 12px; }
+.kanban-card-open span { font-size: 11px; color: var(--muted); }
+.kanban-card-open small { font-size: 10px; color: var(--text-3); line-height: 1.45; }
+.kanban-card select { width: 100%; border: 1px solid var(--line); background: var(--panel); color: var(--text); border-radius: 7px; padding: 4px 6px; font-size: 11px; }
+@media (max-width: 1280px) { .kanban { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 720px) { .kanban { grid-template-columns: 1fr; } }
 .copilot-source { border-left: 3px solid var(--blue); background: var(--blue-soft); border-radius: 0 8px 8px 0; padding: 8px 10px; display: grid; gap: 3px; }
 .copilot-source strong { font-size: 11px; }
 .copilot-source span { color: var(--muted); font-size: 10px; }

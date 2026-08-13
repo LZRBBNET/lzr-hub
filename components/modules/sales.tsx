@@ -1,10 +1,10 @@
 "use client";
 import { useEffect, useState } from "react";
 import { BarChart } from "./bar-chart";
+import { LEAD_SOURCES, LEAD_STAGES, type FunnelMetrics, type Lead, type LeadActivity } from "@/lib/platform/crm-shared";
 
-// Leads, Funil e Kanban saíram do menu: dependem de um CRM que não existe.
-// Ver `docs/telas-removidas.md`.
-export function SalesModule({view}:{view:"comercial"|"metas"|"relatorios-comercial"}){
+export function SalesModule({view}:{view:"comercial"|"funil"|"metas"|"relatorios-comercial"}){
+  if(view==="funil")return <Funnel/>;
   if(view==="metas")return <Goals/>;
   if(view==="relatorios-comercial")return <SalesReports/>;
   return <SalesDashboard/>;
@@ -100,6 +100,179 @@ function SalesReports(){
   </main>;
 }
 
+
+/* ------------------------------------------------------------------ funil --- */
+
+type FunnelPayload={available:boolean;detail?:string;period:string;leads:Lead[];activities:LeadActivity[];metrics:FunnelMetrics|null};
+
+const sourceLabel=(value:string)=>value.charAt(0).toUpperCase()+value.slice(1);
+const dayLabel=(iso:string)=>{const d=new Date(iso);return Number.isNaN(d.getTime())?"—":d.toLocaleDateString("pt-BR",{day:"2-digit",month:"2-digit"})};
+
+/**
+ * Funil comercial real (issue #17).
+ *
+ * O que existia aqui antes era um `useState` com dados de demonstração: dava
+ * para criar lead e mover cartão, e tudo sumia ao recarregar. Agora grava.
+ *
+ * O arrastar-e-soltar usa a API nativa do navegador — sem biblioteca. Quem não
+ * consegue arrastar (teclado, toque) tem o mesmo caminho pelo seletor dentro do
+ * cartão: arrastar é atalho, não a única porta.
+ */
+function Funnel(){
+  const [period,setPeriod]=useState("30d");
+  const [data,setData]=useState<FunnelPayload|null>(null);
+  const [state,setState]=useState<"loading"|"ready"|"error">("loading");
+  const [nonce,setNonce]=useState(0);
+  const [creating,setCreating]=useState(false);
+  const [form,setForm]=useState({name:"",phone:"",city:"",neighborhood:"",source:"whatsapp",note:""});
+  const [openId,setOpenId]=useState<string|null>(null);
+  const [busy,setBusy]=useState(false);
+  const [error,setError]=useState("");
+  const [dragging,setDragging]=useState<string|null>(null);
+
+  useEffect(()=>{let active=true;
+    fetch(`/api/sales/leads?period=${period}`).then(r=>r.ok?r.json():Promise.reject(new Error("falhou")))
+      .then((payload:FunnelPayload)=>{if(active){setData(payload);setState("ready")}})
+      .catch(()=>{if(active)setState("error")});
+    return()=>{active=false}},[period,nonce]);
+
+  async function post(body:Record<string,unknown>){
+    setBusy(true);setError("");
+    try{
+      const response=await fetch("/api/sales/leads",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify(body)});
+      if(response.ok){setNonce(n=>n+1);return true}
+      const payload=await response.json().catch(()=>({}));
+      setError(payload.error??"Não foi possível salvar.");
+      return false;
+    }catch{setError("Não foi possível salvar.");return false}
+    finally{setBusy(false)}
+  }
+
+  async function move(leadId:string,toStage:string){
+    if(toStage==="perdido"){
+      // Perder sem motivo deixa um número que ninguém sabe explicar depois.
+      const reason=window.prompt("Por que o lead foi perdido?");
+      if(!reason||reason.trim().length<3)return;
+      await post({action:"move",leadId,toStage,detail:reason.trim()});
+      return;
+    }
+    await post({action:"move",leadId,toStage,detail:`Movido para ${toStage}`});
+  }
+
+  const leads=data?.leads??[];
+  const metrics=data?.metrics??null;
+  const open=leads.find(lead=>lead.id===openId)??null;
+  const history=(data?.activities??[]).filter(item=>item.leadId===openId);
+  const percent=(value:number|null)=>value===null?"—":`${Math.round(value*100)}%`;
+
+  return <main className="content">
+    <div className="page-heading">
+      <div><h1>Funil comercial</h1><p>Leads gravados de verdade. Contato desconhecido no WhatsApp entra sozinho aqui.</p></div>
+      {state==="ready"&&data?.available&&<button className="button" onClick={()=>{setCreating(true);setError("")}}>Novo lead</button>}
+    </div>
+    <PeriodPicker period={period} onChange={(value)=>{setState("loading");setPeriod(value)}}/>
+
+    {state==="loading"&&<div className="state-card">Carregando o funil…</div>}
+    {state==="error"&&<div className="state-card error">Não foi possível carregar o funil.</div>}
+    {state==="ready"&&data&&!data.available&&<div className="state-card error">{data.detail}.</div>}
+
+    {state==="ready"&&data?.available&&<>
+      {metrics&&<section className="metrics">
+        <Metric label={`Leads (${PERIODS.find(([v])=>v===period)?.[1]})`} value={metrics.created.toLocaleString("pt-BR")} detail={`${metrics.open} em andamento agora`}/>
+        <Metric label="Conversão" value={percent(metrics.conversionRate)} detail={metrics.conversionRate===null?"Nenhum lead encerrado ainda":`${metrics.won} ganho(s) de ${metrics.won+metrics.lost} encerrado(s)`}/>
+        {/* "0,0 dias" se lê como defeito; venda fechada no mesmo dia é venda
+            rápida, e é isso que a tela deve dizer. */}
+        <Metric label="Ciclo médio" value={metrics.averageCycleDays===null?"—":metrics.averageCycleDays<0.5?"menos de 1 dia":`${metrics.averageCycleDays.toFixed(1)} dias`} detail={metrics.averageCycleDays===null?"Nenhum lead ganho no período":"Do primeiro contato ao ganho"}/>
+        <Metric label="Origem principal" value={metrics.bySource[0]?String(metrics.bySource[0].leads):"—"} detail={metrics.bySource[0]?sourceLabel(metrics.bySource[0].source):"Nenhum lead no período"}/>
+      </section>}
+
+      {creating&&<section className="data-card" style={{marginTop:14}}>
+        <div className="card-header"><strong>Novo lead</strong><span className="badge blue">Entra em “Novo contato”</span></div>
+        <div style={{padding:16,display:"grid",gap:10,maxWidth:520}}>
+          <label className="field"><span>Nome</span><input value={form.name} placeholder="quem entrou em contato" onChange={e=>setForm(f=>({...f,name:e.target.value}))}/></label>
+          <label className="field"><span>Telefone</span><input value={form.phone} placeholder="(79) 99999-9999" onChange={e=>setForm(f=>({...f,phone:e.target.value}))}/></label>
+          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10}}>
+            <label className="field"><span>Cidade</span><input value={form.city} onChange={e=>setForm(f=>({...f,city:e.target.value}))}/></label>
+            <label className="field"><span>Bairro</span><input value={form.neighborhood} onChange={e=>setForm(f=>({...f,neighborhood:e.target.value}))}/></label>
+          </div>
+          <label className="field"><span>Origem</span>
+            <select value={form.source} onChange={e=>setForm(f=>({...f,source:e.target.value}))}>{LEAD_SOURCES.map(s=><option key={s} value={s}>{sourceLabel(s)}</option>)}</select></label>
+          <label className="field"><span>Observação (opcional)</span><input value={form.note} onChange={e=>setForm(f=>({...f,note:e.target.value}))}/></label>
+          {error&&<p className="form-error">{error}</p>}
+          <div style={{display:"flex",gap:8}}>
+            <button className="button" disabled={busy||form.name.trim().length<2} onClick={()=>{void post({action:"create",...form}).then(ok=>{if(ok){setCreating(false);setForm({name:"",phone:"",city:"",neighborhood:"",source:"whatsapp",note:""})}})}}>{busy?"Salvando…":"Registrar lead"}</button>
+            <button className="button secondary" disabled={busy} onClick={()=>{setCreating(false);setError("")}}>Cancelar</button>
+          </div>
+        </div>
+      </section>}
+
+      {leads.length===0
+        ? <div className="state-card" style={{marginTop:14}}><strong>Nenhum lead ainda.</strong><p style={{marginTop:6,lineHeight:1.6}}>Registre o primeiro acima, ou espere alguém sem cadastro escrever no WhatsApp — esse contato entra aqui sozinho.</p></div>
+        : <section className="kanban">
+            {LEAD_STAGES.map(stage=>{
+              const cards=leads.filter(lead=>lead.stage===stage.id);
+              return <div className="kanban-column" key={stage.id}
+                onDragOver={e=>{e.preventDefault()}}
+                onDrop={e=>{e.preventDefault();const id=e.dataTransfer.getData("text/plain")||dragging;setDragging(null);if(id)void move(id,stage.id)}}>
+                <header><strong>{stage.label}</strong><span>{cards.length}</span></header>
+                <p className="kanban-hint">{stage.hint}</p>
+                {cards.map(lead=><article className="kanban-card" key={lead.id} draggable
+                  onDragStart={e=>{e.dataTransfer.setData("text/plain",lead.id);setDragging(lead.id)}}
+                  onDragEnd={()=>setDragging(null)}>
+                  <button className="kanban-card-open" onClick={()=>setOpenId(lead.id===openId?null:lead.id)}>
+                    <strong>{lead.name}</strong>
+                    <span>{lead.maskedPhone} • {sourceLabel(lead.source)}</span>
+                    <small>{lead.city}{lead.neighborhood!=="não informado"?` • ${lead.neighborhood}`:""} • desde {dayLabel(lead.createdAt)}</small>
+                  </button>
+                  <select value={lead.stage} disabled={busy} onChange={e=>void move(lead.id,e.target.value)} aria-label={`Mover ${lead.name} de etapa`}>
+                    {LEAD_STAGES.map(s=><option key={s.id} value={s.id}>{s.label}</option>)}
+                  </select>
+                </article>)}
+              </div>;
+            })}
+          </section>}
+
+      {error&&!creating&&<p className="form-error" style={{marginTop:10}}>{error}</p>}
+
+      {open&&<section className="data-card" style={{marginTop:14}}>
+        <div className="card-header"><strong>{open.name}</strong><button className="link-button" onClick={()=>setOpenId(null)}>fechar</button></div>
+        <div style={{padding:16,display:"grid",gap:12,maxWidth:640}}>
+          <div className="aging-row"><div><strong>{open.maskedPhone}</strong><span>{sourceLabel(open.source)} • {open.city} • {open.neighborhood}</span></div></div>
+          {open.note&&<div className="aging-row"><div><strong>Observação</strong><span>{open.note}</span></div></div>}
+          {open.lostReason&&<div className="aging-row"><div><strong>Motivo da perda</strong><span>{open.lostReason}</span></div></div>}
+          <div>
+            <h4 style={{margin:"0 0 8px",fontSize:11,textTransform:"uppercase",letterSpacing:".1em",color:"var(--text-3)"}}>Histórico</h4>
+            {history.length===0
+              ? <p style={{fontSize:12,color:"var(--muted)"}}>Sem registro ainda.</p>
+              : history.map(item=><div className="aging-row" key={item.id}>
+                  <div><strong>{item.kind==="stage_change"?`${item.fromStage??"criado"} → ${item.toStage}`:item.kind==="contact"?"Contato":"Nota"}</strong><span>{item.detail}</span></div>
+                  <b style={{fontSize:11,color:"var(--muted)"}}>{dayLabel(item.createdAt)} • {item.actorId}</b>
+                </div>)}
+          </div>
+          <LeadActivityForm leadId={open.id} busy={busy} onSubmit={(kind,detail)=>void post({action:"activity",leadId:open.id,kind,detail})}/>
+        </div>
+      </section>}
+
+      <div className="insight" style={{marginTop:14}}>
+        <strong>O que estes números medem, e o que não.</strong>
+        Conversão é ganhos ÷ encerrados — leads em andamento ficam de fora do cálculo, senão a taxa cairia toda vez que a operação captasse contato novo. Ciclo médio conta do primeiro registro ao ganho, e só existe depois que algum lead foi ganho. Valor de pipeline **não é mostrado**: exigiria um valor estimado por lead, que ninguém preenche hoje — e somar plano suposto daria um número bonito e falso.
+      </div>
+    </>}
+  </main>;
+}
+
+function LeadActivityForm({leadId,busy,onSubmit}:{leadId:string;busy:boolean;onSubmit:(kind:string,detail:string)=>void}){
+  const [detail,setDetail]=useState("");
+  const [kind,setKind]=useState("contact");
+  return <div style={{display:"grid",gap:8}} key={leadId}>
+    <label className="field"><span>Registrar no cartão</span>
+      <input value={detail} placeholder="ex.: liguei, pediu para retornar quinta" onChange={e=>setDetail(e.target.value)}/></label>
+    <div style={{display:"flex",gap:8}}>
+      <select value={kind} onChange={e=>setKind(e.target.value)}><option value="contact">Contato feito</option><option value="note">Nota</option></select>
+      <button className="button secondary" disabled={busy||detail.trim().length<3} onClick={()=>{onSubmit(kind,detail.trim());setDetail("")}}>Registrar</button>
+    </div>
+  </div>;
+}
 
 /* ------------------------------------------------------------------ metas --- */
 

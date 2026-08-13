@@ -2,7 +2,7 @@ import { IxcConnectionMapper, IxcContractMapper, IxcCustomerMapper, IxcInvoiceMa
 import { sanitizeTelemetry } from "./masking.ts";
 import { ReadonlyIxcGuard } from "./guard.ts";
 import { CircuitBreaker, SlidingWindowRateLimiter, TtlCache } from "./resilience.ts";
-import type { IxcCollectionWalletDto, IxcCustomerPage, IxcCustomerSnapshot, IxcListResponse, IxcOsSubjectDto, IxcPaymentTermDto, IxcReadOperation, IxcSectorDto } from "./types.ts";
+import type { IxcCollectionWalletDto, IxcCustomerDto, IxcCustomerPage, IxcCustomerSnapshot, IxcListResponse, IxcOsSubjectDto, IxcPaymentTermDto, IxcReadOperation, IxcSectorDto } from "./types.ts";
 
 // `listOsCatalog` fica de fora porque não tem um endpoint só: a mesma operação
 // lê `su_oss_assunto` e `empresa_setor`, e o recurso vai explícito na chamada.
@@ -36,6 +36,24 @@ export function customerQuery(term:string){
   if(digits.length===11||digits.length===14)return{qtype:"cliente.cnpj_cpf",query:digits,oper:"="};
   if(/^\d+$/.test(value))return{qtype:"cliente.id",query:value,oper:"="};
   return{qtype:"cliente.razao",query:value,oper:"L"};
+}
+
+/**
+ * Formata um número do WhatsApp como o IXC o guarda.
+ *
+ * O canal entrega `5579998307232`; o IXC grava `(79) 99830-7232`. Buscar por
+ * dígitos puros devolve **zero em silêncio** — foi o que fez isso parecer
+ * impossível por muito tempo (`scripts/ixc-probe-phone-lookup.mjs`).
+ *
+ * O 55 do país é descartado quando presente. Sem 10 ou 11 dígitos úteis não há
+ * formato conhecido, e devolver `undefined` é melhor que tentar um palpite.
+ */
+export function ixcPhoneFormat(raw:string):string|undefined{
+  let digits=raw.replace(/\D/g,"");
+  if(digits.length>11&&digits.startsWith("55"))digits=digits.slice(2);
+  if(digits.length===11)return `(${digits.slice(0,2)}) ${digits.slice(2,7)}-${digits.slice(7)}`;
+  if(digits.length===10)return `(${digits.slice(0,2)}) ${digits.slice(2,6)}-${digits.slice(6)}`;
+  return undefined;
 }
 
 export class IxcReadonlyError extends Error {
@@ -145,6 +163,36 @@ export class IxcReadonlyProvider {
   async listSectors(correlationId:string):Promise<IxcSectorDto[]>{
     const {records}=await this.readPage("listOsCatalog","empresa_setor","empresa_setor.id","0",correlationId,100,"",{oper:">",sortname:"empresa_setor.id"});
     return records.map((raw)=>({id:String(raw.id??"").trim(),name:String(raw.setor??"").trim()})).filter((item)=>item.id&&item.name);
+  }
+  /**
+   * Descobre se um número de telefone pertence a algum cadastro.
+   *
+   * É o que separa "cliente escrevendo" de "gente nova querendo comprar" — sem
+   * isso, todo contato do WhatsApp viraria lead, inclusive o de quem já é
+   * cliente há cinco anos.
+   *
+   * ⚠️ **Exatamente um resultado, ou nada.** Buscar pelo final do número
+   * (`%7232%`) trouxe 4 clientes diferentes na base real. Com zero ou vários, a
+   * resposta é "não identificado" — identificar o cliente errado é pior que não
+   * identificar, porque a partir daí tudo que o sistema fizer será sobre outra
+   * pessoa.
+   *
+   * A busca é pelo formato **mascarado**, e por dois campos: o celular e o
+   * WhatsApp do cadastro.
+   */
+  async findCustomerByPhone(phone:string,correlationId:string):Promise<IxcCustomerDto|undefined>{
+    const masked=ixcPhoneFormat(phone);
+    if(!masked)return undefined;
+    for(const field of ["telefone_celular","whatsapp"]){
+      // Operação `listCustomers` porque é o que isto é: uma listagem da base
+      // filtrada por telefone. Buscar por número não tem cadastro conhecido de
+      // antemão para checar contra a allowlist — depende da base liberada.
+      // rp=2 de propósito: só precisamos saber se é um ou mais de um.
+      const {records}=await this.readPage("listCustomers","cliente",`cliente.${field}`,masked,correlationId,2,"",{oper:"=",sortname:"cliente.id"});
+      if(records.length===1)return IxcCustomerMapper.map(records[0]);
+      if(records.length>1)return undefined;
+    }
+    return undefined;
   }
   /**
    * Carteiras de cobrança e condições de pagamento, para a renegociação de dívida.

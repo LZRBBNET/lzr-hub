@@ -152,7 +152,51 @@ export const collectionDispatches = pgTable("collection_dispatches", {
   onceByStep: uniqueIndex("collection_dispatches_once").on(table.invoiceId, table.stepId, table.scheduledFor),
 }));
 export const collectionCampaigns = pgTable("collection_campaigns", { id:text("id").primaryKey(), name:text("name").notNull(), segment:text("segment").notNull(), status:text("status").notNull(), audience:integer("audience").notNull().default(0), recoveredCents:integer("recovered_cents").notNull().default(0), ...auditColumns });
-export const leads = pgTable("leads", { id:text("id").primaryKey(), name:text("name").notNull(), maskedPhone:text("masked_phone").notNull(), city:text("city").notNull(), neighborhood:text("neighborhood").notNull(), source:text("source").notNull(), stage:text("stage").notNull(), score:integer("score").notNull().default(0), ownerId:text("owner_id"), ...auditColumns });
+/**
+ * Lead do funil comercial (issue #17). A tabela existia desde o início e nunca
+ * recebeu uma linha; as colunas abaixo de `ownerId` foram acrescentadas quando
+ * o CRM passou a existir de verdade.
+ *
+ * `contactKey` é o identificador da conversa que originou o lead (o número do
+ * WhatsApp, hoje). Ele é **único**: o mesmo contato escrevendo dez vezes é um
+ * lead só, e a unicidade fica no banco porque checar na aplicação é o tipo de
+ * trava que falha na décima corrida simultânea.
+ *
+ * `maskedPhone` guarda o número já mascarado para exibição; a chave crua fica
+ * em `contactKey` porque é ela que precisa casar exatamente.
+ */
+export const leads = pgTable("leads", {
+  id:text("id").primaryKey(), name:text("name").notNull(), maskedPhone:text("masked_phone").notNull(),
+  city:text("city").notNull(), neighborhood:text("neighborhood").notNull(), source:text("source").notNull(),
+  stage:text("stage").notNull(), score:integer("score").notNull().default(0), ownerId:text("owner_id"),
+  contactKey:text("contact_key"),
+  note:text("note"),
+  /** Quando saiu do funil, ganhando ou perdendo. Null enquanto está em andamento. */
+  closedAt:text("closed_at"),
+  /** Preenchido só quando o lead é perdido — ganhar não pede justificativa. */
+  lostReason:text("lost_reason"),
+  ...auditColumns,
+}, (table) => [uniqueIndex("leads_contact_key_idx").on(table.contactKey)]);
+
+/**
+ * O que aconteceu com o lead: mudança de etapa, contato feito, proposta enviada.
+ *
+ * Existe por dois motivos. O primeiro é o cartão do lead mostrar história em vez
+ * de só um estado. O segundo é **medir ciclo de venda**: sem a data em que o
+ * lead entrou em cada etapa, "tempo médio até fechar" não tem como ser
+ * calculado, e foi exatamente o que a tela dizia que não sabia responder.
+ */
+export const leadActivities = pgTable("lead_activities", {
+  id:text("id").primaryKey(),
+  leadId:text("lead_id").notNull(),
+  /** `stage_change` | `contact` | `note` */
+  kind:text("kind").notNull(),
+  fromStage:text("from_stage"),
+  toStage:text("to_stage"),
+  detail:text("detail").notNull(),
+  actorId:text("actor_id").notNull(),
+  createdAt:text("created_at").notNull(),
+}, (table) => [index("lead_activities_lead_idx").on(table.leadId, table.createdAt)]);
 /**
  * Meta comercial do mês. Uma linha por competência (`2026-08`), da empresa
  * inteira — não por equipe: atribuir contrato a vendedor exigiria um campo do

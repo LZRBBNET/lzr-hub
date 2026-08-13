@@ -199,7 +199,7 @@ O formato da **resposta de sucesso** das duas operações não está confirmado 
 npm run typecheck && npm run lint && npm test
 ```
 
-Os três precisam passar. Hoje a suíte tem **470 testes**.
+Os três precisam passar. Hoje a suíte tem **485 testes**.
 
 ## Segurança — pontos já decididos
 
@@ -221,10 +221,12 @@ Ver [`docs/security/authentication.md`](docs/security/authentication.md).
 - Tempo médio de atendimento também não é medido — a Visão geral escreve isso em vez de estimar
 - Responder pela tela de Atendimentos ainda não existe: quem responde é o fluxo do n8n, então o campo fica desabilitado. É por isso que o copiloto tem botão **"Copiar"** e não "Enviar", e por isso a auditoria registra `copilot.suggestion.used` como *copiada*, não como enviada
 - A base de conhecimento **não é segmentada por perfil**: todo documento publicado é visível a quem tem `customer.read`. Não existe conceito de documento restrito
-- Conversa do canal não é associada ao cadastro do IXC (faltaria casar o telefone do WhatsApp com o cliente)
+- A conversa do canal ainda **não é associada** ao cadastro do IXC na tela de Atendimentos, mas casar telefone com cliente **já funciona**: `findCustomerByPhone` em `lib/integrations/ixc/readonly-provider.ts`. O segredo é o formato — o canal manda `5579998307232` e o IXC guarda `(79) 99830-7232`; dígitos puros devolvem zero em silêncio. A regra é **exatamente um resultado ou nada**: buscar pelo final do número trouxe 4 clientes diferentes na base real, e identificar o cliente errado é pior que não identificar
 - `FEATURE_IXC_FULL_BASE` está **ligada** em produção (exigia `FEATURE_AUTH=true`, o código recusa subir sem isso — e ambas já estão de pé). A lista de Clientes deixou de ser só a allowlist de homologação; Chamados mostra a fila real do provedor (OS não fechadas, paginadas). A OS não traz o nome do cliente — só `id_cliente` e endereço — e buscar o nome seria uma consulta por linha da página. `scripts/ixc-probe-listing.mjs` foi o que confirmou, antes de ligar, que a listagem paginada do IXC de fato funciona
 - Churn é **realizado**, não previsto: medimos quem saiu, não quem vai sair. Não há score de saúde nem elegibilidade de upgrade — nada disso é calculado, e a tela diz o que faltaria
-- Não existe CRM: leads, funil e origem do contato não são registrados em lugar nenhum
+- O CRM passou a existir (issue #17): **Comercial → Funil** grava lead, etapa, origem e histórico de verdade. Conversão e ciclo médio são calculados do que está gravado, e valem `null` — não zero — enquanto nada tiver encerrado. **Valor de pipeline continua não existindo**: exigiria um valor estimado por lead, que ninguém preenche; somar plano suposto daria número bonito e falso
+- As **etapas do funil são fixas** (`LEAD_STAGES` em `lib/platform/crm-shared.ts`), não configuráveis. A issue pedia configuráveis; a escolha foi consciente, porque etapa configurável só serve depois que a operação sabe qual é o funil dela — e ninguém nunca usou um aqui
+- Contato desconhecido no WhatsApp vira lead sozinho. **Quem já é cliente no IXC não vira** — e, se o IXC não responder, ninguém vira: na dúvida o funil não cria, senão um ERP fora do ar encheria o funil de cliente antigo
 - O motivo de cancelamento do IXC vem como código numérico e a API não expõe a tabela de tradução
 - Não há integração de monitoramento de rede (alerta, potência em massa, correlação geográfica). Massivas são registradas por uma pessoa, na tela; o Mapa de Alertas agrupa só o que foi registrado
 - O runtime de filas tem apenas um teste, e ele é pulado sem um Redis disponível

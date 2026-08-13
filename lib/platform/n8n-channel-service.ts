@@ -46,14 +46,31 @@ export interface ChannelRepository {
 
 export interface ChannelMessageInput { externalConversationId: string; text: string; idempotencyKey: string; correlationId: string }
 
+/**
+ * Captação de lead (issue #17): chamada quando chega mensagem de quem **não é
+ * cliente**. Injetada porque o canal não deve conhecer o CRM nem o IXC — e
+ * porque os testes do canal precisam rodar sem nenhum dos dois.
+ *
+ * Nunca derruba o atendimento: registrar oportunidade comercial é secundário
+ * diante de responder a quem escreveu.
+ */
+export type LeadCapture = (input: { contactKey: string; text: string }) => Promise<unknown>;
+
 export async function processChannelMessage(
   repository: ChannelRepository,
   input: ChannelMessageInput,
   metrics?: SupportMetricsRepository,
   options: ChannelOptions = { autoReply: false },
+  captureLead?: LeadCapture,
 ): Promise<ChannelResponse> {
   const existing = await repository.findIdempotent(input.idempotencyKey);
   if (existing) return existing;
+
+  // Antes de qualquer coisa, e sem esperar: se for gente nova, o funil registra.
+  // O `catch` é a regra — um CRM fora do ar não pode impedir o atendimento.
+  if (captureLead) {
+    await captureLead({ contactKey: input.externalConversationId, text: input.text }).catch(() => undefined);
+  }
 
   const historyRows = await repository.getHistory(CHANNEL_NAME, input.externalConversationId);
   // Sugestão não é turno de conversa: o cliente nunca a viu, então ela não entra

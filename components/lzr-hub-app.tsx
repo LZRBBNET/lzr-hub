@@ -156,7 +156,7 @@ export function LzrHubApp({ ixcMode = "disabled" }: { ixcMode?: string }) {
         {view === "chat-interno" && <InternalChatModule />}
         {["monitoramento","mapa-alertas","massivas","chamados"].includes(view) && <SupportModule view={view as "monitoramento"|"mapa-alertas"|"massivas"|"chamados"} onNavigateMassivas={() => setView("massivas")} />}
         {["cobranca","regua","relatorios-cobranca"].includes(view) && <BillingModule view={view as "cobranca"|"regua"|"relatorios-cobranca"} />}
-        {["comercial","metas","relatorios-comercial"].includes(view) && <SalesModule view={view as "comercial"|"metas"|"relatorios-comercial"} />}
+        {["comercial","funil","metas","relatorios-comercial"].includes(view) && <SalesModule view={view as "comercial"|"funil"|"metas"|"relatorios-comercial"} />}
         {["churn","conhecimento"].includes(view) && <IntelligenceModule view={view as "churn"|"conhecimento"} />}
         {["avaliacoes","prompts"].includes(view) && <QualityModule view={view as "avaliacoes"|"prompts"} />}
       </section>
