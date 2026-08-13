@@ -103,7 +103,7 @@ Flags relevantes:
 | `FEATURE_N8N_CHANNEL` | Canal WhatsApp via n8n recebe e registra mensagem | **ligada** (modo observação — ver abaixo) |
 | `FEATURE_N8N_AUTOREPLY` | A IA **responde ao cliente** pelo canal | desligada |
 | `FEATURE_QUEUES` | Filas reais (Redis/BullMQ) | desligada |
-| `FEATURE_IXC_WRITE` | Escrita no ERP — hoje só segunda via de boleto e abertura de OS | desligada |
+| `FEATURE_IXC_WRITE` | Escrita no ERP — segunda via, abertura de OS e renegociação de dívida | desligada |
 | `FEATURE_IXC_FULL_BASE` | Leitura da **base inteira** do IXC, não só da allowlist | **ligada** |
 | `FEATURE_LLM_INTENT` | Classificação de intenção por modelo de linguagem (Groq) | **ligada** |
 | `FEATURE_COPILOT_LLM` | O copiloto do atendente **redige** a resposta a partir dos trechos citados | desligada — sem ela o copiloto mostra os trechos como estão |
