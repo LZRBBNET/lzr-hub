@@ -2,9 +2,11 @@ import { IxcConnectionMapper, IxcContractMapper, IxcCustomerMapper, IxcInvoiceMa
 import { sanitizeTelemetry } from "./masking.ts";
 import { ReadonlyIxcGuard } from "./guard.ts";
 import { CircuitBreaker, SlidingWindowRateLimiter, TtlCache } from "./resilience.ts";
-import type { IxcCustomerPage, IxcCustomerSnapshot, IxcListResponse, IxcReadOperation } from "./types.ts";
+import type { IxcCustomerPage, IxcCustomerSnapshot, IxcListResponse, IxcOsSubjectDto, IxcReadOperation, IxcSectorDto } from "./types.ts";
 
-const endpoints:Record<Exclude<IxcReadOperation,"testConnection"|"findCustomer"|"getCustomer"|"listCustomers">,string>={listContracts:"cliente_contrato",getPlan:"vd_contratos",listInvoices:"fn_areceber",listPayments:"fn_movim_finan",listServiceOrders:"su_oss_chamado",getConnection:"radusuarios",getCity:"cidade"};
+// `listOsCatalog` fica de fora porque não tem um endpoint só: a mesma operação
+// lê `su_oss_assunto` e `empresa_setor`, e o recurso vai explícito na chamada.
+const endpoints:Record<Exclude<IxcReadOperation,"testConnection"|"findCustomer"|"getCustomer"|"listCustomers"|"listOsCatalog">,string>={listContracts:"cliente_contrato",getPlan:"vd_contratos",listInvoices:"fn_areceber",listPayments:"fn_movim_finan",listServiceOrders:"su_oss_chamado",getConnection:"radusuarios",getCity:"cidade"};
 export interface IxcTrace { event:string; correlationId:string; durationMs:number; status:"success"|"failed"|"cache-hit"|"blocked"; attributes:Record<string,unknown> }
 export interface IxcReadonlyOptions { baseUrl:string; token:string; allowedCustomerIds:string[]; fullBase?:boolean; timeoutMs?:number; retryLimit?:0|1; cacheTtlMs?:number; cityCacheTtlMs?:number; rateLimitPerMinute?:number; fetcher?:typeof fetch; trace?:(event:IxcTrace)=>void; now?:()=>number }
 interface ReadOptions { oper?:string; page?:number; sortname?:string; sortorder?:"asc"|"desc"; gridParam?:GridFilter[] }
@@ -17,7 +19,7 @@ interface ReadOptions { oper?:string; page?:number; sortname?:string; sortorder?
  */
 export interface GridFilter { TB:string; OP:string; P:string }
 /** Operações que não são de um cliente específico — não passam pela checagem de allowlist. */
-const GLOBAL_SCOPE_OPERATIONS = new Set<IxcReadOperation>(["testConnection","listCustomers"]);
+const GLOBAL_SCOPE_OPERATIONS = new Set<IxcReadOperation>(["testConnection","listCustomers","listOsCatalog"]);
 
 /**
  * Traduz o que a pessoa digitou na busca para o filtro do IXC.
@@ -124,6 +126,25 @@ export class IxcReadonlyProvider {
     const size=Math.min(Math.max(pageSize,1),100);
     const {records,total}=await this.readPage("listServiceOrders",endpoints.listServiceOrders,"su_oss_chamado.status","F",correlationId,size,"",{oper:"!=",page:Math.max(page,1),sortname:"su_oss_chamado.data_abertura",sortorder:"desc"});
     return{items:records.map(IxcServiceOrderMapper.map),total,page:Math.max(page,1),pageSize:size};
+  }
+  /**
+   * Assuntos e setores de OS, direto do IXC.
+   *
+   * Existe porque abrir uma ordem de serviço exige `id_assunto` e `setor`, e
+   * esses números são **configuração deste provedor**, não constante universal:
+   * na base da BBNET são 159 assuntos e 12 setores, com ids salteados. Fixar um
+   * número no código abriria chamado real na fila errada, e alguém iria atendê-lo.
+   *
+   * Cache longo (o mesmo das cidades): catálogo muda raramente e é lido a cada
+   * abertura de tela.
+   */
+  async listOsSubjects(correlationId:string):Promise<IxcOsSubjectDto[]>{
+    const {records}=await this.readPage("listOsCatalog","su_oss_assunto","su_oss_assunto.id","0",correlationId,200,"",{oper:">",sortname:"su_oss_assunto.id"});
+    return records.map((raw)=>({id:String(raw.id??"").trim(),name:String(raw.assunto??"").trim()})).filter((item)=>item.id&&item.name);
+  }
+  async listSectors(correlationId:string):Promise<IxcSectorDto[]>{
+    const {records}=await this.readPage("listOsCatalog","empresa_setor","empresa_setor.id","0",correlationId,100,"",{oper:">",sortname:"empresa_setor.id"});
+    return records.map((raw)=>({id:String(raw.id??"").trim(),name:String(raw.setor??"").trim()})).filter((item)=>item.id&&item.name);
   }
   /**
    * Contratos ativados no período: é o que a BBNET vendeu.

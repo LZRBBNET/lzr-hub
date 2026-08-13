@@ -223,6 +223,83 @@ function NotifyButton({incidentId,kind,label,busy}:{incidentId:string;kind:"open
   </div>;
 }
 
+type OsCatalog={available:boolean;detail?:string;subjects:{id:string;name:string}[];sectors:{id:string;name:string}[];writeEnabled?:boolean};
+
+/**
+ * Abertura de OS no IXC (issue #20, segunda operação do catálogo de escrita).
+ *
+ * Assunto e setor vêm do próprio ERP — nada é digitado nem fixado no código.
+ * São 159 assuntos e 12 setores com ids salteados na base da BBNET, e escolher
+ * um deles é escolher qual fila recebe o chamado e qual técnico vai à casa do
+ * cliente. Sem catálogo, o formulário não abre.
+ */
+function NewServiceOrder(){
+  const [catalog,setCatalog]=useState<OsCatalog|null>(null);
+  const [open,setOpen]=useState(false);
+  const [form,setForm]=useState({customerId:"",subjectId:"",sectorId:"",message:""});
+  const [busy,setBusy]=useState(false);
+  const [result,setResult]=useState<{status:string;detail:string}|null>(null);
+  const [error,setError]=useState<string|null>(null);
+
+  useEffect(()=>{let active=true;
+    fetch("/api/support/service-orders").then(r=>r.ok?r.json():Promise.reject(new Error("falhou")))
+      .then((payload:OsCatalog)=>{if(active)setCatalog(payload)})
+      .catch(()=>{if(active)setCatalog({available:false,detail:"Não foi possível ler o catálogo do IXC",subjects:[],sectors:[]})});
+    return()=>{active=false}},[]);
+
+  async function submit(){
+    setBusy(true);setError(null);setResult(null);
+    try{
+      const response=await fetch("/api/support/service-orders",{method:"POST",headers:{"content-type":"application/json"},
+        // Chave por tentativa: se a rede oscilar e o clique repetir, o ledger
+        // reconhece a repetição e não manda um segundo técnico ao mesmo cliente.
+        body:JSON.stringify({...form,idempotencyKey:`os-${form.customerId}-${form.subjectId}-${Date.now()}`})});
+      const payload=await response.json() as {status?:string;detail?:string;error?:string};
+      if(!response.ok&&payload.error){setError(payload.error);return}
+      setResult({status:payload.status??"?",detail:payload.detail??""});
+    }catch{setError("O IXC não respondeu.")}
+    finally{setBusy(false)}
+  }
+
+  if(!catalog)return null;
+  if(!catalog.available)return <div className="state-card">Abrir OS pela tela está indisponível: {catalog.detail}. Nenhuma lista de exemplo é mostrada — escolher um assunto inventado abriria chamado na fila errada.</div>;
+
+  const ready=form.customerId.trim()&&form.subjectId&&form.sectorId&&form.message.trim().length>=10;
+  return <section className="data-card" style={{marginBottom:14}}>
+    <div className="card-header"><strong>Abrir ordem de serviço no IXC</strong>
+      <span className={`badge ${catalog.writeEnabled?"blue":"amber"}`}>{catalog.writeEnabled?"Escrita ligada":"FEATURE_IXC_WRITE desligada"}</span>
+    </div>
+    <div style={{padding:16}}>
+      {!open
+        ? <button className="button" onClick={()=>setOpen(true)}>Abrir chamado</button>
+        : <div style={{display:"grid",gap:10,maxWidth:560}}>
+            <label className="field"><span>Código do cliente no IXC</span><input value={form.customerId} placeholder="ex.: 21857" onChange={e=>setForm(f=>({...f,customerId:e.target.value}))}/></label>
+            <label className="field"><span>Assunto ({catalog.subjects.length} do IXC)</span>
+              <select value={form.subjectId} onChange={e=>setForm(f=>({...f,subjectId:e.target.value}))}>
+                <option value="">Escolha o assunto…</option>
+                {catalog.subjects.map(s=><option key={s.id} value={s.id}>{s.name}</option>)}
+              </select></label>
+            <label className="field"><span>Setor que vai atender</span>
+              <select value={form.sectorId} onChange={e=>setForm(f=>({...f,sectorId:e.target.value}))}>
+                <option value="">Escolha o setor…</option>
+                {catalog.sectors.map(s=><option key={s.id} value={s.id}>{s.name}</option>)}
+              </select></label>
+            <label className="field"><span>O que o cliente relatou</span><textarea rows={3} value={form.message} placeholder="O técnico chega sabendo só o que estiver escrito aqui." onChange={e=>setForm(f=>({...f,message:e.target.value}))}/></label>
+            {error&&<p className="form-error">{error}</p>}
+            {result&&<div className={`state-card ${result.status==="success"?"":"error"}`}>
+              <strong>{result.status==="success"?"OS aberta no IXC.":result.status==="blocked"?"Bloqueado.":"Falhou."}</strong>
+              <p style={{marginTop:6,lineHeight:1.6,wordBreak:"break-word"}}>{result.detail}</p>
+            </div>}
+            <div style={{display:"flex",gap:8}}>
+              <button className="button" disabled={busy||!ready} onClick={()=>void submit()}>{busy?"Enviando…":"Abrir OS"}</button>
+              <button className="button secondary" disabled={busy} onClick={()=>{setOpen(false);setResult(null);setError(null)}}>Cancelar</button>
+            </div>
+            <small style={{color:"var(--muted)",lineHeight:1.55}}>A filial vai do cadastro do cliente no IXC, não daqui — o grupo tem 21 e o chamado precisa nascer na certa.</small>
+          </div>}
+    </div>
+  </section>;
+}
+
 function Tickets(){
   const [page,setPage]=useState(1);
   const {data,state}=useTickets(page);
@@ -233,6 +310,7 @@ function Tickets(){
   const items=fullBase?(data?.items??[]):(data?.items??[]).filter(t=>!onlyOpen||isOpenTicket(t.status));
   return <main className="content">
     <Heading title="Chamados" text="Ordens de serviço reais do IXC."/>
+    <NewServiceOrder/>
     {state==="loading"&&<div className="state-card">Consultando o IXC…</div>}
     {state==="error"&&<div className="state-card error">Não foi possível consultar os chamados.</div>}
     {state==="ready"&&!data?.available&&<div className="state-card error">{data?.detail??"Fonte de chamados indisponível"}.</div>}

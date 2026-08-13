@@ -103,7 +103,7 @@ Flags relevantes:
 | `FEATURE_N8N_CHANNEL` | Canal WhatsApp via n8n recebe e registra mensagem | **ligada** (modo observação — ver abaixo) |
 | `FEATURE_N8N_AUTOREPLY` | A IA **responde ao cliente** pelo canal | desligada |
 | `FEATURE_QUEUES` | Filas reais (Redis/BullMQ) | desligada |
-| `FEATURE_IXC_WRITE` | Escrita no ERP | desligada |
+| `FEATURE_IXC_WRITE` | Escrita no ERP — hoje só segunda via de boleto e abertura de OS | desligada |
 | `FEATURE_IXC_FULL_BASE` | Leitura da **base inteira** do IXC, não só da allowlist | **ligada** |
 | `FEATURE_LLM_INTENT` | Classificação de intenção por modelo de linguagem (Groq) | **ligada** |
 | `FEATURE_COPILOT_LLM` | O copiloto do atendente **redige** a resposta a partir dos trechos citados | desligada — sem ela o copiloto mostra os trechos como estão |
@@ -155,6 +155,18 @@ Detalhes que economizam horas de depuração:
 
 Ver [`docs/integrations/ixc-data-mapping.md`](docs/integrations/ixc-data-mapping.md).
 
+### Escrita no IXC: o que já existe e o que não
+
+Duas operações do catálogo estão implementadas (`lib/platform/ixc-write-service.ts`): **segunda via de boleto** (`POST /webservice/v1/get_boleto`) e **abertura de OS** (`POST /webservice/v1/su_oss_chamado`). As outras duas — registrar negociação e cadastrar cliente — continuam `implemented: false`, e o catálogo na tela diz isso.
+
+Toda escrita passa pela mesma régua, nesta ordem: idempotência → política → `FEATURE_IXC_WRITE` → chamada. Bloqueio também entra no ledger `ixc_write_operations`: auditoria existe para provar decisão, não só sucesso.
+
+⚠️ **Assunto, setor e filial não são constantes.** A base da BBNET tem **159 assuntos** (`su_oss_assunto`), **12 setores** (`empresa_setor`) e **21 filiais** (`filial`), com ids salteados. Assunto e setor são validados contra a lista lida do ERP no momento da chamada; a filial vem do `filial_id` do cadastro do cliente. Fixar qualquer um desses números abriria chamado real na fila errada — ou na empresa errada do grupo. `scripts/ixc-probe-os-catalog.mjs` foi o que levantou esses números antes de existir código.
+
+⚠️ **O IXC recusa com HTTP 200 e `type: "error"` no corpo.** Sem checar isso, uma recusa viraria "sucesso" no ledger e ninguém iria atrás da OS que não existe.
+
+O formato da **resposta de sucesso** das duas operações não está confirmado (a coleção Postman não tem exemplo salvo e nenhuma foi executada em produção). Por isso o ledger guarda a resposta crua em vez de campos inventados.
+
 ## Convenções de código
 
 **Padrão de repositório com injeção de dependência.** Toda lógica que toca o banco fica atrás de uma interface, com duas implementações: uma real (`Db*Repository`) e uma em memória (`Memory*Repository`) usada nos testes. Isso permite testar regra de negócio sem banco. Exemplos: `lib/platform/auth.ts`, `lib/platform/support-metrics.ts`, `lib/platform/n8n-channel-service.ts`.
@@ -181,7 +193,7 @@ Ver [`docs/integrations/ixc-data-mapping.md`](docs/integrations/ixc-data-mapping
 npm run typecheck && npm run lint && npm test
 ```
 
-Os três precisam passar. Hoje a suíte tem **439 testes**.
+Os três precisam passar. Hoje a suíte tem **454 testes**.
 
 ## Segurança — pontos já decididos
 

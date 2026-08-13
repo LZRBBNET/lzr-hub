@@ -25,8 +25,8 @@ import { isOpenInvoice } from "./billing-service.ts";
 
 export const IXC_WRITE_CATALOG = [
   { operation: "invoice.reissue", label: "Gerar segunda via de boleto", implemented: true },
+  { operation: "service_order.open", label: "Abrir ordem de serviço", implemented: true },
   { operation: "negotiation.register", label: "Registrar promessa/negociação", implemented: false },
-  { operation: "service_order.open", label: "Abrir ordem de serviço", implemented: false },
   { operation: "customer.create", label: "Cadastrar cliente novo", implemented: false },
 ] as const;
 
@@ -60,6 +60,40 @@ export function assertReissuePolicy(invoice: { status: string }, lastSuccessAt: 
     const hoursSince = (now.getTime() - new Date(lastSuccessAt).getTime()) / 3_600_000;
     if (hoursSince < 24) throw new IxcWritePolicyError("Já foi gerada uma segunda via para esta fatura nas últimas 24 horas");
   }
+}
+
+/**
+ * Política da abertura de OS.
+ *
+ * O que ela impede, em ordem de estrago:
+ *
+ * 1. **Assunto e setor fora do catálogo do IXC.** São validados contra a lista
+ *    lida do próprio ERP no momento da chamada, não contra um enum nosso: o
+ *    catálogo tem 159 assuntos com ids salteados e muda sem nos avisar. Assunto
+ *    inválido abriria chamado que ninguém sabe atender.
+ * 2. **Cliente sem filial no cadastro.** A BBNET tem 21 filiais; sem saber a do
+ *    cliente, a OS iria para a empresa errada do grupo. Melhor recusar.
+ * 3. **Chamado repetido.** Se o cliente já tem OS aberta do mesmo assunto,
+ *    abrir outra manda um segundo técnico para o mesmo problema.
+ */
+export const SERVICE_ORDER_MIN_MESSAGE = 10;
+
+export function assertServiceOrderPolicy(input: {
+  subjectId: string;
+  sectorId: string;
+  branchId: string | undefined;
+  message: string;
+  knownSubjectIds: Set<string>;
+  knownSectorIds: Set<string>;
+  openSubjects: Set<string>;
+}): void {
+  if (!input.knownSubjectIds.has(input.subjectId)) throw new IxcWritePolicyError("Assunto não existe no catálogo do IXC");
+  if (!input.knownSectorIds.has(input.sectorId)) throw new IxcWritePolicyError("Setor não existe no catálogo do IXC");
+  if (!input.branchId) throw new IxcWritePolicyError("O cadastro do cliente não informa filial — sem ela a OS iria para a empresa errada do grupo");
+  // Sem descrição o técnico chega sem saber o que foi relatado, e a OS vira uma
+  // visita às cegas. O assunto sozinho não diz o que o cliente falou.
+  if (input.message.trim().length < SERVICE_ORDER_MIN_MESSAGE) throw new IxcWritePolicyError("Descreva o problema relatado (mínimo 10 caracteres)");
+  if (input.openSubjects.has(input.subjectId)) throw new IxcWritePolicyError("Este cliente já tem ordem de serviço aberta com esse assunto");
 }
 
 export interface IxcWriteOperationsRepository {
@@ -177,6 +211,69 @@ export async function requestInvoiceReissue(
     return { status: "success", detail, raw: result.raw };
   } catch (error) {
     const detail = error instanceof Error ? error.message : "Falha desconhecida ao gerar segunda via";
+    await record("failed", detail);
+    return { status: "failed", detail };
+  }
+}
+
+export interface ServiceOrderRequest {
+  customerId: string;
+  subjectId: string;
+  sectorId: string;
+  branchId: string | undefined;
+  priority: string;
+  message: string;
+  idempotencyKey: string;
+  correlationId: string;
+  requestedBy: string;
+  knownSubjectIds: Set<string>;
+  knownSectorIds: Set<string>;
+  /** Assuntos das OS ainda abertas deste cliente, lidos do IXC agora. */
+  openSubjects: Set<string>;
+}
+
+/**
+ * Abre ordem de serviço no IXC, seguindo a mesma régua da segunda via:
+ * idempotência primeiro, política depois, flag por último, e tudo no ledger —
+ * inclusive o que foi bloqueado. Auditoria existe para provar decisão, não só
+ * sucesso.
+ */
+export async function requestServiceOrderOpen(
+  request: ServiceOrderRequest,
+  repository: IxcWriteOperationsRepository,
+  callIxc: (correlationId: string) => Promise<{ raw: Record<string, unknown> }>,
+): Promise<ReissueResult> {
+  const existing = await repository.findByIdempotencyKey("service_order.open", request.idempotencyKey);
+  if (existing) return { status: existing.status, detail: existing.detail ?? "", replay: true };
+
+  const record = (status: IxcWriteStatus, detail: string) => repository.record({
+    operation: "service_order.open", idempotencyKey: request.idempotencyKey, customerId: request.customerId,
+    // A OS não tem fatura; o ledger guarda o assunto no lugar, que é o que
+    // identifica de que chamado se trata quando alguém for auditar.
+    invoiceId: `assunto:${request.subjectId}`, status, requestedBy: request.requestedBy, detail, correlationId: request.correlationId,
+  });
+
+  try {
+    assertServiceOrderPolicy(request);
+  } catch (error) {
+    const detail = error instanceof IxcWritePolicyError ? error.message : "Política recusou a operação";
+    await record("blocked", detail);
+    return { status: "blocked", detail };
+  }
+
+  if (process.env.FEATURE_IXC_WRITE !== "true") {
+    const detail = "FEATURE_IXC_WRITE desligada — escrita real no IXC não está ligada";
+    await record("blocked", detail);
+    return { status: "blocked", detail };
+  }
+
+  try {
+    const result = await callIxc(request.correlationId);
+    const detail = `OS retornada pelo IXC: ${JSON.stringify(result.raw).slice(0, 500)}`;
+    await record("success", detail);
+    return { status: "success", detail, raw: result.raw };
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : "Falha desconhecida ao abrir ordem de serviço";
     await record("failed", detail);
     return { status: "failed", detail };
   }
