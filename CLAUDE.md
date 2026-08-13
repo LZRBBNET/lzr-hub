@@ -103,7 +103,7 @@ Flags relevantes:
 | `FEATURE_N8N_CHANNEL` | Canal WhatsApp via n8n recebe e registra mensagem | **ligada** (modo observação — ver abaixo) |
 | `FEATURE_N8N_AUTOREPLY` | A IA **responde ao cliente** pelo canal | desligada |
 | `FEATURE_QUEUES` | Filas reais (Redis/BullMQ) | desligada |
-| `FEATURE_IXC_WRITE` | Escrita no ERP — as 4 operações do catálogo (segunda via, OS, renegociação, cadastro de cliente) | desligada |
+| `FEATURE_IXC_WRITE` | Escrita no ERP — as 4 operações do catálogo (segunda via, OS, renegociação, cadastro de cliente) | **ligada** |
 | `FEATURE_IXC_FULL_BASE` | Leitura da **base inteira** do IXC, não só da allowlist | **ligada** |
 | `FEATURE_LLM_INTENT` | Classificação de intenção por modelo de linguagem (Groq) | **ligada** |
 | `FEATURE_COPILOT_LLM` | O copiloto do atendente **redige** a resposta a partir dos trechos citados | desligada — sem ela o copiloto mostra os trechos como estão |
@@ -156,6 +156,8 @@ Detalhes que economizam horas de depuração:
 Ver [`docs/integrations/ixc-data-mapping.md`](docs/integrations/ixc-data-mapping.md).
 
 ### Escrita no IXC: o que já existe e o que não
+
+⚠️ **`FEATURE_IXC_WRITE` está ligada em produção** (conferido no painel do Railway em 13/08/2026). Não é ensaio: quem tem a permissão `ixc.write` — hoje **Administrador** e **Cobrança** — abre ordem de serviço, renegocia dívida e cadastra cliente **no ERP de verdade**, clicando na tela. `IXC_WRITE_ENABLED` (a trava de boot mais ampla, da "Fase 3A") continua desligada e não deve ser mexida.
 
 As **quatro** operações do catálogo estão implementadas (`lib/platform/ixc-write-service.ts`): **segunda via de boleto** (`POST /webservice/v1/get_boleto`), **abertura de OS** (`POST /webservice/v1/su_oss_chamado`), **renegociação de dívida** (wizard de 5 passos) e **cadastro de cliente** (`POST /webservice/v1/cliente`).
 
