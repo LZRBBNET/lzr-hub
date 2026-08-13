@@ -41,6 +41,8 @@ export interface Lead {
   note: string | null;
   closedAt: string | null;
   lostReason: string | null;
+  /** Cadastro criado no IXC a partir deste lead. Preenchido, impede um segundo cadastro. */
+  ixcCustomerId: string | null;
   createdAt: string;
   updatedAt: string;
 }

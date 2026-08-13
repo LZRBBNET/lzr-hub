@@ -236,6 +236,58 @@ async function ixcCall(
   return parsed as Record<string, unknown>;
 }
 
+/**
+ * Cadastro de cliente novo.
+ *
+ * Contrato confirmado na coleção Postman → Cadastros → Clientes → Cliente
+ * (inserir): `POST {baseUrl}/webservice/v1/cliente`. Obrigatórios lá: `ativo`,
+ * `tipo_pessoa`, `cnpj_cpf`, `contribuinte_icms`, `tipo_assinante`, `cep`,
+ * `endereco`, `numero`, `bairro`, `cidade`, `tipo_localidade`, `cob_envia_email`
+ * e `cob_envia_sms`.
+ *
+ * ⚠️ `cidade` e `uf` são **códigos internos do IXC**, não nomes nem IBGE — o
+ * cadastro real 21857 tem `cidade: "1759"`, `uf: "28"`. Mandar "Aracaju" aí cria
+ * cliente sem cidade válida, e ninguém percebe até a primeira cobrança.
+ *
+ * Só os campos obrigatórios mais contato vão no corpo. O exemplo da coleção tem
+ * ~130 campos, quase todos vazios; mandá-los todos gravaria string vazia em
+ * lugares que o IXC preencheria com o padrão dele.
+ */
+export interface CustomerInput {
+  name: string;
+  document: string;
+  personKind: "F" | "J";
+  cep: string;
+  street: string;
+  number: string;
+  neighborhood: string;
+  cityId: string;
+  ufId: string;
+  phone: string;
+  email: string;
+}
+
+export async function createCustomer(
+  options: IxcWriteClientOptions,
+  input: CustomerInput,
+  correlationId: string,
+): Promise<{ raw: Record<string, unknown>; customerId: string }> {
+  const raw = await ixcCall(options, "cliente", "POST", {
+    ativo: "S", tipo_pessoa: input.personKind, razao: input.name, cnpj_cpf: input.document,
+    // "I" é isento de ICMS: cliente pessoa física de provedor não é contribuinte.
+    contribuinte_icms: "I", tipo_assinante: "1",
+    cep: input.cep, endereco: input.street, numero: input.number, bairro: input.neighborhood,
+    cidade: input.cityId, uf: input.ufId, tipo_localidade: "U",
+    telefone_celular: input.phone, whatsapp: input.phone, email: input.email,
+    // Vazio de propósito: ligar aviso de cobrança por e-mail/SMS sem a pessoa
+    // ter pedido é mandar mensagem em nome do provedor por decisão nossa.
+    cob_envia_email: "", cob_envia_sms: "",
+  }, correlationId);
+  const customerId = String(raw.id ?? "").trim();
+  if (!customerId) throw new IxcWriteClientError("IXC_SEM_ID_CLIENTE");
+  return { raw, customerId };
+}
+
 export async function renegotiateInvoices(
   options: IxcWriteClientOptions,
   input: RenegotiationInput,

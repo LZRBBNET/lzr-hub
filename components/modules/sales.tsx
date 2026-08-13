@@ -250,6 +250,7 @@ function Funnel(){
                 </div>)}
           </div>
           <LeadActivityForm leadId={open.id} busy={busy} onSubmit={(kind,detail)=>void post({action:"activity",leadId:open.id,kind,detail})}/>
+          {open.stage==="ganho"&&<CreateCustomerForm key={open.id} lead={open} onDone={()=>setNonce(n=>n+1)}/>}
         </div>
       </section>}
 
@@ -260,6 +261,88 @@ function Funnel(){
     </>}
   </main>;
 }
+
+/**
+ * Cadastra no IXC o cliente que o lead ganho virou (issue #20, `customer.create`).
+ *
+ * Só aparece em lead **ganho** e some depois que o cadastro existe: o botão de
+ * cadastrar num lead que já virou cliente é o caminho mais curto para duplicata.
+ *
+ * ⚠️ Cidade é o **código interno do IXC**, por isso vem de lista, nunca digitada.
+ */
+function CreateCustomerForm({lead,onDone}:{lead:Lead;onDone:()=>void}){
+  const [catalog,setCatalog]=useState<{available:boolean;detail?:string;ufs:{id:string;name:string;initials:string}[];cities:{id:string;name:string}[];writeEnabled?:boolean}|null>(null);
+  const [ufId,setUfId]=useState("");
+  const [form,setForm]=useState({document:"",cep:"",street:"",number:"",neighborhood:lead.neighborhood==="não informado"?"":lead.neighborhood,cityId:"",phone:"",email:""});
+  const [busy,setBusy]=useState(false);
+  const [result,setResult]=useState<{status:string;detail:string}|null>(null);
+  const [error,setError]=useState("");
+
+  useEffect(()=>{let active=true;
+    fetch(`/api/sales/leads/customer${ufId?`?uf=${encodeURIComponent(ufId)}`:""}`).then(r=>r.ok?r.json():Promise.reject(new Error("falhou")))
+      .then(payload=>{if(active)setCatalog(payload)})
+      .catch(()=>{if(active)setCatalog({available:false,detail:"Não foi possível ler o catálogo de cidades",ufs:[],cities:[]})});
+    return()=>{active=false}},[ufId]);
+
+  if(lead.ixcCustomerId)return <div className="state-card"><strong>Já é cliente no IXC.</strong> Cadastro <strong>{lead.ixcCustomerId}</strong>, criado a partir deste lead.</div>;
+  if(!catalog)return null;
+  if(!catalog.available)return <div className="state-card">Cadastrar no IXC está indisponível: {catalog.detail}.</div>;
+
+  const ready=form.document.trim()&&ufId&&form.cityId&&form.street.trim().length>2&&form.number.trim()&&form.cep.replace(/\D/g,"").length===8;
+
+  async function submit(){
+    setBusy(true);setError("");setResult(null);
+    try{
+      const response=await fetch("/api/sales/leads/customer",{method:"POST",headers:{"content-type":"application/json"},
+        body:JSON.stringify({...form,leadId:lead.id,ufId,name:lead.name,idempotencyKey:customerKey(lead.id)})});
+      const payload=await response.json();
+      if(!response.ok&&payload.error){setError(payload.error);return}
+      setResult({status:payload.status,detail:payload.detail});
+      if(payload.status==="success")onDone();
+    }catch{setError("O IXC não respondeu.")}
+    finally{setBusy(false)}
+  }
+
+  return <div style={{display:"grid",gap:10,borderTop:"1px solid var(--line)",paddingTop:12}}>
+    <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:8}}>
+      <strong style={{fontSize:12}}>Cadastrar no IXC</strong>
+      <span className={`badge ${catalog.writeEnabled?"green":"amber"}`}>{catalog.writeEnabled?"● escrita ligada":"FEATURE_IXC_WRITE desligada"}</span>
+    </div>
+    <p style={{margin:0,fontSize:11,color:"var(--muted)",lineHeight:1.55}}>Cria o cadastro real no ERP. O documento é conferido pelos dígitos e o IXC é consultado antes, para não duplicar cliente que já existe.</p>
+    <label className="field"><span>CPF ou CNPJ</span><input value={form.document} placeholder="000.000.000-00" onChange={e=>setForm(f=>({...f,document:e.target.value}))}/></label>
+    <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10}}>
+      <label className="field"><span>Estado</span>
+        <select value={ufId} onChange={e=>{setUfId(e.target.value);setForm(f=>({...f,cityId:""}))}}>
+          <option value="">Escolha…</option>{catalog.ufs.map(u=><option key={u.id} value={u.id}>{u.initials} — {u.name}</option>)}
+        </select></label>
+      <label className="field"><span>Cidade{catalog.cities.length?` (${catalog.cities.length})`:""}</span>
+        <select value={form.cityId} disabled={!ufId} onChange={e=>setForm(f=>({...f,cityId:e.target.value}))}>
+          <option value="">{ufId?"Escolha…":"Escolha o estado antes"}</option>{catalog.cities.map(c=><option key={c.id} value={c.id}>{c.name}</option>)}
+        </select></label>
+    </div>
+    <div style={{display:"grid",gridTemplateColumns:"2fr 1fr",gap:10}}>
+      <label className="field"><span>Rua</span><input value={form.street} onChange={e=>setForm(f=>({...f,street:e.target.value}))}/></label>
+      <label className="field"><span>Número</span><input value={form.number} onChange={e=>setForm(f=>({...f,number:e.target.value}))}/></label>
+    </div>
+    <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10}}>
+      <label className="field"><span>Bairro</span><input value={form.neighborhood} onChange={e=>setForm(f=>({...f,neighborhood:e.target.value}))}/></label>
+      <label className="field"><span>CEP</span><input value={form.cep} placeholder="49000-000" onChange={e=>setForm(f=>({...f,cep:e.target.value}))}/></label>
+    </div>
+    <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10}}>
+      <label className="field"><span>Telefone</span><input value={form.phone} onChange={e=>setForm(f=>({...f,phone:e.target.value}))}/></label>
+      <label className="field"><span>E-mail</span><input value={form.email} onChange={e=>setForm(f=>({...f,email:e.target.value}))}/></label>
+    </div>
+    {error&&<p className="form-error">{error}</p>}
+    {result&&<div className={`state-card ${result.status==="success"?"":"error"}`}>
+      <strong>{result.status==="success"?"Cadastro criado no IXC":result.status==="blocked"?"Bloqueado":"Falhou"}</strong>
+      <p style={{margin:"6px 0 0",lineHeight:1.6,wordBreak:"break-word"}}>{result.detail}</p>
+    </div>}
+    <button className="button" disabled={busy||!ready} onClick={()=>void submit()}>{busy?"Cadastrando…":"Cadastrar cliente no IXC"}</button>
+  </div>;
+}
+
+/** Fora do componente: `Date.now()` no corpo é tratado como impureza em render. */
+const customerKey=(leadId:string)=>`cadastro-${leadId}-${Date.now()}`;
 
 function LeadActivityForm({leadId,busy,onSubmit}:{leadId:string;busy:boolean;onSubmit:(kind:string,detail:string)=>void}){
   const [detail,setDetail]=useState("");

@@ -23,6 +23,10 @@ export interface IxcSectorDto { id:string; name:string }
 export interface IxcCollectionWalletDto { id:string; name:string }
 /** Condição de pagamento (`condicoes_pagamento`) — define em quantas parcelas a dívida é dividida. */
 export interface IxcPaymentTermDto { id:string; name:string; installments?:number }
+/** Cidade (`cidade`) — o cadastro guarda o **código interno do IXC**, não o nome nem o IBGE. */
+export interface IxcCityDto { id:string; name:string }
+/** Unidade federativa (`uf`) — o id do IXC não é o código do IBGE (Sergipe é 28 aqui, 28 no IBGE por coincidência). */
+export interface IxcUfDto { id:string; name:string; initials:string }
 
 export interface IxcCustomerDto { id:string; name:string; document:string; phone:string; email:string; city:string; neighborhood:string; address:string; status:string; customerSince?:string; updatedAt?:string; /** `filial_id` do cadastro. A BBNET tem 21 filiais — abrir OS numa constante mandaria o chamado para a empresa errada. */ branchId?:string; /** `id_conta` do cadastro, exigido pelo wizard de renegociação. É por cliente, não do provedor. */ accountId?:string }
 export interface IxcContractDto { id:string; customerId:string; planId?:string; planName:string; status:string; dueDay?:number; monthlyValue?:number; activatedAt?:string }

@@ -68,6 +68,8 @@ export interface CrmRepository {
   addActivity(leadId: string, kind: LeadActivity["kind"], detail: string, actorId: string): Promise<LeadActivity | undefined>;
   activities(leadIds: string[]): Promise<LeadActivity[]>;
   createdSince(sinceIso: string): Promise<Lead[]>;
+  /** Grava o cadastro que o lead virou no IXC. É o que impede um segundo cadastro do mesmo lead. */
+  linkCustomer(leadId: string, ixcCustomerId: string): Promise<void>;
 }
 
 /**
@@ -116,6 +118,7 @@ const toLead = (row: Record<string, unknown>): Lead => ({
   note: row.note ? String(row.note) : null,
   closedAt: row.closedAt ? String(row.closedAt) : null,
   lostReason: row.lostReason ? String(row.lostReason) : null,
+  ixcCustomerId: row.ixcCustomerId ? String(row.ixcCustomerId) : null,
   createdAt: String(row.createdAt), updatedAt: String(row.updatedAt),
 });
 
@@ -142,7 +145,7 @@ export class DbCrmRepository implements CrmRepository {
       id: randomUUID(), name: input.name, maskedPhone: maskPhone(input.phone),
       city: input.city, neighborhood: input.neighborhood, source: input.source,
       stage: input.stage, score: 0, ownerId: null, contactKey: input.contactKey ?? null,
-      note: input.note, closedAt: null, lostReason: null, createdAt: now, updatedAt: now,
+      note: input.note, closedAt: null, lostReason: null, ixcCustomerId: null, createdAt: now, updatedAt: now,
     };
     await this.db.insert(leads).values(row);
     await this.db.insert(leadActivities).values({
@@ -189,6 +192,9 @@ export class DbCrmRepository implements CrmRepository {
     const rows = await this.db.select().from(leads).where(gte(leads.createdAt, sinceIso)).orderBy(desc(leads.createdAt));
     return rows.map(toLead);
   }
+  async linkCustomer(leadId: string, ixcCustomerId: string): Promise<void> {
+    await this.db.update(leads).set({ ixcCustomerId, updatedAt: new Date().toISOString() }).where(eq(leads.id, leadId));
+  }
 }
 
 export class MemoryCrmRepository implements CrmRepository {
@@ -207,7 +213,7 @@ export class MemoryCrmRepository implements CrmRepository {
       id: randomUUID(), name: input.name, maskedPhone: maskPhone(input.phone), city: input.city,
       neighborhood: input.neighborhood, source: input.source, stage: input.stage, ownerId: null,
       contactKey: input.contactKey ?? null, note: input.note, closedAt: null, lostReason: null,
-      createdAt: now, updatedAt: now,
+      ixcCustomerId: null, createdAt: now, updatedAt: now,
     };
     this.rows.push(lead);
     this.log.push({ id: randomUUID(), leadId: lead.id, kind: "stage_change", fromStage: null, toStage: input.stage, detail: "Lead criado", actorId: input.actorId, createdAt: now });
@@ -234,6 +240,10 @@ export class MemoryCrmRepository implements CrmRepository {
   }
   async activities(leadIds: string[]) { return this.log.filter((item) => leadIds.includes(item.leadId)).sort((a, b) => a.createdAt.localeCompare(b.createdAt)); }
   async createdSince(sinceIso: string) { return this.rows.filter((lead) => lead.createdAt >= sinceIso); }
+  async linkCustomer(leadId: string, ixcCustomerId: string) {
+    const lead = this.rows.find((item) => item.id === leadId);
+    if (lead) { lead.ixcCustomerId = ixcCustomerId; lead.updatedAt = this.now(); }
+  }
 }
 
 /**

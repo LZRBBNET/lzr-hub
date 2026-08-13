@@ -1,0 +1,1 @@
+ALTER TABLE "leads" ADD COLUMN "ixc_customer_id" text;

@@ -175,6 +175,8 @@ export const leads = pgTable("leads", {
   closedAt:text("closed_at"),
   /** Preenchido só quando o lead é perdido — ganhar não pede justificativa. */
   lostReason:text("lost_reason"),
+  /** Cadastro criado no IXC a partir deste lead. Preenchido, impede um segundo cadastro do mesmo. */
+  ixcCustomerId:text("ixc_customer_id"),
   ...auditColumns,
 }, (table) => [uniqueIndex("leads_contact_key_idx").on(table.contactKey)]);
 

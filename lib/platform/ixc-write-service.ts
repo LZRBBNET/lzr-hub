@@ -27,7 +27,7 @@ export const IXC_WRITE_CATALOG = [
   { operation: "invoice.reissue", label: "Gerar segunda via de boleto", implemented: true },
   { operation: "service_order.open", label: "Abrir ordem de serviço", implemented: true },
   { operation: "negotiation.register", label: "Renegociar dívida", implemented: true },
-  { operation: "customer.create", label: "Cadastrar cliente novo", implemented: false },
+  { operation: "customer.create", label: "Cadastrar cliente novo", implemented: true },
 ] as const;
 
 export type IxcWriteStatus = "success" | "blocked" | "failed";
@@ -317,6 +317,103 @@ export async function requestServiceOrderOpen(
     return { status: "success", detail, raw: result.raw };
   } catch (error) {
     const detail = error instanceof Error ? error.message : "Falha desconhecida ao abrir ordem de serviço";
+    await record("failed", detail);
+    return { status: "failed", detail };
+  }
+}
+
+/**
+ * Política do cadastro de cliente novo.
+ *
+ * O estrago aqui é diferente dos outros: não é uma ação errada, é um **registro
+ * permanente errado**. Cliente duplicado no ERP vira dois fluxos de fatura e um
+ * contrato órfão que ninguém sabe qual é o bom, e apagar cadastro com contrato
+ * pendurado não é opção.
+ *
+ * Por isso a checagem de duplicata é feita contra o IXC no momento da chamada, e
+ * o resultado dela é passado aqui já resolvido — a política não adivinha.
+ */
+export function assertCustomerCreatePolicy(input: {
+  documentValid: boolean;
+  existingCustomerId: string | undefined;
+  leadStage: string | undefined;
+  leadAlreadyLinked: string | null | undefined;
+  cityId: string;
+  knownCityIds: Set<string>;
+  street: string;
+  number: string;
+  cep: string;
+}): void {
+  // Documento inválido cria alguém que nunca vai faturar direito: boleto
+  // recusado pelo banco, nota fiscal que não sai.
+  if (!input.documentValid) throw new IxcWritePolicyError("CPF/CNPJ inválido — confira os dígitos antes de cadastrar");
+  if (input.existingCustomerId) throw new IxcWritePolicyError(`Já existe cadastro no IXC com este documento (cliente ${input.existingCustomerId})`);
+  // Cadastrar quem ainda está negociando põe no ERP alguém que não comprou.
+  if (input.leadStage !== "ganho") throw new IxcWritePolicyError("Só lead ganho vira cadastro — mova para “Ganho” quando a venda fechar");
+  if (input.leadAlreadyLinked) throw new IxcWritePolicyError(`Este lead já virou o cadastro ${input.leadAlreadyLinked} no IXC`);
+  if (!input.knownCityIds.has(input.cityId)) throw new IxcWritePolicyError("Cidade não existe no catálogo do IXC");
+  if (input.street.trim().length < 3 || !input.number.trim()) throw new IxcWritePolicyError("Endereço e número são obrigatórios — sem eles o técnico não tem onde instalar");
+  if (input.cep.replace(/\D/g, "").length !== 8) throw new IxcWritePolicyError("CEP precisa ter 8 dígitos");
+}
+
+export interface CustomerCreateServiceRequest {
+  leadId: string;
+  idempotencyKey: string;
+  correlationId: string;
+  requestedBy: string;
+  policy: Parameters<typeof assertCustomerCreatePolicy>[0];
+}
+
+/**
+ * Cadastra cliente no IXC. Mesma régua das outras escritas.
+ *
+ * Diferente da renegociação, aqui uma chamada só resolve — não há estado
+ * intermediário para deixar pela metade. O que a idempotência protege é o clique
+ * repetido: dois cadastros do mesmo cliente é o estrago principal.
+ */
+export async function requestCustomerCreate(
+  request: CustomerCreateServiceRequest,
+  repository: IxcWriteOperationsRepository,
+  callIxc: (correlationId: string) => Promise<{ raw: Record<string, unknown>; customerId: string }>,
+  onCreated?: (customerId: string) => Promise<unknown>,
+): Promise<ReissueResult> {
+  const existing = await repository.findByIdempotencyKey("customer.create", request.idempotencyKey);
+  if (existing) return { status: existing.status, detail: existing.detail ?? "", replay: true };
+
+  const record = (status: IxcWriteStatus, detail: string, customerId = "") => repository.record({
+    operation: "customer.create", idempotencyKey: request.idempotencyKey,
+    customerId: customerId || "novo", invoiceId: `lead:${request.leadId}`,
+    status, requestedBy: request.requestedBy, detail, correlationId: request.correlationId,
+  });
+
+  try {
+    assertCustomerCreatePolicy(request.policy);
+  } catch (error) {
+    const detail = error instanceof IxcWritePolicyError ? error.message : "Política recusou a operação";
+    await record("blocked", detail);
+    return { status: "blocked", detail };
+  }
+
+  if (process.env.FEATURE_IXC_WRITE !== "true") {
+    const detail = "FEATURE_IXC_WRITE desligada — escrita real no IXC não está ligada";
+    await record("blocked", detail);
+    return { status: "blocked", detail };
+  }
+
+  try {
+    const result = await callIxc(request.correlationId);
+    // Guardar o vínculo é o que impede o segundo cadastro do mesmo lead depois.
+    // Falhar aqui não desfaz o cadastro — por isso o detalhe diz o id, sempre.
+    let linkNote = "";
+    if (onCreated) {
+      try { await onCreated(result.customerId); }
+      catch { linkNote = " ⚠️ O cadastro foi criado, mas o vínculo com o lead não foi gravado — anote o número antes de tentar de novo."; }
+    }
+    const detail = `Cliente ${result.customerId} cadastrado no IXC.${linkNote} Resposta: ${JSON.stringify(result.raw).slice(0, 300)}`;
+    await record("success", detail, result.customerId);
+    return { status: "success", detail, raw: result.raw };
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : "Falha desconhecida ao cadastrar cliente";
     await record("failed", detail);
     return { status: "failed", detail };
   }

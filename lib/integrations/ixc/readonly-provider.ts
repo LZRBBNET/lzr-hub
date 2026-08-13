@@ -2,7 +2,7 @@ import { IxcConnectionMapper, IxcContractMapper, IxcCustomerMapper, IxcInvoiceMa
 import { sanitizeTelemetry } from "./masking.ts";
 import { ReadonlyIxcGuard } from "./guard.ts";
 import { CircuitBreaker, SlidingWindowRateLimiter, TtlCache } from "./resilience.ts";
-import type { IxcCollectionWalletDto, IxcCustomerDto, IxcCustomerPage, IxcCustomerSnapshot, IxcListResponse, IxcOsSubjectDto, IxcPaymentTermDto, IxcReadOperation, IxcSectorDto } from "./types.ts";
+import type { IxcCityDto, IxcCollectionWalletDto, IxcCustomerDto, IxcCustomerPage, IxcCustomerSnapshot, IxcListResponse, IxcOsSubjectDto, IxcPaymentTermDto, IxcReadOperation, IxcSectorDto, IxcUfDto } from "./types.ts";
 
 // `listOsCatalog` fica de fora porque não tem um endpoint só: a mesma operação
 // lê `su_oss_assunto` e `empresa_setor`, e o recurso vai explícito na chamada.
@@ -18,8 +18,13 @@ interface ReadOptions { oper?:string; page?:number; sortname?:string; sortorder?
  * que o filtro é realmente aplicado, e não ignorado.
  */
 export interface GridFilter { TB:string; OP:string; P:string }
-/** Operações que não são de um cliente específico — não passam pela checagem de allowlist. */
-const GLOBAL_SCOPE_OPERATIONS = new Set<IxcReadOperation>(["testConnection","listCustomers","listOsCatalog","listFinanceCatalog"]);
+/**
+ * Operações que não são de um cliente específico — não passam pela checagem de
+ * allowlist. `getCity` está aqui porque cidade e UF são **tabela de consulta**,
+ * não dado de ninguém: a allowlist protege cadastro de cliente, e checá-la
+ * contra um código de cidade nunca fez sentido.
+ */
+const GLOBAL_SCOPE_OPERATIONS = new Set<IxcReadOperation>(["testConnection","listCustomers","listOsCatalog","listFinanceCatalog","getCity"]);
 
 /**
  * Traduz o que a pessoa digitou na busca para o filtro do IXC.
@@ -191,6 +196,42 @@ export class IxcReadonlyProvider {
       const {records}=await this.readPage("listCustomers","cliente",`cliente.${field}`,masked,correlationId,2,"",{oper:"=",sortname:"cliente.id"});
       if(records.length===1)return IxcCustomerMapper.map(records[0]);
       if(records.length>1)return undefined;
+    }
+    return undefined;
+  }
+  /**
+   * UFs e cidades do IXC, para cadastrar cliente.
+   *
+   * ⚠️ O cadastro guarda o **código interno do IXC** em `cidade` e `uf`, não o
+   * nome nem o código do IBGE — o cadastro real 21857 tem `cidade: "1759"` e
+   * `uf: "28"`. Digitar "Aracaju" num desses campos cria cliente sem cidade
+   * válida, e ninguém percebe até a primeira cobrança.
+   */
+  async listUfs(correlationId:string):Promise<IxcUfDto[]>{
+    const {records}=await this.readPage("getCity","uf","uf.id","0",correlationId,40,"",{oper:">",sortname:"uf.nome"});
+    return records.map((raw)=>({id:String(raw.id??"").trim(),name:String(raw.nome??"").trim(),initials:String(raw.sigla??"").trim()})).filter((item)=>item.id&&item.name);
+  }
+  async listCities(ufId:string,correlationId:string):Promise<IxcCityDto[]>{
+    const {records}=await this.readPage("getCity","cidade","cidade.uf",ufId,correlationId,600,"",{oper:"=",sortname:"cidade.nome"});
+    return records.map((raw)=>({id:String(raw.id??"").trim(),name:String(raw.nome??"").trim()})).filter((item)=>item.id&&item.name);
+  }
+  /**
+   * Existe cadastro com este CPF/CNPJ? É a checagem que impede duplicata.
+   *
+   * Duplicar cliente no ERP não é um registro a mais: é dois fluxos de fatura,
+   * duas cobranças e um contrato órfão que ninguém sabe qual é o bom.
+   */
+  async findCustomerByDocument(document:string,correlationId:string):Promise<IxcCustomerDto|undefined>{
+    const digits=document.replace(/\D/g,"");
+    if(digits.length!==11&&digits.length!==14)return undefined;
+    // O IXC guarda o documento **com máscara**, como o telefone. Consultar os
+    // dois formatos evita o falso "não existe" que autorizaria a duplicata.
+    const masked=digits.length===11
+      ? `${digits.slice(0,3)}.${digits.slice(3,6)}.${digits.slice(6,9)}-${digits.slice(9)}`
+      : `${digits.slice(0,2)}.${digits.slice(2,5)}.${digits.slice(5,8)}/${digits.slice(8,12)}-${digits.slice(12)}`;
+    for(const value of [masked,digits]){
+      const {records}=await this.readPage("listCustomers","cliente","cliente.cnpj_cpf",value,correlationId,1,"",{oper:"=",sortname:"cliente.id"});
+      if(records[0])return IxcCustomerMapper.map(records[0]);
     }
     return undefined;
   }

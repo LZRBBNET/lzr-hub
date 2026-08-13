@@ -176,7 +176,6 @@ test("sucesso guarda o id, o acréscimo e o vencimento no ledger", async () => {
   delete process.env.FEATURE_IXC_WRITE;
 });
 
-test("o catálogo agora tem três operações prontas e uma não", () => {
-  const naoFeitas = IXC_WRITE_CATALOG.filter((item) => !item.implemented).map((item) => item.operation);
-  assert.deepEqual(naoFeitas, ["customer.create"]);
+test("a renegociação não volta a se declarar pendente", () => {
+  assert.equal(IXC_WRITE_CATALOG.find((item) => item.operation === "negotiation.register").implemented, true);
 });

@@ -153,6 +153,7 @@ test("a resposta crua do IXC fica guardada — é ela que prova o formato na pri
 test("o catálogo declara a abertura de OS como implementada", () => {
   const entry = IXC_WRITE_CATALOG.find((item) => item.operation === "service_order.open");
   assert.equal(entry.implemented, true);
-  const naoFeitas = IXC_WRITE_CATALOG.filter((item) => !item.implemented).map((item) => item.operation);
-  assert.deepEqual(naoFeitas, ["customer.create"], "o catálogo não pode dizer pronto o que não está");
+  // O catálogo completo é conferido em tests/ixc-customer-create.test.mjs; aqui
+  // basta a OS não voltar a se declarar pendente.
+  assert.equal(IXC_WRITE_CATALOG.filter((item) => !item.implemented).length, 0);
 });

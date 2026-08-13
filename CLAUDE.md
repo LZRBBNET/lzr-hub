@@ -103,7 +103,7 @@ Flags relevantes:
 | `FEATURE_N8N_CHANNEL` | Canal WhatsApp via n8n recebe e registra mensagem | **ligada** (modo observação — ver abaixo) |
 | `FEATURE_N8N_AUTOREPLY` | A IA **responde ao cliente** pelo canal | desligada |
 | `FEATURE_QUEUES` | Filas reais (Redis/BullMQ) | desligada |
-| `FEATURE_IXC_WRITE` | Escrita no ERP — segunda via, abertura de OS e renegociação de dívida | desligada |
+| `FEATURE_IXC_WRITE` | Escrita no ERP — as 4 operações do catálogo (segunda via, OS, renegociação, cadastro de cliente) | desligada |
 | `FEATURE_IXC_FULL_BASE` | Leitura da **base inteira** do IXC, não só da allowlist | **ligada** |
 | `FEATURE_LLM_INTENT` | Classificação de intenção por modelo de linguagem (Groq) | **ligada** |
 | `FEATURE_COPILOT_LLM` | O copiloto do atendente **redige** a resposta a partir dos trechos citados | desligada — sem ela o copiloto mostra os trechos como estão |
@@ -157,7 +157,11 @@ Ver [`docs/integrations/ixc-data-mapping.md`](docs/integrations/ixc-data-mapping
 
 ### Escrita no IXC: o que já existe e o que não
 
-Três operações do catálogo estão implementadas (`lib/platform/ixc-write-service.ts`): **segunda via de boleto** (`POST /webservice/v1/get_boleto`), **abertura de OS** (`POST /webservice/v1/su_oss_chamado`) e **renegociação de dívida** (wizard de 5 passos). Cadastrar cliente continua `implemented: false`, e o catálogo na tela diz isso.
+As **quatro** operações do catálogo estão implementadas (`lib/platform/ixc-write-service.ts`): **segunda via de boleto** (`POST /webservice/v1/get_boleto`), **abertura de OS** (`POST /webservice/v1/su_oss_chamado`), **renegociação de dívida** (wizard de 5 passos) e **cadastro de cliente** (`POST /webservice/v1/cliente`).
+
+O cadastro de cliente só nasce de um **lead ganho** do funil (issue #17) — era o gatilho que faltava, e sem ele um cadastro novo não teria origem. Antes de gravar, o documento é conferido pelos dígitos verificadores (`lib/platform/document-check.ts`) e o IXC é consultado pelo CPF/CNPJ: **duplicar cliente é dois fluxos de fatura e um contrato órfão**, e apagar cadastro com contrato pendurado não é opção. O documento fica gravado no IXC **com máscara**, igual ao telefone — a busca tenta os dois formatos, senão o "não existe" seria falso e autorizaria a duplicata.
+
+⚠️ `cidade` e `uf` no cadastro são **códigos internos do IXC** (o cadastro 21857 tem `cidade: "1759"`, `uf: "28"`), não nomes nem IBGE. Por isso vêm de lista lida do ERP, nunca digitados.
 
 ⚠️ **A renegociação não é atômica, e isso muda como ela falha.** O primeiro passo (`renegociar_selecionados`) **já cria o registro no ERP** e devolve `id_renegociacao`; os passos seguintes calculam juro/multa e finalizam. Se algo falhar no meio, o cliente fica com uma renegociação pela metade grudada nas faturas reais, e a API do IXC não tem endpoint de desfazer. Por isso o ledger grava o `id_renegociacao` e o passo alcançado, com o detalhe começando em `PENDENTE DE CONFERÊNCIA MANUAL`. Um `failed` seco ali esconderia um rastro que ficou no ERP.
 
@@ -199,7 +203,7 @@ O formato da **resposta de sucesso** das duas operações não está confirmado 
 npm run typecheck && npm run lint && npm test
 ```
 
-Os três precisam passar. Hoje a suíte tem **485 testes**.
+Os três precisam passar. Hoje a suíte tem **505 testes**.
 
 ## Segurança — pontos já decididos
 
