@@ -29,6 +29,29 @@ export interface ConversationMessage { role: ConversationRole; content: string; 
 
 export interface ConversationOutcome { intent: string; finalStatus: string; handoff: boolean }
 
+/**
+ * A ficha de auditoria de uma conversa: o que dá para provar depois sobre o que
+ * a IA fez ali.
+ *
+ * Campo nulo significa **não registrado**, não "zero" nem "regex" — conversa
+ * anterior a estas colunas existirem não tem como ser preenchida, e preencher
+ * com palpite seria pior que admitir a lacuna.
+ */
+export interface ConversationAudit {
+  intent: string | null;
+  finalStatus: string | null;
+  handoff: boolean | null;
+  handoffReason: string | null;
+  /** `llm` ou `rules`. */
+  intentSource: string | null;
+  /** Pontos percentuais inteiros (0–100). */
+  intentConfidence: number | null;
+  intentModel: string | null;
+  appVersion: string | null;
+  correlationId: string | null;
+  createdAt: string | null;
+}
+
 export interface ConversationsRepository {
   listConversations(limit: number): Promise<ConversationSummary[]>;
   getMessages(channel: string, externalConversationId: string, limit: number): Promise<ConversationMessage[]>;
@@ -38,6 +61,8 @@ export interface ConversationsRepository {
    * pode ser resumo forjado — e ele é escrito para outra pessoa ler e confiar.
    */
   getOutcome(channel: string, externalConversationId: string): Promise<ConversationOutcome | undefined>;
+  /** A ficha de auditoria do último atendimento desta conversa. */
+  getAudit(channel: string, externalConversationId: string): Promise<ConversationAudit | undefined>;
 }
 
 const role = (value: string): ConversationRole =>
@@ -121,6 +146,25 @@ export class DbConversationsRepository implements ConversationsRepository {
     })).reverse();
   }
 
+  async getAudit(channel: string, externalConversationId: string): Promise<ConversationAudit | undefined> {
+    const rows = await this.db.select({
+      intent: conversationOutcomes.intent,
+      finalStatus: conversationOutcomes.finalStatus,
+      handoff: conversationOutcomes.handoff,
+      handoffReason: conversationOutcomes.handoffReason,
+      intentSource: conversationOutcomes.intentSource,
+      intentConfidence: conversationOutcomes.intentConfidence,
+      intentModel: conversationOutcomes.intentModel,
+      appVersion: conversationOutcomes.appVersion,
+      correlationId: conversationOutcomes.correlationId,
+      createdAt: conversationOutcomes.createdAt,
+    }).from(conversationOutcomes)
+      .where(and(eq(conversationOutcomes.channel, channel), eq(conversationOutcomes.externalConversationId, externalConversationId)))
+      .orderBy(desc(conversationOutcomes.createdAt))
+      .limit(1);
+    return rows[0];
+  }
+
   async getOutcome(channel: string, externalConversationId: string): Promise<ConversationOutcome | undefined> {
     const rows = await this.db.select({
       intent: conversationOutcomes.intent,
@@ -135,6 +179,7 @@ export class DbConversationsRepository implements ConversationsRepository {
 }
 
 export class MemoryConversationsRepository implements ConversationsRepository {
+  async getAudit() { return undefined; }
   readonly rows: Array<{ channel: string; externalConversationId: string; role: ConversationRole; content: string; createdAt: string }> = [];
   add(row: { channel: string; externalConversationId: string; role: ConversationRole; content: string; createdAt: string }) { this.rows.push(row); }
   async listConversations(limit: number): Promise<ConversationSummary[]> {

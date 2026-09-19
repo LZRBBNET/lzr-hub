@@ -381,6 +381,45 @@ function Metric({ label, value, detail, icon }: { label:string; value:string; de
 function Progress({ label, value }: { label:string; value:number }) { return <div className="bar-row"><div className="bar-label"><span>{label}</span><strong>{value}%</strong></div><div className="bar"><span style={{width:`${value}%`}} /></div></div>; }
 
 type ConversationMessage = { role:"customer"|"agent"|"suggestion"; content:string; createdAt:string };
+type ConversationAudit = { intent:string|null; finalStatus:string|null; handoff:boolean|null; handoffReason:string|null; intentSource:string|null; intentConfidence:number|null; intentModel:string|null; appVersion:string|null; correlationId:string|null; createdAt:string|null };
+
+/**
+ * Ficha de auditoria da conversa: o que dá para provar depois sobre o que a IA
+ * fez ali.
+ *
+ * Fica ao lado do histórico de propósito. Quem abre a conversa para entender
+ * "por que ela respondeu isso?" não deveria precisar de uma segunda tela — e a
+ * pergunta só aparece quando se está olhando a conversa.
+ *
+ * **Campo não registrado diz isso, com todas as letras.** Conversa anterior a
+ * estas colunas existirem não tem como ser preenchida, e mostrar "regex" ou
+ * "0%" no lugar seria inventar um fato de auditoria — exatamente o oposto do
+ * que a auditoria serve para fazer.
+ */
+function ConversationAuditPanel({audit}:{audit:ConversationAudit|null}){
+  if(!audit)return <div className="info-section">
+    <h4>Auditoria da IA</h4>
+    <p className="audit-empty">Nenhum atendimento registrado para esta conversa. Sem desfecho gravado, não há o que auditar.</p>
+  </div>;
+
+  const naoRegistrado = <em className="audit-missing">não registrado</em>;
+  const origem = audit.intentSource==="llm"
+    ? <>Modelo de linguagem{audit.intentModel?<> <code>{audit.intentModel}</code></>:null}</>
+    : audit.intentSource==="rules" ? <>Regra de texto <span className="audit-note">(o modelo não respondeu a tempo, ou está desligado)</span></> : naoRegistrado;
+
+  return <div className="info-section">
+    <h4>Auditoria da IA</h4>
+    <p className="audit-empty">O que dá para provar depois sobre este atendimento.</p>
+    <div className="audit-line"><span>Quem classificou</span><strong>{origem}</strong></div>
+    <div className="audit-line"><span>Confiança</span><strong>{audit.intentConfidence===null?naoRegistrado:`${audit.intentConfidence}%`}</strong></div>
+    <div className="audit-line"><span>Intenção</span><strong>{audit.intent?intentLabel(audit.intent):naoRegistrado}</strong></div>
+    <div className="audit-line"><span>Desfecho</span><strong>{audit.finalStatus ?? naoRegistrado}</strong></div>
+    {audit.handoff && <div className="audit-line"><span>Transbordou porque</span><strong>{audit.handoffReason?handoffLabel(audit.handoffReason):naoRegistrado}</strong></div>}
+    <div className="audit-line"><span>Versão do código</span><strong>{audit.appVersion?<code>{audit.appVersion}</code>:naoRegistrado}</strong></div>
+    <div className="audit-line"><span>Rastro</span><strong>{audit.correlationId?<code className="audit-id">{audit.correlationId}</code>:naoRegistrado}</strong></div>
+    <p className="audit-note">Procure esse identificador em <strong>Administração → Auditoria</strong> para ver a linha exata do rastro, com o texto que saiu.</p>
+  </div>;
+}
 
 type CopilotSource = { id:string; title:string; category:string; version:number; excerpt:string; score:number };
 type CopilotResult = { kind:"answer"|"summary"; written:"llm"|"excerpt"|"none"; text:string; caveat:string|null; sources:CopilotSource[]; basedOn?:string };
@@ -469,6 +508,7 @@ function Conversation() {
   const [selected,setSelected] = useState<ConversationSummary|null>(null);
   const [messages,setMessages] = useState<ConversationMessage[]>([]);
   const [messagesState,setMessagesState] = useState<"idle"|"loading"|"ready">("idle");
+  const [audit,setAudit] = useState<ConversationAudit|null>(null);
 
   useEffect(() => {
     let active = true;
@@ -484,9 +524,9 @@ function Conversation() {
   }, []);
 
   async function open(item:ConversationSummary) {
-    setSelected(item); setMessagesState("loading"); setMessages([]);
+    setSelected(item); setMessagesState("loading"); setMessages([]); setAudit(null);
     const response = await fetch(`/api/conversations?channel=${encodeURIComponent(item.channel)}&id=${encodeURIComponent(item.externalConversationId)}`);
-    if (response.ok) { const payload = await response.json() as {messages:ConversationMessage[]}; setMessages(payload.messages ?? []); }
+    if (response.ok) { const payload = await response.json() as {messages:ConversationMessage[];audit:ConversationAudit|null}; setMessages(payload.messages ?? []); setAudit(payload.audit ?? null); }
     setMessagesState("ready");
   }
 
@@ -523,6 +563,7 @@ function Conversation() {
       {/* `key` troca o copiloto inteiro ao mudar de conversa: sem isso a resposta
           de um cliente ficaria na tela ao lado do histórico de outro. */}
       {selected && <Copilot key={`${selected.channel}:${selected.externalConversationId}`} channel={selected.channel} conversationId={selected.externalConversationId} />}
+      {selected && <ConversationAuditPanel audit={audit} />}
       <Info title="Conversa" rows={[["Mensagens",String(selected?.messages ?? 0)],["Última",selected?relativeTime(selected.lastAt):"—"],["Intenção",selected?.intent?intentLabel(selected.intent):"Não registrada"],["Desfecho",selected?.finalStatus ?? "Não registrado"]]} />
       <Info title="Cadastro" rows={[["Vínculo com o IXC","Não associado"],["Como associar","Depende de casar o telefone do canal com o cadastro do IXC — ainda não implementado"]]} />
     </aside>

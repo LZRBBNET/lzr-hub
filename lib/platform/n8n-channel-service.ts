@@ -3,7 +3,9 @@ import { and, asc, eq } from "drizzle-orm";
 import { auditEvents, channelIdempotencyKeys, channelMessages } from "../../db/schema.ts";
 import { runAgentPipeline } from "../agent/pipeline.ts";
 import { classifyIntent, llmConfigFromEnv } from "../agent/llm-classifier.ts";
+import { sanitizeHandoffText } from "../agent/handoff.ts";
 import type { ChatMessage } from "../agent/types.ts";
+import { appVersion } from "../runtime/app-version.ts";
 import { traceAgentResult } from "../observability/trace-agent-result.ts";
 import {
   CSAT_QUESTION,
@@ -28,7 +30,12 @@ export const SUGGESTION_ROLE = "suggestion";
 export const SUGGESTED_STATUS = "suggested";
 
 export type ChannelRole = "customer" | "agent" | "suggestion";
-export interface ChannelMessageRow { role: ChannelRole; content: string }
+/**
+ * `correlationId` liga a mensagem ao rastro de auditoria e ao desfecho. Sem ele
+ * o registro de auditoria não alcançava a frase exata — só por conversa e
+ * horário, que é aproximação.
+ */
+export interface ChannelMessageRow { role: ChannelRole; content: string; correlationId?: string }
 /**
  * `response` vem `null` quando a resposta automática está desligada — o fluxo do
  * n8n precisa checar `autoReply` antes de enviar qualquer coisa ao cliente.
@@ -90,8 +97,8 @@ export async function processChannelMessage(
     // Mesmo o agradecimento é mensagem enviada ao cliente: com resposta
     // automática desligada, a nota é registrada e nada sai daqui.
     await repository.saveMessages(CHANNEL_NAME, input.externalConversationId, [
-      { role: "customer", content: input.text },
-      { role: options.autoReply ? "agent" : SUGGESTION_ROLE, content: CSAT_THANKS },
+      { role: "customer", content: input.text, correlationId: input.correlationId },
+      { role: options.autoReply ? "agent" : SUGGESTION_ROLE, content: CSAT_THANKS, correlationId: input.correlationId },
     ]);
     const rated: ChannelResponse = {
       response: options.autoReply ? CSAT_THANKS : null,
@@ -126,8 +133,8 @@ export async function processChannelMessage(
   const reply = askCsat ? `${result.response}\n\n${CSAT_QUESTION}` : result.response;
 
   await repository.saveMessages(CHANNEL_NAME, input.externalConversationId, [
-    { role: "customer", content: input.text },
-    { role: options.autoReply ? "agent" : SUGGESTION_ROLE, content: reply },
+    { role: "customer", content: input.text, correlationId: input.correlationId },
+    { role: options.autoReply ? "agent" : SUGGESTION_ROLE, content: reply, correlationId: input.correlationId },
   ]);
 
   const response: ChannelResponse = {
@@ -144,9 +151,14 @@ export async function processChannelMessage(
     correlationId: input.correlationId,
     entity: `conversation:${input.externalConversationId}`,
     result: response.status,
+    // O fato mais consequente da operação é uma resposta ter saído para um
+    // cliente. "Mensagem recebida" descrevia a metade inofensiva e calava a outra.
+    // Sanitizado mesmo sendo texto nosso: as respostas de hoje são fixas, mas a
+    // auditoria é lida por quem não participou do atendimento, e a regra do
+    // projeto não abre exceção para "este caso não tem dado pessoal".
     reason: options.autoReply
-      ? "Mensagem recebida via canal n8n/WhatsApp"
-      : "Mensagem recebida via canal n8n/WhatsApp; resposta apenas sugerida, não enviada",
+      ? `Resposta ENVIADA ao cliente: "${sanitizeHandoffText(reply ?? "").slice(0, 180)}"`
+      : `Resposta apenas sugerida, não enviada: "${sanitizeHandoffText(reply ?? "").slice(0, 180)}"`,
   });
   await metrics?.saveOutcome({
     channel: CHANNEL_NAME,
@@ -157,6 +169,11 @@ export async function processChannelMessage(
     handoff: result.handoff.required,
     handoffReason: result.handoff.reason,
     correlationId: input.correlationId,
+    // Quem classificou, com quanta certeza, e qual código produziu tudo isso.
+    intentSource: classified.source,
+    intentConfidence: Math.round(classified.confidence * 100),
+    intentModel: classified.model ?? null,
+    appVersion: appVersion(),
   });
 
   return response;
@@ -174,15 +191,19 @@ export class D1ChannelRepository implements ChannelRepository {
     const rows = await this.db.select().from(channelMessages)
       .where(and(eq(channelMessages.channel, channel), eq(channelMessages.externalConversationId, externalConversationId)))
       .orderBy(asc(channelMessages.createdAt));
-    return rows.map((row: { role: string; content: string }) => ({
+    return rows.map((row: { role: string; content: string; correlationId: string | null }) => ({
       role: row.role === "agent" ? "agent" : row.role === SUGGESTION_ROLE ? SUGGESTION_ROLE : "customer",
       content: row.content,
+      // Devolvido junto porque está gravado: esconder na leitura o que o banco
+      // guarda faz o duplo de teste divergir do real sem ninguém perceber.
+      correlationId: row.correlationId ?? undefined,
     }));
   }
   async saveMessages(channel: string, externalConversationId: string, messages: ChannelMessageRow[]): Promise<void> {
     const now = new Date().toISOString();
     await this.db.insert(channelMessages).values(messages.map((message) => ({
-      id: randomUUID(), channel, externalConversationId, role: message.role, content: message.content, createdAt: now,
+      id: randomUUID(), channel, externalConversationId, role: message.role, content: message.content,
+      correlationId: message.correlationId ?? null, createdAt: now,
     })));
   }
   async saveIdempotency(idempotencyKey: string, channel: string, externalConversationId: string, response: ChannelResponse): Promise<void> {
@@ -205,7 +226,9 @@ export class MemoryChannelRepository implements ChannelRepository {
   readonly audits: Array<{ correlationId: string; entity: string; result: string; reason: string }> = [];
   async findIdempotent(idempotencyKey: string) { return this.idempotencyStore.get(idempotencyKey); }
   async getHistory(channel: string, externalConversationId: string) {
-    return this.messageStore.filter((m) => m.channel === channel && m.externalConversationId === externalConversationId).map(({ role, content }) => ({ role, content }));
+    return this.messageStore
+      .filter((m) => m.channel === channel && m.externalConversationId === externalConversationId)
+      .map(({ role, content, correlationId }) => ({ role, content, correlationId }));
   }
   async saveMessages(channel: string, externalConversationId: string, messages: ChannelMessageRow[]) {
     for (const message of messages) this.messageStore.push({ ...message, channel, externalConversationId });

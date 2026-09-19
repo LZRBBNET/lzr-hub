@@ -22,6 +22,13 @@ export interface ConversationOutcomeRow {
   handoff: boolean;
   handoffReason: string | null;
   correlationId: string;
+  /** `llm` ou `rules` — quem classificou a intenção. Ver lib/agent/llm-classifier.ts. */
+  intentSource?: string | null;
+  /** Confiança em pontos percentuais inteiros (0–100). */
+  intentConfidence?: number | null;
+  intentModel?: string | null;
+  /** Commit que produziu a resposta. `null` fora do Railway — ver lib/runtime/app-version.ts. */
+  appVersion?: string | null;
 }
 
 export interface CsatRow { channel: string; externalConversationId: string; score: number }

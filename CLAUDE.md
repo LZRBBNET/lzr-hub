@@ -180,6 +180,28 @@ Toda escrita passa pela mesma régua, nesta ordem: idempotência → política �
 
 O formato da **resposta de sucesso** das duas operações não está confirmado (a coleção Postman não tem exemplo salvo e nenhuma foi executada em produção). Por isso o ledger guarda a resposta crua em vez de campos inventados.
 
+## Auditoria do que a IA faz
+
+A auditoria cobria bem **ação de gente** (login, escrita no ERP, gestão de usuários) e quase nada de **ação da IA**. O teste que importa é: um cliente reclama *"a IA me disse X"* — dá para responder o quê?
+
+Hoje, para cada atendimento do canal, ficam registrados:
+
+| Campo | Onde | Por quê |
+|---|---|---|
+| `correlationId` na mensagem | `channel_messages` | Liga o rastro de auditoria à **frase exata**. Antes só dava para casar por conversa e horário, que é aproximação |
+| `intentSource` (`llm`/`rules`) | `conversation_outcomes` | O fallback para a regex é **silencioso de propósito**; sem registrar quem decidiu, ninguém explica depois por que a IA entendeu o que entendeu |
+| `intentConfidence` (0–100) | `conversation_outcomes` | Inteiro, não float — auditoria não precisa de casa decimal |
+| `intentModel` | `conversation_outcomes` | Qual modelo, quando foi o modelo |
+| `appVersion` | `conversation_outcomes` | Mudar o prompt não pode tornar o passado inexplicável |
+
+⚠️ **Campo nulo significa "não registrado", e a tela diz isso.** Conversa anterior a estas colunas existirem não tem como ser preenchida; mostrar `rules` ou `0%` no lugar seria inventar um fato de auditoria — o oposto do que ela serve para fazer.
+
+O registro do canal passou a dizer **"Resposta ENVIADA ao cliente: «...»"** quando de fato sai. Antes dizia "Mensagem recebida", que descrevia a metade inofensiva e calava a outra. O texto passa por `sanitizeHandoffText` mesmo sendo texto nosso: a auditoria é lida por quem não participou do atendimento, e a regra não abre exceção para "este caso não tem dado pessoal".
+
+A ficha aparece **ao lado da conversa** em Atendimentos (`ConversationAuditPanel`), com o `correlationId` para procurar a linha exata em Administração → Auditoria.
+
+⚠️ Auditoria **não é o que falta** para a IA atender sozinha. O bloqueio continua sendo que as respostas do pipeline são de homologação ("preparei a segunda via *fictícia*"). Auditar bem uma resposta ruim só documenta melhor o problema. A ordem é: auditoria → reescrever os textos → ligar o envio.
+
 ## Convenções de código
 
 **Padrão de repositório com injeção de dependência.** Toda lógica que toca o banco fica atrás de uma interface, com duas implementações: uma real (`Db*Repository`) e uma em memória (`Memory*Repository`) usada nos testes. Isso permite testar regra de negócio sem banco. Exemplos: `lib/platform/auth.ts`, `lib/platform/support-metrics.ts`, `lib/platform/n8n-channel-service.ts`.
@@ -206,7 +228,7 @@ O formato da **resposta de sucesso** das duas operações não está confirmado 
 npm run typecheck && npm run lint && npm test
 ```
 
-Os três precisam passar. Hoje a suíte tem **536 testes**.
+Os três precisam passar. Hoje a suíte tem **545 testes**.
 
 ## Segurança — pontos já decididos
 

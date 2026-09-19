@@ -318,6 +318,13 @@ export const channelMessages = pgTable("channel_messages", {
   externalConversationId: text("external_conversation_id").notNull(),
   role: text("role").notNull(),
   content: text("content").notNull(),
+  /**
+   * Liga a mensagem ao rastro de auditoria e ao desfecho. Sem ela, do registro
+   * de auditoria não se chegava à frase exata — só por conversa e horário, que
+   * é aproximação. É **anulável** porque mensagem gravada antes disto existir
+   * não tem como ser preenchida, e inventar um valor seria pior que admitir.
+   */
+  correlationId: text("correlation_id"),
   createdAt: text("created_at").notNull(),
 }, (table) => [index("channel_messages_conversation_idx").on(table.channel, table.externalConversationId, table.createdAt)]);
 
@@ -378,6 +385,25 @@ export const conversationOutcomes = pgTable("conversation_outcomes", {
   finalStatus: text("final_status").notNull(),
   handoff: boolean("handoff").notNull().default(false),
   handoffReason: text("handoff_reason"),
+  /**
+   * Procedência da classificação: `llm` ou `rules`.
+   *
+   * O fallback é silencioso de propósito — se o modelo demora, a regex assume e
+   * o atendimento não para. Mas sem registrar qual dos dois decidiu, ninguém
+   * consegue explicar depois por que a IA entendeu o que entendeu, e as duas
+   * têm qualidade bem diferente.
+   */
+  intentSource: text("intent_source"),
+  /** Confiança em pontos percentuais inteiros (0–100). Inteiro evita float na auditoria. */
+  intentConfidence: integer("intent_confidence"),
+  /** Modelo que classificou, quando foi o modelo. Null quando foi a regex. */
+  intentModel: text("intent_model"),
+  /**
+   * Commit que produziu a resposta. Mudar o prompt ou as regras não pode tornar
+   * o passado inexplicável — sem isto, "por que ela disse aquilo?" fica sem
+   * resposta depois do primeiro deploy.
+   */
+  appVersion: text("app_version"),
   correlationId: text("correlation_id").notNull(),
   createdAt: text("created_at").notNull(),
 }, (table) => [index("conversation_outcomes_created_idx").on(table.createdAt), index("conversation_outcomes_conversation_idx").on(table.channel, table.externalConversationId)]);

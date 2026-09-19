@@ -74,9 +74,14 @@ export function llmConfigFromEnv(env: Record<string, string | undefined> = proce
   };
 }
 
-export interface Classification { intent: Intent; confidence: number; source: "llm" | "rules" }
+/**
+ * `source` e `model` existem para a auditoria, não para o pipeline: o fallback
+ * para a regex é silencioso de propósito, e sem registrar quem decidiu ninguém
+ * consegue explicar depois por que a IA entendeu o que entendeu.
+ */
+export interface Classification { intent: Intent; confidence: number; source: "llm" | "rules"; model?: string }
 
-function parseChoice(raw: string): Classification | undefined {
+function parseChoice(raw: string, model: string): Classification | undefined {
   // O modelo às vezes embrulha o JSON em cerca de código; pega o primeiro objeto.
   const match = raw.match(/\{[\s\S]*?\}/);
   if (!match) return undefined;
@@ -87,7 +92,7 @@ function parseChoice(raw: string): Classification | undefined {
   if (!INTENTS.includes(intent)) return undefined;
   const confidence = Number(value.confidence);
   // Confiança ilegível vira 0.7: acima do corte de transbordo, longe de certeza.
-  return { intent, confidence: Number.isFinite(confidence) ? Math.min(Math.max(confidence, 0), 1) : 0.7, source: "llm" };
+  return { intent, confidence: Number.isFinite(confidence) ? Math.min(Math.max(confidence, 0), 1) : 0.7, source: "llm", model };
 }
 
 /**
@@ -126,7 +131,7 @@ export async function classifyIntent(
     });
     if (!response.ok) return fallback;
     const body = await response.json() as { choices?: Array<{ message?: { content?: string } }> };
-    return parseChoice(body.choices?.[0]?.message?.content ?? "") ?? fallback;
+    return parseChoice(body.choices?.[0]?.message?.content ?? "", config.model) ?? fallback;
   } catch {
     return fallback;
   } finally {

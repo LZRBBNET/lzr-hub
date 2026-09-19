@@ -236,6 +236,16 @@ button.data-row:hover { background:var(--blue-soft); }
 .copilot-answer { margin-top: 12px; display: grid; gap: 8px; }
 .copilot-answer pre { margin: 0; white-space: pre-wrap; word-break: break-word; font: inherit; font-size: 12px; line-height: 1.6; background: var(--surface-2); border: 1px solid var(--line); border-radius: 9px; padding: 10px; }
 .copilot-caveat { color: var(--warn); font-size: 10px; line-height: 1.5; }
+.audit-empty { margin: 0 0 10px; color: var(--muted); font-size: 11px; line-height: 1.55; }
+.audit-line { display: flex; justify-content: space-between; gap: 10px; margin: 8px 0; font-size: 11px; align-items: baseline; }
+.audit-line > span { color: var(--muted); flex-shrink: 0; }
+.audit-line > strong { text-align: right; font-weight: 600; }
+.audit-line code { font-size: 10px; background: var(--surface-2); border-radius: 5px; padding: 1px 5px; }
+.audit-id { word-break: break-all; }
+/* "não registrado" precisa parecer ausência, não valor — senão vira dado. */
+.audit-missing { color: var(--text-3); font-style: italic; font-weight: 400; }
+.audit-note { margin: 8px 0 0; color: var(--text-3); font-size: 10px; line-height: 1.5; }
+
 .copilot-basedon { color: var(--muted); font-size: 10px; line-height: 1.5; font-style: italic; }
 
 /* ---------- Kanban do funil comercial (issue #17) ---------- */

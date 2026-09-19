@@ -26,8 +26,13 @@ export async function GET(request: Request) {
   try {
     const repository = new DbConversationsRepository(await getDb());
     if (id) {
-      const messages = await repository.getMessages(channel, id, MESSAGE_LIMIT);
-      return NextResponse.json({ available: true, channel, id, messages, channelState });
+      const [messages, audit] = await Promise.all([
+        repository.getMessages(channel, id, MESSAGE_LIMIT),
+        // A ficha de auditoria vem junto: quem abre a conversa para entender o
+        // que aconteceu não deveria precisar de uma segunda tela.
+        repository.getAudit(channel, id).catch(() => undefined),
+      ]);
+      return NextResponse.json({ available: true, channel, id, messages, audit: audit ?? null, channelState });
     }
     return NextResponse.json({ available: true, items: await repository.listConversations(LIST_LIMIT), channelState });
   } catch {
