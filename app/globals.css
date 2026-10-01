@@ -192,15 +192,16 @@ button.data-row:hover { background:var(--blue-soft); }
 .service-card p { color: var(--muted); font-size: 12px; margin: 0 0 15px; line-height: 1.5; }
 .service-meta { border-top: 1px solid var(--line-soft); padding-top: 12px; display: flex; justify-content: space-between; font-size: 11px; color: var(--muted); }
 
-.conversation-layout { display: grid; grid-template-columns: 300px minmax(420px, 1fr) 320px; height: calc(100vh - 118px); min-height: 620px; background: var(--panel); border: 1px solid var(--line); border-radius: 14px; overflow: hidden; }
-.conversation-list { border-right: 1px solid var(--line); min-width: 0; }
+.conversation-layout { display: grid; grid-template-columns: 300px minmax(420px, 1fr) 320px; grid-template-rows: minmax(0, 1fr); height: calc(100vh - 118px); min-height: 620px; background: var(--panel); border: 1px solid var(--line); border-radius: 14px; overflow: hidden; }
+.conversation-list { border-right: 1px solid var(--line); min-width: 0; overflow-y: auto; }
 .search { margin: 14px; width: calc(100% - 28px); border: 1px solid var(--line); background: var(--surface-2); border-radius: 9px; padding: 10px 12px; outline: 0; font-size: 12px; }
 .contact { padding: 14px; display: grid; grid-template-columns: 40px 1fr auto; gap: 10px; border-top: 1px solid var(--line-soft); cursor: pointer; }
 .contact.active { background: var(--blue-soft); border-left: 3px solid var(--blue); padding-left: 11px; }
 .contact p { margin: 1px 0 4px; font-size: 13px; font-weight: 650; }
 .contact span { display: block; color: var(--muted); font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .contact time { color: var(--text-3); font-size: 11px; }
-.conversation-main { min-width: 0; display: flex; flex-direction: column; background: var(--surface-2); }
+/* Sem `min-height: 0` o item da grade cresce até caber todas as mensagens, a área de rolagem nunca rola e o campo de resposta sai da tela, cortado pelo overflow do layout. */
+.conversation-main { min-width: 0; min-height: 0; display: flex; flex-direction: column; background: var(--surface-2); }
 .chat-header { height: 67px; padding: 11px 17px; border-bottom: 1px solid var(--line); display: flex; align-items: center; justify-content: space-between; background: var(--panel); }
 .person { display: flex; align-items: center; gap: 10px; }
 .person strong { display: block; font-size: 13px; }

@@ -509,6 +509,12 @@ function Conversation() {
   const [messages,setMessages] = useState<ConversationMessage[]>([]);
   const [messagesState,setMessagesState] = useState<"idle"|"loading"|"ready">("idle");
   const [audit,setAudit] = useState<ConversationAudit|null>(null);
+  const messagesRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const el = messagesRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  }, [messages]);
 
   useEffect(() => {
     let active = true;
@@ -547,7 +553,7 @@ function Conversation() {
     </aside>
     <section className="conversation-main">
       <div className="chat-header"><div className="person"><Avatar initials={selected?conversationLabel(selected.externalConversationId).slice(-2):"—"} /><div><strong>{selected?conversationLabel(selected.externalConversationId):"—"}</strong><span>● {selected?.channel ?? "canal"}</span></div></div><span className={`badge ${selected?.handoff?"amber":"blue"}`}>{selected?.handoff?"Transbordo":selected?.finalStatus ?? "Sem desfecho"}</span></div>
-      <div className="messages">
+      <div className="messages" ref={messagesRef}>
         {messagesState==="loading" && <div className="message agent">Carregando histórico…</div>}
         {messagesState==="ready" && messages.length===0 && <div className="message agent">Conversa sem mensagens gravadas.</div>}
         {messages.map((message,index)=><div className={`message ${message.role==="customer"?"":"agent"}`} key={index} style={message.role==="suggestion"?{opacity:0.72,borderLeft:"3px solid var(--warn)"}:undefined}>
