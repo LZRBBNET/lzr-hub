@@ -7,6 +7,7 @@ import { sanitizeHandoffText } from "../agent/handoff.ts";
 import type { ChatMessage } from "../agent/types.ts";
 import { appVersion } from "../runtime/app-version.ts";
 import { traceAgentResult } from "../observability/trace-agent-result.ts";
+import { resolveReply, type ReplyOverrides } from "./reply-templates-shared.ts";
 import {
   CSAT_QUESTION,
   CSAT_THANKS,
@@ -19,6 +20,14 @@ import {
 export const CHANNEL_NAME = "n8n-whatsapp";
 export const MAX_MESSAGE_LENGTH = 5000;
 export const MAX_HISTORY = 40;
+/**
+ * Memória que o classificador por modelo enxerga: as últimas falas, e só as
+ * recentes. "Sim" ou "continua igual" só fazem sentido com o que veio antes — mas
+ * conversa de ontem não deve explicar a de hoje, então há um prazo, como a
+ * memória de sessão de qualquer agente de IA.
+ */
+export const LLM_CONTEXT_TURNS = 6;
+export const LLM_CONTEXT_MAX_AGE_MS = 6 * 60 * 60 * 1000;
 
 /**
  * Resposta que a IA produziu mas que ninguém enviou ao cliente. Fica gravada
@@ -35,13 +44,40 @@ export type ChannelRole = "customer" | "agent" | "suggestion";
  * o registro de auditoria não alcançava a frase exata — só por conversa e
  * horário, que é aproximação.
  */
-export interface ChannelMessageRow { role: ChannelRole; content: string; correlationId?: string }
+export interface ChannelMessageRow {
+  role: ChannelRole;
+  content: string;
+  correlationId?: string;
+  /** Preenchido na leitura; quem grava deixa o banco carimbar. Ausente = sem prazo conhecido. */
+  createdAt?: string;
+  /** E-mail de quem escreveu a resposta enviada. Ausente = não registrado, nunca "a IA". */
+  sentBy?: string;
+  /** `wamid` da Meta, quando existe. */
+  externalMessageId?: string;
+}
 /**
  * `response` vem `null` quando a resposta automática está desligada — o fluxo do
  * n8n precisa checar `autoReply` antes de enviar qualquer coisa ao cliente.
  */
 export interface ChannelResponse { response: string | null; autoReply: boolean; suggestion?: string; status: string; handoff: boolean; correlationId: string }
-export interface ChannelOptions { autoReply: boolean }
+export interface ChannelOptions {
+  autoReply: boolean;
+  /** Respostas aprovadas editadas por quem administra; o que falta cai no padrão do código. */
+  templates?: ReplyOverrides;
+}
+
+/**
+ * As falas que o classificador recebe como contexto. Sugestão fica de fora: o
+ * cliente nunca a viu, então ela não faz parte do que foi dito.
+ */
+export function contextForClassifier(rows: ChannelMessageRow[], now = Date.now()): ChatMessage[] {
+  return rows
+    .filter((row) => row.role !== SUGGESTION_ROLE)
+    // Sem carimbo de data não há como afirmar que é antiga; fica.
+    .filter((row) => !row.createdAt || !Number.isFinite(Date.parse(row.createdAt)) || now - Date.parse(row.createdAt) <= LLM_CONTEXT_MAX_AGE_MS)
+    .slice(-LLM_CONTEXT_TURNS)
+    .map(({ role, content }) => ({ role: role === "agent" ? "agent" : "customer", content }));
+}
 
 export interface ChannelRepository {
   findIdempotent(idempotencyKey: string): Promise<ChannelResponse | undefined>;
@@ -97,7 +133,7 @@ export async function processChannelMessage(
     // Mesmo o agradecimento é mensagem enviada ao cliente: com resposta
     // automática desligada, a nota é registrada e nada sai daqui.
     await repository.saveMessages(CHANNEL_NAME, input.externalConversationId, [
-      { role: "customer", content: input.text, correlationId: input.correlationId },
+      { role: "customer", content: input.text, correlationId: input.correlationId, externalMessageId: input.idempotencyKey },
       { role: options.autoReply ? "agent" : SUGGESTION_ROLE, content: CSAT_THANKS, correlationId: input.correlationId },
     ]);
     const rated: ChannelResponse = {
@@ -119,21 +155,27 @@ export async function processChannelMessage(
   }
 
   // Classifica antes de rodar o pipeline: sem chave configurada isto cai na
-  // regex e o comportamento é idêntico ao de antes.
-  const classified = await classifyIntent(input.text, llmConfigFromEnv());
+  // regex e o comportamento é idêntico ao de antes. O contexto é o que o
+  // modelo precisa para entender "sim" e "continua igual".
+  const classified = await classifyIntent(input.text, llmConfigFromEnv(), undefined, contextForClassifier(historyRows));
   const result = runAgentPipeline(input.text, history, {
     channel: "whatsapp",
     intentOverride: { intent: classified.intent, confidence: classified.confidence },
   });
   await traceAgentResult(result, { channel: CHANNEL_NAME, correlationId: input.correlationId });
 
+  // O pipeline decide intenção, transbordo e desfecho; o **texto** que sai pelo
+  // canal é a resposta aprovada da intenção. O do pipeline é de homologação
+  // ("preparei a segunda via fictícia") e não pode chegar a um cliente real.
+  const approved = resolveReply(result.intent, options.templates);
+
   // Só pede nota quando a resposta é de fato entregue — não dá para avaliar
   // um atendimento que o cliente não recebeu.
   const askCsat = options.autoReply && shouldAskCsat(result.finalStatus, result.handoff.required);
-  const reply = askCsat ? `${result.response}\n\n${CSAT_QUESTION}` : result.response;
+  const reply = askCsat ? `${approved}\n\n${CSAT_QUESTION}` : approved;
 
   await repository.saveMessages(CHANNEL_NAME, input.externalConversationId, [
-    { role: "customer", content: input.text, correlationId: input.correlationId },
+    { role: "customer", content: input.text, correlationId: input.correlationId, externalMessageId: input.idempotencyKey },
     { role: options.autoReply ? "agent" : SUGGESTION_ROLE, content: reply, correlationId: input.correlationId },
   ]);
 
@@ -191,19 +233,24 @@ export class D1ChannelRepository implements ChannelRepository {
     const rows = await this.db.select().from(channelMessages)
       .where(and(eq(channelMessages.channel, channel), eq(channelMessages.externalConversationId, externalConversationId)))
       .orderBy(asc(channelMessages.createdAt));
-    return rows.map((row: { role: string; content: string; correlationId: string | null }) => ({
+    return rows.map((row: { role: string; content: string; correlationId: string | null; createdAt: string; sentBy: string | null; externalMessageId: string | null }) => ({
       role: row.role === "agent" ? "agent" : row.role === SUGGESTION_ROLE ? SUGGESTION_ROLE : "customer",
       content: row.content,
       // Devolvido junto porque está gravado: esconder na leitura o que o banco
       // guarda faz o duplo de teste divergir do real sem ninguém perceber.
       correlationId: row.correlationId ?? undefined,
+      createdAt: row.createdAt,
+      sentBy: row.sentBy ?? undefined,
+      externalMessageId: row.externalMessageId ?? undefined,
     }));
   }
   async saveMessages(channel: string, externalConversationId: string, messages: ChannelMessageRow[]): Promise<void> {
     const now = new Date().toISOString();
     await this.db.insert(channelMessages).values(messages.map((message) => ({
       id: randomUUID(), channel, externalConversationId, role: message.role, content: message.content,
-      correlationId: message.correlationId ?? null, createdAt: now,
+      correlationId: message.correlationId ?? null,
+      sentBy: message.sentBy ?? null, externalMessageId: message.externalMessageId ?? null,
+      createdAt: now,
     })));
   }
   async saveIdempotency(idempotencyKey: string, channel: string, externalConversationId: string, response: ChannelResponse): Promise<void> {
@@ -228,10 +275,12 @@ export class MemoryChannelRepository implements ChannelRepository {
   async getHistory(channel: string, externalConversationId: string) {
     return this.messageStore
       .filter((m) => m.channel === channel && m.externalConversationId === externalConversationId)
-      .map(({ role, content, correlationId }) => ({ role, content, correlationId }));
+      .map(({ role, content, correlationId, createdAt, sentBy, externalMessageId }) => ({ role, content, correlationId, createdAt, sentBy, externalMessageId }));
   }
   async saveMessages(channel: string, externalConversationId: string, messages: ChannelMessageRow[]) {
-    for (const message of messages) this.messageStore.push({ ...message, channel, externalConversationId });
+    // Carimbo como o banco real faz: o prazo da memória do classificador depende dele.
+    const now = new Date().toISOString();
+    for (const message of messages) this.messageStore.push({ ...message, createdAt: now, channel, externalConversationId });
   }
   async saveIdempotency(idempotencyKey: string, _channel: string, _externalConversationId: string, response: ChannelResponse) {
     this.idempotencyStore.set(idempotencyKey, response);

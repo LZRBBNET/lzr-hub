@@ -1,6 +1,7 @@
 "use client";
 import { useEffect, useState } from "react";
 import { BarChart } from "./bar-chart";
+import { ReplyTemplates } from "./reply-templates";
 
 export function IntelligenceModule({view}:{view:"churn"|"conhecimento"}){
   return view==="conhecimento" ? <Knowledge/> : <Churn/>;
@@ -198,6 +199,7 @@ function Knowledge(){
               </div>
             </div>)}
       </section>
+      <ReplyTemplates/>
     </>}
   </main>;
 }

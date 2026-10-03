@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { randomUUID } from "node:crypto";
 import { getDb } from "@/db";
 import { D1ChannelRepository, MAX_MESSAGE_LENGTH, processChannelMessage } from "@/lib/platform/n8n-channel-service";
+import { DbReplyTemplatesRepository, loadOverrides } from "@/lib/platform/reply-templates-service";
 import { DbSupportMetricsRepository } from "@/lib/platform/support-metrics";
 import { DbCrmRepository, captureLeadFromContact } from "@/lib/platform/crm-service";
 import { getIxcRuntime } from "@/lib/integrations/ixc/runtime";
@@ -49,7 +50,7 @@ export async function POST(request: Request) {
     new D1ChannelRepository(db),
     { externalConversationId, text, idempotencyKey, correlationId },
     new DbSupportMetricsRepository(db),
-    { autoReply: autoReplyEnabled() },
+    { autoReply: autoReplyEnabled(), templates: await loadOverrides(new DbReplyTemplatesRepository(db)) },
     // Captação de lead (issue #17): quem escreve e não tem cadastro no IXC vira
     // lead no funil. Sem IXC ligado não há como saber se é cliente — e criar
     // lead na dúvida encheria o funil de quem já compra há anos.

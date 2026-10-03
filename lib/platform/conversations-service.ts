@@ -25,7 +25,8 @@ export interface ConversationSummary {
   handoff?: boolean;
 }
 
-export interface ConversationMessage { role: ConversationRole; content: string; createdAt: string }
+/** `sentBy` é o e-mail do atendente que escreveu a resposta; ausente = não registrado, não "a IA". */
+export interface ConversationMessage { role: ConversationRole; content: string; createdAt: string; sentBy?: string }
 
 export interface ConversationOutcome { intent: string; finalStatus: string; handoff: boolean }
 
@@ -137,12 +138,13 @@ export class DbConversationsRepository implements ConversationsRepository {
       role: channelMessages.role,
       content: channelMessages.content,
       createdAt: channelMessages.createdAt,
+      sentBy: channelMessages.sentBy,
     }).from(channelMessages)
       .where(and(eq(channelMessages.channel, channel), eq(channelMessages.externalConversationId, externalConversationId)))
       .orderBy(desc(channelMessages.createdAt))
       .limit(limit);
-    return rows.map((row: { role: string; content: string; createdAt: string }) => ({
-      role: role(row.role), content: row.content, createdAt: row.createdAt,
+    return rows.map((row: { role: string; content: string; createdAt: string; sentBy: string | null }) => ({
+      role: role(row.role), content: row.content, createdAt: row.createdAt, sentBy: row.sentBy ?? undefined,
     })).reverse();
   }
 
@@ -180,8 +182,8 @@ export class DbConversationsRepository implements ConversationsRepository {
 
 export class MemoryConversationsRepository implements ConversationsRepository {
   async getAudit() { return undefined; }
-  readonly rows: Array<{ channel: string; externalConversationId: string; role: ConversationRole; content: string; createdAt: string }> = [];
-  add(row: { channel: string; externalConversationId: string; role: ConversationRole; content: string; createdAt: string }) { this.rows.push(row); }
+  readonly rows: Array<{ channel: string; externalConversationId: string; role: ConversationRole; content: string; createdAt: string; sentBy?: string }> = [];
+  add(row: { channel: string; externalConversationId: string; role: ConversationRole; content: string; createdAt: string; sentBy?: string }) { this.rows.push(row); }
   async listConversations(limit: number): Promise<ConversationSummary[]> {
     const byId = new Map<string, ConversationSummary>();
     for (const row of [...this.rows].sort((a, b) => a.createdAt.localeCompare(b.createdAt))) {
@@ -202,7 +204,7 @@ export class MemoryConversationsRepository implements ConversationsRepository {
       .filter((row) => row.channel === channel && row.externalConversationId === externalConversationId)
       .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
       .slice(-limit)
-      .map(({ role: value, content, createdAt }) => ({ role: value, content, createdAt }));
+      .map(({ role: value, content, createdAt, sentBy }) => ({ role: value, content, createdAt, sentBy }));
   }
   readonly outcomes = new Map<string, ConversationOutcome>();
   async getOutcome(channel: string, externalConversationId: string) { return this.outcomes.get(`${channel}:${externalConversationId}`); }

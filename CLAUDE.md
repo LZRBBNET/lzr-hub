@@ -107,7 +107,8 @@ Flags relevantes:
 | `FEATURE_IXC_FULL_BASE` | Leitura da **base inteira** do IXC, não só da allowlist | **ligada** |
 | `FEATURE_LLM_INTENT` | Classificação de intenção por modelo de linguagem (Groq) | **ligada** |
 | `FEATURE_COPILOT_LLM` | O copiloto do atendente **redige** a resposta a partir dos trechos citados | desligada — sem ela o copiloto mostra os trechos como estão |
-| `FEATURE_META_WHATSAPP` | Canal **oficial** da Meta (Cloud API) — `/api/channels/meta` | desligada — pendente conta Meta Business e migração do número |
+| `FEATURE_META_WHATSAPP` | Canal **oficial** da Meta (Cloud API) — `/api/channels/meta` | **ligada** — número `+55 79 6000-4421`, conta "Bbnet Bot" (ver `docs/integrations/whatsapp-meta.md`) |
+| `FEATURE_ATTENDANT_REPLY` | O **atendente responde ao cliente** pela tela de Atendimentos, via Cloud API. Também exige `FEATURE_AUTH`, `META_ACCESS_TOKEN` e `META_PHONE_NUMBER_ID` | desligada — pendente o token permanente do usuário do sistema no Railway |
 | `FEATURE_TELEGRAM_ALERTS` | Ingestão de alerta de rede real via webhook do Telegram | desligada — pendente criar o bot e chamar `setWebhook` (ver `app/api/integrations/telegram/webhook`) |
 | `IXC_MODE` | `disabled` / `staging-readonly` | `staging-readonly` |
 
@@ -134,6 +135,14 @@ O problema medido está na **classificação**: em 13 conversas reais, 11 transb
 **Groq foi escolhido em vez do Gemini por privacidade**: na camada gratuita do Gemini o Google usa o conteúdo enviado para treinar modelos e revisor humano pode ver. A Groq não treina com dado de cliente em nenhuma camada. Ainda assim, a mensagem sai **sanitizada** (`sanitizeHandoffText` remove e-mail, CPF e telefone) — o provedor não precisa disso para entender a intenção.
 
 Fail-closed em três camadas: sem `GROQ_API_KEY` não há chamada; erro ou demora acima de 4s cai na regex; resposta inválida é descartada. Em nenhum caso o atendimento para.
+
+**Memória.** O classificador recebe, além da mensagem, as últimas falas da conversa (`LLM_CONTEXT_TURNS = 6`, só das últimas 6 horas — `contextForClassifier` em `n8n-channel-service.ts`). Sem isso "sim" e "continua igual" eram ilegíveis. Sugestão da IA fica fora (o cliente nunca a viu), cada fala é sanitizada, e o prompt diz ao modelo que o texto da conversa é dado, não instrução.
+
+### Respostas aprovadas: o texto que sai pelo canal
+
+O canal **não usa o texto do pipeline**. O pipeline continua decidindo intenção, transbordo e desfecho, mas o texto que vira sugestão (e, quando o envio automático for ligado, resposta) é a **resposta aprovada da intenção** — `resolveReply` em `lib/platform/reply-templates-shared.ts`. O texto do pipeline é de homologação e segue servindo ao simulador de `/api/agent`.
+
+Os padrões moram no código e descrevem **o que vai acontecer** ("vou encaminhar", "um atendente retorna"), nunca algo já feito. A BBNET edita em **Base de Conhecimento → Respostas aprovadas da IA** (permissão `knowledge.publish`); a edição fica em `agent_reply_templates`, com versão, e o texto anterior vai para a auditoria. A validação recusa texto vazio, acima de 1000 caracteres, com e-mail/CPF/telefone (a resposta vale para todo cliente) ou com "fictício", "homologação" ou "simulado". Edição inválida que chegue ao canal cai no padrão; banco fora do ar também — os padrões são seguros.
 
 ### O copiloto do atendente é outra coisa
 
@@ -200,7 +209,9 @@ O registro do canal passou a dizer **"Resposta ENVIADA ao cliente: «...»"** qu
 
 A ficha aparece **ao lado da conversa** em Atendimentos (`ConversationAuditPanel`), com o `correlationId` para procurar a linha exata em Administração → Auditoria.
 
-⚠️ Auditoria **não é o que falta** para a IA atender sozinha. O bloqueio continua sendo que as respostas do pipeline são de homologação ("preparei a segunda via *fictícia*"). Auditar bem uma resposta ruim só documenta melhor o problema. A ordem é: auditoria → reescrever os textos → ligar o envio.
+⚠️ A ordem era: auditoria → reescrever os textos → ligar o envio. Os dois primeiros estão feitos — o canal usa as respostas aprovadas, não o texto de homologação. O que ainda falta antes de ligar `FEATURE_N8N_AUTOREPLY`: várias respostas prometem ação humana ("um atendente envia a segunda via"), e com envio automático essa promessa precisa virar fila de fato, senão o cliente espera por algo que ninguém sabe que deve fazer.
+
+**Resposta do atendente pela tela** (`FEATURE_ATTENDANT_REPLY`, `lib/platform/attendant-reply-service.ts`). Segue a régua da escrita no ERP: idempotência (chave por clique, reservada em `channel_idempotency_keys` **antes** de chamar a Meta) → política (login obrigatório, texto de homologação recusado, janela de 24 horas) → flag → chamada. Bloqueio e falha também entram na auditoria. Em **timeout a reserva não é solta**: a mensagem pode ter saído, e liberar convidaria um reenvio em dobro. A autoria fica em `channel_messages.sent_by`; nulo é "não registrado", nunca "a IA". Antes de responder, a mensagem do cliente é marcada como lida (melhor esforço, pelo `wamid` em `external_message_id`).
 
 ## Convenções de código
 
@@ -228,7 +239,7 @@ A ficha aparece **ao lado da conversa** em Atendimentos (`ConversationAuditPanel
 npm run typecheck && npm run lint && npm test
 ```
 
-Os três precisam passar. Hoje a suíte tem **545 testes**.
+Os três precisam passar. Hoje a suíte tem **590 testes**.
 
 ## Segurança — pontos já decididos
 
@@ -248,7 +259,8 @@ Ver [`docs/security/authentication.md`](docs/security/authentication.md).
 - O rate limit de login é **memória do processo**: com mais de uma instância cada uma conta a sua parte. Migra para Redis quando houver escala horizontal
 - Custo por atendimento não é medido (depende do Langfuse, issue #6)
 - Tempo médio de atendimento também não é medido — a Visão geral escreve isso em vez de estimar
-- Responder pela tela de Atendimentos ainda não existe: quem responde é o fluxo do n8n, então o campo fica desabilitado. É por isso que o copiloto tem botão **"Copiar"** e não "Enviar", e por isso a auditoria registra `copilot.suggestion.used` como *copiada*, não como enviada
+- Responder pela tela de Atendimentos existe atrás de `FEATURE_ATTENDANT_REPLY`, e só com **texto livre dentro de 24 horas** da última mensagem do cliente — fora disso a Meta exige modelo aprovado, que ainda não é suportado. O campo fica desabilitado enquanto a flag, o token ou o login faltarem. A sugestão da IA e a resposta redigida do copiloto podem virar **rascunho** no campo; o atendente edita e envia. `copilot.suggestion.used` continua registrando *cópia*: o que vai para a auditoria como envio é `whatsapp.reply.sent`
+- Recibo de entrega e leitura (`statuses` do webhook) ainda é **ignorado**: "enviada" significa aceita pela Meta, não entregue ao cliente
 - A base de conhecimento **não é segmentada por perfil**: todo documento publicado é visível a quem tem `customer.read`. Não existe conceito de documento restrito
 - **Conversa de grupo do WhatsApp não é atendimento.** O caminho antigo (via n8n) repassava qualquer mensagem, e identificadores `@g.us` entraram na tela de Atendimentos com intenção classificada e transbordo contado. A rota nova recusa na entrada; o que já está gravado é **filtrado na leitura** (`lib/platform/conversation-scope.ts`), não apagado — filtrar preserva o histórico e não exige migração. `scripts/contar-grupos.mjs` mede o resíduo
 - A conversa do canal ainda **não é associada** ao cadastro do IXC na tela de Atendimentos, mas casar telefone com cliente **já funciona**: `findCustomerByPhone` em `lib/integrations/ixc/readonly-provider.ts`. O segredo é o formato — o canal manda `5579998307232` e o IXC guarda `(79) 99830-7232`; dígitos puros devolvem zero em silêncio. A regra é **exatamente um resultado ou nada**: buscar pelo final do número trouxe 4 clientes diferentes na base real, e identificar o cliente errado é pior que não identificar

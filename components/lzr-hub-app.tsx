@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import type { AgentResult, ChatMessage } from "@/lib/agent/types";
 import { navigation, viewTitles, type View } from "@/lib/platform/navigation";
+import { containsHomologationText } from "@/lib/platform/reply-templates-shared";
 import { Customer360Module } from "@/components/modules/customer360";
 import { SupportModule } from "@/components/modules/support";
 import { BillingModule } from "@/components/modules/billing";
@@ -380,7 +381,8 @@ function CockpitPanel({ period }: { period:string }) {
 function Metric({ label, value, detail, icon }: { label:string; value:string; detail:string; icon:string }) { return <article className="metric"><div className="metric-top"><span>{label}</span><span className="metric-icon">{icon}</span></div><strong>{value}</strong><small>{detail}</small></article>; }
 function Progress({ label, value }: { label:string; value:number }) { return <div className="bar-row"><div className="bar-label"><span>{label}</span><strong>{value}%</strong></div><div className="bar"><span style={{width:`${value}%`}} /></div></div>; }
 
-type ConversationMessage = { role:"customer"|"agent"|"suggestion"; content:string; createdAt:string };
+type ConversationMessage = { role:"customer"|"agent"|"suggestion"; content:string; createdAt:string; sentBy?:string };
+type ChannelState = { enabled:boolean; autoReply:boolean; canReply:boolean };
 type ConversationAudit = { intent:string|null; finalStatus:string|null; handoff:boolean|null; handoffReason:string|null; intentSource:string|null; intentConfidence:number|null; intentModel:string|null; appVersion:string|null; correlationId:string|null; createdAt:string|null };
 
 /**
@@ -432,7 +434,7 @@ type CopilotResult = { kind:"answer"|"summary"; written:"llm"|"excerpt"|"none"; 
  * de enviar que não envia seria a mentira mais cara desta tela. Copiar é o que
  * de fato acontece — e é isso que vai para a auditoria.
  */
-function Copilot({ channel, conversationId }: { channel:string; conversationId:string }) {
+function Copilot({ channel, conversationId, onUse }: { channel:string; conversationId:string; onUse?:(text:string)=>void }) {
   const [question,setQuestion] = useState("");
   const [busy,setBusy] = useState<null|"ask"|"suggest"|"summary">(null);
   const [result,setResult] = useState<CopilotResult|null>(null);
@@ -490,6 +492,9 @@ function Copilot({ channel, conversationId }: { channel:string; conversationId:s
         <em>{source.excerpt}</em>
       </div>)}
       <button className="button secondary" onClick={()=>void copy()}>{copied?"Copiado ✓":"Copiar"}</button>
+      {/* Só resposta redigida vira rascunho: em modo trecho `text` é o recorte da
+          fonte, não uma fala para o cliente. */}
+      {onUse && result.kind==="answer" && result.written==="llm" && result.text && <button className="button secondary" style={{marginLeft:8}} onClick={()=>onUse(result.text)}>Usar no campo de resposta</button>}
     </div>}
   </div>;
 }
@@ -502,7 +507,10 @@ function Copilot({ channel, conversationId }: { channel:string; conversationId:s
  */
 function Conversation() {
   const [items,setItems] = useState<ConversationSummary[]>([]);
-  const [channelState,setChannelState] = useState<{enabled:boolean;autoReply:boolean}>({enabled:false,autoReply:false});
+  const [channelState,setChannelState] = useState<ChannelState>({enabled:false,autoReply:false,canReply:false});
+  const [draft,setDraft] = useState("");
+  const [sending,setSending] = useState(false);
+  const [sendError,setSendError] = useState<string|null>(null);
   const [available,setAvailable] = useState(true);
   const [state,setState] = useState<"loading"|"ready"|"error">("loading");
   const [selected,setSelected] = useState<ConversationSummary|null>(null);
@@ -520,17 +528,35 @@ function Conversation() {
     let active = true;
     fetch("/api/conversations")
       .then((response) => response.ok ? response.json() : Promise.reject(new Error("falhou")))
-      .then((payload:{available:boolean;items:ConversationSummary[];channelState:{enabled:boolean;autoReply:boolean}}) => {
+      .then((payload:{available:boolean;items:ConversationSummary[];channelState:ChannelState}) => {
         if (!active) return;
-        setAvailable(payload.available); setItems(payload.items ?? []); setChannelState(payload.channelState ?? {enabled:false,autoReply:false}); setState("ready");
+        setAvailable(payload.available); setItems(payload.items ?? []); setChannelState(payload.channelState ?? {enabled:false,autoReply:false,canReply:false}); setState("ready");
         if (payload.items?.length) void open(payload.items[0]);
       })
       .catch(() => { if (active) setState("error"); });
     return () => { active = false; };
   }, []);
 
-  async function open(item:ConversationSummary) {
+  async function send() {
+    if (!selected || sending || !draft.trim()) return;
+    setSending(true); setSendError(null);
+    try {
+      // Uma chave por clique: o duplo clique devolve o mesmo resultado em vez de mandar duas mensagens.
+      const response = await fetch("/api/conversations/reply", { method:"POST", headers:{"content-type":"application/json"},
+        body:JSON.stringify({ conversationId:selected.externalConversationId, text:draft, idempotencyKey:crypto.randomUUID() }) });
+      const payload = await response.json().catch(() => ({})) as { error?:string; recorded?:boolean };
+      if (!response.ok) { setSendError(payload.error ?? "Não consegui enviar. Nada foi enviado."); return; }
+      setDraft("");
+      await open(selected, true);
+      if (payload.recorded === false) setSendError("A mensagem foi enviada ao cliente, mas não consegui gravá-la no histórico. Não reenvie.");
+    } catch { setSendError("Não consegui falar com o servidor. Confira a conversa antes de reenviar."); }
+    finally { setSending(false); }
+  }
+
+  async function open(item:ConversationSummary, keepDraft = false) {
     setSelected(item); setMessagesState("loading"); setMessages([]); setAudit(null);
+    // O rascunho é da conversa em que foi escrito: trocar de cliente não o carrega junto.
+    if (!keepDraft) { setDraft(""); setSendError(null); }
     const response = await fetch(`/api/conversations?channel=${encodeURIComponent(item.channel)}&id=${encodeURIComponent(item.externalConversationId)}`);
     if (response.ok) { const payload = await response.json() as {messages:ConversationMessage[];audit:ConversationAudit|null}; setMessages(payload.messages ?? []); setAudit(payload.audit ?? null); }
     setMessagesState("ready");
@@ -542,7 +568,7 @@ function Conversation() {
   if (items.length===0) return <main className="content"><div className="state-card"><strong>Nenhuma conversa registrada.</strong><p style={{marginTop:6,lineHeight:1.6}}>As conversas aparecem aqui assim que o canal do WhatsApp receber mensagens. Nada fictício é mostrado enquanto isso.</p></div></main>;
 
   return <main className="content" style={{paddingTop:18}}>
-    {channelState.enabled && !channelState.autoReply && <div className="state-card" style={{marginBottom:14}}><strong>Modo observação.</strong> O canal recebe e registra as mensagens, e a IA propõe a resposta — mas nada é enviado ao cliente. As sugestões aparecem marcadas no histórico.</div>}
+    {channelState.enabled && !channelState.autoReply && <div className="state-card" style={{marginBottom:14}}><strong>Modo observação.</strong> O canal recebe e registra as mensagens, e a IA propõe a resposta — mas nada é enviado automaticamente. As sugestões aparecem marcadas no histórico. {channelState.canReply ? "Quem responde é o atendente, pelo campo abaixo da conversa." : "O envio pela tela está desligado: ninguém responde ao cliente por aqui."}</div>}
     <div className="conversation-layout">
     <aside className="conversation-list">
       {items.map((item)=><div className={`contact ${selected?.externalConversationId===item.externalConversationId?"active":""}`} key={`${item.channel}:${item.externalConversationId}`} onClick={()=>void open(item)} role="button" tabIndex={0} onKeyDown={(e)=>{if(e.key==="Enter")void open(item)}}>
@@ -559,16 +585,27 @@ function Conversation() {
         {messages.map((message,index)=><div className={`message ${message.role==="customer"?"":"agent"}`} key={index} style={message.role==="suggestion"?{opacity:0.72,borderLeft:"3px solid var(--warn)"}:undefined}>
           {message.role==="suggestion" && <strong style={{display:"block",fontSize:11,color:"var(--warn)",textTransform:"uppercase",letterSpacing:0.4,marginBottom:4}}>Sugestão da IA — não enviada ao cliente</strong>}
           {message.content}
+          {message.role==="suggestion" && channelState.canReply && (containsHomologationText(message.content)
+            ? <small style={{display:"block",marginTop:6,color:"var(--warn)"}}>Texto de homologação — não pode ser enviado a um cliente.</small>
+            : <button className="button secondary" style={{marginTop:8}} onClick={()=>{setDraft(message.content);setSendError(null)}}>Usar como rascunho</button>)}
+          {message.role==="agent" && message.sentBy && <small style={{display:"block",marginTop:4,color:"var(--text-3)"}}>Enviada por {message.sentBy}</small>}
           <time>{new Date(message.createdAt).toLocaleString("pt-BR",{day:"2-digit",month:"2-digit",hour:"2-digit",minute:"2-digit"})}</time>
         </div>)}
       </div>
-      <div className="composer"><textarea disabled placeholder="Responder pela tela ainda não está ligado. Nenhuma resposta é enviada ao cliente — o canal está em modo observação." /><button aria-label="Enviar" disabled>➤</button></div>
+      {sendError && <p className="form-error" style={{margin:"0 15px 8px"}}>{sendError}</p>}
+      <div className="composer">
+        <textarea value={draft} disabled={!channelState.canReply || sending} maxLength={4096}
+          onChange={(e)=>{setDraft(e.target.value);setSendError(null)}}
+          onKeyDown={(e)=>{ if(e.key==="Enter"&&(e.ctrlKey||e.metaKey)){ e.preventDefault(); void send(); } }}
+          placeholder={channelState.canReply ? "Escreva a resposta ao cliente… (Ctrl+Enter envia)" : "Responder pela tela está desligado. Nenhuma resposta é enviada ao cliente por aqui."} />
+        <button aria-label="Enviar" disabled={!channelState.canReply || sending || !draft.trim()} onClick={()=>void send()}>{sending?"…":"➤"}</button>
+      </div>
     </section>
     <aside className="customer-panel">
       <div className="customer-head"><Avatar initials={selected?conversationLabel(selected.externalConversationId).slice(-2):"—"} /><h3>{selected?conversationLabel(selected.externalConversationId):"—"}</h3><p>Identificador do canal • {selected?.channel}</p></div>
       {/* `key` troca o copiloto inteiro ao mudar de conversa: sem isso a resposta
           de um cliente ficaria na tela ao lado do histórico de outro. */}
-      {selected && <Copilot key={`${selected.channel}:${selected.externalConversationId}`} channel={selected.channel} conversationId={selected.externalConversationId} />}
+      {selected && <Copilot key={`${selected.channel}:${selected.externalConversationId}`} channel={selected.channel} conversationId={selected.externalConversationId} onUse={channelState.canReply ? (text)=>{setDraft(text);setSendError(null)} : undefined} />}
       {selected && <ConversationAuditPanel audit={audit} />}
       <Info title="Conversa" rows={[["Mensagens",String(selected?.messages ?? 0)],["Última",selected?relativeTime(selected.lastAt):"—"],["Intenção",selected?.intent?intentLabel(selected.intent):"Não registrada"],["Desfecho",selected?.finalStatus ?? "Não registrado"]]} />
       <Info title="Cadastro" rows={[["Vínculo com o IXC","Não associado"],["Como associar","Depende de casar o telefone do canal com o cadastro do IXC — ainda não implementado"]]} />

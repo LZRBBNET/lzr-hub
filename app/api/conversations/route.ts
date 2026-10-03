@@ -1,8 +1,10 @@
 import { NextResponse } from "next/server";
 import { getDb } from "@/db";
 import { DbConversationsRepository } from "@/lib/platform/conversations-service";
+import { metaSendConfigFromEnv } from "@/lib/integrations/meta/cloud-client";
+import { attendantReplyEnabled } from "@/lib/platform/attendant-reply-service";
 import { CHANNEL_NAME } from "@/lib/platform/n8n-channel-service";
-import { authorize } from "@/lib/platform/session-guard";
+import { authEnforced, authorize } from "@/lib/platform/session-guard";
 
 const LIST_LIMIT = 40;
 const MESSAGE_LIMIT = 200;
@@ -21,7 +23,14 @@ export async function GET(request: Request) {
   const channelEnabled = process.env.FEATURE_N8N_CHANNEL === "true";
   // A tela precisa saber se a IA está respondendo sozinha para não deixar o
   // atendente supor que a sugestão que ele lê já foi entregue.
-  const channelState = { enabled: channelEnabled, autoReply: channelEnabled && process.env.FEATURE_N8N_AUTOREPLY === "true" };
+  // `canReply` é o que habilita o campo de resposta: flag ligada, token e número
+  // configurados e login exigido — sem autor identificado o envio é recusado, e
+  // um campo ativo que sempre falha seria pior que um campo desabilitado.
+  const channelState = {
+    enabled: channelEnabled,
+    autoReply: channelEnabled && process.env.FEATURE_N8N_AUTOREPLY === "true",
+    canReply: attendantReplyEnabled() && authEnforced() && Boolean(metaSendConfigFromEnv()),
+  };
 
   try {
     const repository = new DbConversationsRepository(await getDb());

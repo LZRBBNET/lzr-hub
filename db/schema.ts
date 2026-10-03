@@ -325,8 +325,34 @@ export const channelMessages = pgTable("channel_messages", {
    * não tem como ser preenchida, e inventar um valor seria pior que admitir.
    */
   correlationId: text("correlation_id"),
+  /**
+   * Quem escreveu a resposta que o cliente recebeu: o e-mail do atendente, ou
+   * nulo. Nulo significa **não registrado** (mensagem do cliente, sugestão da IA
+   * ou anterior a esta coluna) — nunca "foi a IA", que seria inventar autoria.
+   */
+  sentBy: text("sent_by"),
+  /**
+   * Id da mensagem na Meta (`wamid...`): o do cliente, quando veio por ela, ou o
+   * devolvido no envio. Serve para marcar como lida e, depois, casar recibo de
+   * entrega. Anulável: o que foi gravado antes não tem como ser preenchido.
+   */
+  externalMessageId: text("external_message_id"),
   createdAt: text("created_at").notNull(),
 }, (table) => [index("channel_messages_conversation_idx").on(table.channel, table.externalConversationId, table.createdAt)]);
+
+/**
+ * Respostas aprovadas que o canal usa no lugar do texto de homologação do
+ * pipeline. Uma por intenção; só existe linha onde alguém editou — o resto cai no
+ * padrão que mora no código. `version` sobe a cada edição e o texto antigo fica
+ * na auditoria, então dá para saber o que o cliente leu em cada data.
+ */
+export const agentReplyTemplates = pgTable("agent_reply_templates", {
+  intent: text("intent").primaryKey(),
+  content: text("content").notNull(),
+  version: integer("version").notNull(),
+  updatedBy: text("updated_by").notNull(),
+  updatedAt: text("updated_at").notNull(),
+});
 
 export const channelIdempotencyKeys = pgTable("channel_idempotency_keys", {
   idempotencyKey: text("idempotency_key").primaryKey(),

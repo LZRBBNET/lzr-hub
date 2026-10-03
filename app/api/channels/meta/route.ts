@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { randomUUID } from "node:crypto";
 import { getDb } from "@/db";
 import { D1ChannelRepository, MAX_MESSAGE_LENGTH, processChannelMessage } from "@/lib/platform/n8n-channel-service";
+import { DbReplyTemplatesRepository, loadOverrides } from "@/lib/platform/reply-templates-service";
 import { DbSupportMetricsRepository } from "@/lib/platform/support-metrics";
 import { DbCrmRepository, captureLeadFromContact } from "@/lib/platform/crm-service";
 import { getIxcRuntime } from "@/lib/integrations/ixc/runtime";
@@ -77,7 +78,7 @@ export async function POST(request: Request) {
     // recebe 200, e sem isso a reentrega viraria atendimento em dobro.
     { externalConversationId: phone, text, idempotencyKey: messageId, correlationId },
     new DbSupportMetricsRepository(db),
-    { autoReply: autoReplyEnabled() },
+    { autoReply: autoReplyEnabled(), templates: await loadOverrides(new DbReplyTemplatesRepository(db)) },
     (input) => captureLeadFromContact(
       new DbCrmRepository(db),
       input,
