@@ -213,6 +213,24 @@ A ficha aparece **ao lado da conversa** em Atendimentos (`ConversationAuditPanel
 
 **Resposta do atendente pela tela** (`FEATURE_ATTENDANT_REPLY`, `lib/platform/attendant-reply-service.ts`). Segue a régua da escrita no ERP: idempotência (chave por clique, reservada em `channel_idempotency_keys` **antes** de chamar a Meta) → política (login obrigatório, texto de homologação recusado, janela de 24 horas) → flag → chamada. Bloqueio e falha também entram na auditoria. Em **timeout a reserva não é solta**: a mensagem pode ter saído, e liberar convidaria um reenvio em dobro. A autoria fica em `channel_messages.sent_by`; nulo é "não registrado", nunca "a IA". Antes de responder, a mensagem do cliente é marcada como lida (melhor esforço, pelo `wamid` em `external_message_id`).
 
+## Auditoria de contratos
+
+**Administração → Auditoria de contratos** confere, em cada contrato novo do IXC, o cadastro do cliente (`lib/platform/contract-audit-service.ts`, regras em `contract-audit-shared.ts`):
+
+- **Celular ou WhatsApp** preenchido com DDD (10 ou 11 algarismos) — um dos dois basta
+- **E-mail** preenchido e com formato de e-mail
+- **Número do endereço** é o número da casa ou **SN**. Zero não vale — e na base real ele aparece como "00" e "000", não só "0", por isso a regra é "só zeros". Grafias como "S/N" ficam como *fora do padrão*
+
+Antes de virar código, `scripts/ixc-probe-contract-audit.mjs` mediu a base (sem imprimir dado pessoal): o `id` do contrato cresce com a criação (37 mil contratos), a data de entrada é `data_cadastro_sistema`, e numa amostra de 60 cadastros recentes 4 tinham e-mail vazio ou inválido e 2 o Número zerado.
+
+**Como roda.** Por ponto de parada: o `id` do último contrato conferido fica em `sync_checkpoints` (`ixc` / `contract-audit`), e cada passada pede ao IXC os de `id` maior. O ponto avança contrato a contrato — se o IXC cair no meio, a próxima passada continua dali, e nada criado depois fica de fora, só atrasa. A primeira passada parte dos 15 contratos mais recentes. Cada passada é **pequena de propósito** (15 novos + 5 reconferências): o limite de consultas por minuto ao IXC é compartilhado com o atendimento.
+
+**Quem dispara.** Abrir a tela (o servidor só executa se a última passada tiver mais de 10 minutos — várias abas não viram várias passadas), o botão **Verificar agora**, ou um agendador externo com `POST /api/audit/contracts` e o cabeçalho `x-job-secret: $CONTRACT_AUDIT_JOB_SECRET`. ⚠️ **Não há agendador dentro do app**: o Railway roda um processo web, sem temporizador garantido. Sem agendador externo, a auditoria só anda quando alguém abre a tela — mas, pelo ponto de parada, nada é pulado.
+
+**Reconferência.** Pendente e "não verificado" são reconferidos sozinhos por 30 dias. Quando o cadastro é corrigido no IXC, o contrato vai para *Corrigidos* com a data da correção, e `first_issues` guarda o que estava errado na primeira conferência — corrigir depois não apaga o fato de o contrato ter nascido incompleto.
+
+**Dado pessoal.** Nenhum telefone ou e-mail é copiado para o LZR HUB: só se o campo serve. O nome do cliente fica, para a tela; o valor do Número só quando está fora do padrão. Exige `FEATURE_IXC_FULL_BASE` (com a allowlist a listagem de contratos é recusada) e a permissão `audit.read`.
+
 ## Convenções de código
 
 **Padrão de repositório com injeção de dependência.** Toda lógica que toca o banco fica atrás de uma interface, com duas implementações: uma real (`Db*Repository`) e uma em memória (`Memory*Repository`) usada nos testes. Isso permite testar regra de negócio sem banco. Exemplos: `lib/platform/auth.ts`, `lib/platform/support-metrics.ts`, `lib/platform/n8n-channel-service.ts`.
@@ -239,7 +257,7 @@ A ficha aparece **ao lado da conversa** em Atendimentos (`ConversationAuditPanel
 npm run typecheck && npm run lint && npm test
 ```
 
-Os três precisam passar. Hoje a suíte tem **606 testes**.
+Os três precisam passar. Hoje a suíte tem **623 testes**.
 
 ## Segurança — pontos já decididos
 

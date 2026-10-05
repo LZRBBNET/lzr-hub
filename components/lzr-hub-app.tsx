@@ -12,6 +12,7 @@ import { IntelligenceModule } from "@/components/modules/intelligence";
 import { AdminModule } from "@/components/modules/admin";
 import { QualityModule } from "@/components/modules/quality";
 import { InternalChatModule } from "@/components/modules/internal-chat";
+import { ContractAuditModule } from "@/components/modules/contract-audit";
 
 type UiMessage = ChatMessage & { time: string; result?: AgentResult };
 
@@ -155,6 +156,7 @@ export function LzrHubApp({ ixcMode = "disabled" }: { ixcMode?: string }) {
         {["integracoes","equipes","usuarios","auditoria","configuracoes"].includes(view) && <AdminModule view={view as "integracoes"|"equipes"|"usuarios"|"auditoria"|"configuracoes"} />}
         {view === "clientes" && <Customer360Module />}
         {view === "chat-interno" && <InternalChatModule />}
+        {view === "auditoria-contratos" && <ContractAuditModule />}
         {["monitoramento","mapa-alertas","massivas","chamados"].includes(view) && <SupportModule view={view as "monitoramento"|"mapa-alertas"|"massivas"|"chamados"} onNavigateMassivas={() => setView("massivas")} />}
         {["cobranca","regua","relatorios-cobranca"].includes(view) && <BillingModule view={view as "cobranca"|"regua"|"relatorios-cobranca"} />}
         {["comercial","funil","metas","relatorios-comercial"].includes(view) && <SalesModule view={view as "comercial"|"funil"|"metas"|"relatorios-comercial"} />}

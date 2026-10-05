@@ -221,9 +221,16 @@ button.data-row:hover { background:var(--blue-soft); }
 .composer select { width: 148px; flex: none; border: 1px solid var(--line); background: var(--surface-2); color: var(--text-2); border-radius: 10px; padding: 0 9px; font-size: 12px; }
 .conversation-tools { position: sticky; top: 0; z-index: 1; display: grid; gap: 8px; padding: 12px; background: var(--panel); border-bottom: 1px solid var(--line); }
 .conversation-tools input { width: 100%; border: 1px solid var(--line); background: var(--surface-2); border-radius: 9px; padding: 9px 11px; outline: 0; font-size: 12px; }
-.conversation-filters { display: flex; flex-wrap: wrap; gap: 6px; }
-.conversation-filters button { border: 1px solid var(--line); background: var(--panel); color: var(--text-2); border-radius: 999px; padding: 5px 10px; font-size: 11px; font-weight: 650; cursor: pointer; }
-.conversation-filters button.active { background: var(--blue-soft); color: var(--blue); border-color: var(--blue); }
+.conversation-filters, .filter-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.conversation-filters button, .filter-chips button { border: 1px solid var(--line); background: var(--panel); color: var(--text-2); border-radius: 999px; padding: 5px 10px; font-size: 11px; font-weight: 650; cursor: pointer; }
+.conversation-filters button.active, .filter-chips button.active { background: var(--blue-soft); color: var(--blue); border-color: var(--blue); }
+.data-row.audit-row { grid-template-columns: .8fr 1.4fr .8fr 2fr .9fr auto; }
+.issue-chips { display: flex; flex-wrap: wrap; gap: 5px; }
+.issue-chip { font-style: normal; font-size: 10.5px; font-weight: 700; color: var(--warn); background: var(--warn-bg); border-radius: 999px; padding: 3px 8px; cursor: help; }
+.issue-chip.past { color: var(--text-3); background: var(--surface-3); text-decoration: line-through; }
+.audit-rules { padding: 14px 18px; display: grid; gap: 6px; font-size: 12px; line-height: 1.6; color: var(--muted); }
+.audit-rules p { margin: 0; }
+@media (max-width: 900px) { .data-row.audit-row { grid-template-columns: 1fr; } .data-row.audit-row.header { display: none; } }
 .conversation-sync { font-size: 10.5px; color: var(--text-3); }
 .conversation-sync.stale { color: var(--bad); font-weight: 650; }
 .conversation-empty { padding: 16px 14px; font-size: 12px; line-height: 1.6; color: var(--muted); }

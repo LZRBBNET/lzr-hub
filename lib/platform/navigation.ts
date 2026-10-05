@@ -12,7 +12,7 @@ export type View =
   | "cobranca" | "regua" | "relatorios-cobranca"
   | "comercial" | "funil" | "metas" | "relatorios-comercial"
   | "training" | "conhecimento" | "churn" | "avaliacoes" | "prompts"
-  | "integracoes" | "equipes" | "usuarios" | "auditoria" | "configuracoes" | "chat-interno";
+  | "integracoes" | "equipes" | "usuarios" | "auditoria" | "auditoria-contratos" | "configuracoes" | "chat-interno";
 
 export interface NavItem { id: View; label: string; icon: string; group?: string }
 export const navigation: NavItem[] = [
@@ -40,6 +40,7 @@ export const navigation: NavItem[] = [
   { id:"equipes", label:"Equipes e Filas", icon:"♟" },
   { id:"usuarios", label:"Usuários e Permissões", icon:"⚿" },
   { id:"auditoria", label:"Auditoria", icon:"▧" },
+  { id:"auditoria-contratos", label:"Auditoria de contratos", icon:"☑" },
   { id:"configuracoes", label:"Configurações", icon:"⚙" },
 ];
 
@@ -47,3 +48,4 @@ export const viewTitles: Record<View,[string,string]> = Object.fromEntries(navig
 viewTitles.dashboard=["Visão geral","Operação do atendimento em tempo real"];
 viewTitles.atendimento=["Atendimentos","Central omnichannel"];
 viewTitles.training=["AI Training Mode","Mesmo pipeline da produção, com supervisão adicional"];
+viewTitles["auditoria-contratos"]=["Auditoria de contratos","Cadastro conferido em cada contrato novo do IXC"];

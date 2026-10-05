@@ -392,6 +392,29 @@ export class IxcReadonlyProvider {
     }
     return{rows,total,truncated:rows.length<total};
   }
+  /**
+   * Contratos criados depois do `id` informado, do mais antigo para o mais novo.
+   *
+   * O `id` do contrato cresce com a criação — conferido nos 200 mais recentes de
+   * 37 mil —, por isso ele é o ponto de parada da auditoria: ler "acima do último
+   * visto" não deixa nenhum contrato novo de fora, mesmo que a auditoria fique
+   * dias sem rodar. Data de criação não serviria: tem resolução de dia.
+   */
+  async listContractsAfter(afterId:number,limit:number,correlationId:string){
+    return (await this.readPage("listContracts",endpoints.listContracts,"cliente_contrato.id",String(afterId),correlationId,limit,"",{oper:">",sortname:"cliente_contrato.id",sortorder:"asc"})).records;
+  }
+  /** Os contratos mais recentes, do mais novo para o mais antigo: a linha de partida da primeira auditoria. */
+  async listLatestContracts(limit:number,correlationId:string){
+    return (await this.readPage("listContracts",endpoints.listContracts,"cliente_contrato.id","0",correlationId,limit,"",{oper:">",sortname:"cliente_contrato.id",sortorder:"desc"})).records;
+  }
+  /**
+   * O cadastro **cru** de um cliente. Cru porque a auditoria precisa de cada campo
+   * separado — o mapper junta os quatro telefones num só, e aí "tem celular" e
+   * "só tem fixo" ficariam iguais.
+   */
+  async getCustomerRecord(customerId:string,correlationId:string):Promise<Record<string,unknown>|undefined>{
+    return (await this.read("getCustomer","cliente","id",customerId,correlationId,1))[0];
+  }
   /** Contagem de faturas em aberto na base inteira: uma consulta, sem varrer registro. */
   async countOpenInvoices(correlationId:string){
     return (await this.readPage("listInvoices",endpoints.listInvoices,"fn_areceber.status","A",correlationId,1,"",{oper:"=",sortname:"fn_areceber.id"})).total;

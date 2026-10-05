@@ -277,6 +277,49 @@ export const syncJobs = pgTable("sync_jobs", {
   updatedAt: text("updated_at").notNull(),
 }, (table) => [uniqueIndex("sync_jobs_dedupe_idx").on(table.jobType, table.subjectId, table.scheduledAt), index("sync_jobs_status_idx").on(table.status, table.scheduledAt)]);
 
+/**
+ * Auditoria de contratos: um resultado por contrato novo do IXC, conferindo o
+ * cadastro do cliente (celular/WhatsApp, e-mail, número do endereço).
+ *
+ * `first_issues` guarda o que estava errado **na primeira conferência** e não
+ * muda mais — é o fato de auditoria ("o contrato nasceu sem e-mail"). `issues`
+ * é o estado de agora, refeito a cada nova conferência; quando esvazia, o
+ * status vira `resolved`. Nenhum telefone ou e-mail é copiado para cá: só se o
+ * campo serve ou não, e o valor do Número quando ele está fora do padrão.
+ */
+export const contractAudits = pgTable("contract_audits", {
+  contractId: text("contract_id").primaryKey(),
+  customerId: text("customer_id").notNull(),
+  customerName: text("customer_name"),
+  plan: text("plan"),
+  contractStatus: text("contract_status"),
+  contractCreatedAt: text("contract_created_at"),
+  sellerId: text("seller_id"),
+  /** `ok`, `pending`, `resolved` ou `unverified` (cadastro não encontrado). */
+  status: text("status").notNull(),
+  issues: jsonb("issues").notNull(),
+  firstIssues: jsonb("first_issues").notNull(),
+  detail: text("detail"),
+  checks: integer("checks").notNull().default(1),
+  firstCheckedAt: text("first_checked_at").notNull(),
+  lastCheckedAt: text("last_checked_at").notNull(),
+  resolvedAt: text("resolved_at"),
+}, (table) => [index("contract_audits_status_idx").on(table.status, table.lastCheckedAt)]);
+
+/** Cada passada da auditoria: quando, quem disparou, o que conferiu e por que parou. */
+export const contractAuditRuns = pgTable("contract_audit_runs", {
+  id: text("id").primaryKey(),
+  trigger: text("trigger").notNull(),
+  actor: text("actor"),
+  startedAt: text("started_at").notNull(),
+  finishedAt: text("finished_at"),
+  newChecked: integer("new_checked").notNull().default(0),
+  rechecked: integer("rechecked").notNull().default(0),
+  resolved: integer("resolved").notNull().default(0),
+  stoppedReason: text("stopped_reason"),
+  correlationId: text("correlation_id").notNull(),
+}, (table) => [index("contract_audit_runs_started_idx").on(table.startedAt)]);
+
 export const syncCheckpoints = pgTable("sync_checkpoints", {
   id: text("id").primaryKey(),
   provider: text("provider").notNull(),
