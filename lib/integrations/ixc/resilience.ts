@@ -22,4 +22,6 @@ export class SlidingWindowRateLimiter {
   private readonly max:number; private readonly windowMs:number; private readonly now:()=>number;
   constructor(max:number,windowMs=60000,now=()=>Date.now()){this.max=max;this.windowMs=windowMs;this.now=now;}
   assert(){const cutoff=this.now()-this.windowMs;this.calls=this.calls.filter((time)=>time>cutoff);if(this.calls.length>=this.max)throw new Error("IXC_RATE_LIMITED");this.calls.push(this.now());}
+  /** Quantas consultas ainda cabem na janela agora. Não consome nada. */
+  remaining(){const cutoff=this.now()-this.windowMs;this.calls=this.calls.filter((time)=>time>cutoff);return Math.max(0,this.max-this.calls.length);}
 }

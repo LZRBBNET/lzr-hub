@@ -6,12 +6,13 @@ type AuditStatus = "ok" | "pending" | "resolved" | "unverified";
 type AuditFilter = AuditStatus | "all";
 type AuditRecord = {
   contractId: string; customerId: string; customerName: string | null; plan: string | null; contractStatus: string | null;
-  contractCreatedAt: string | null; status: AuditStatus; issues: ContractIssue[]; firstIssues: ContractIssue[]; detail: string | null;
+  contractCreatedAt: string | null; createdBy: string | null; creatorCheckedAt: string | null; status: AuditStatus; issues: ContractIssue[]; firstIssues: ContractIssue[]; detail: string | null;
   checks: number; firstCheckedAt: string; lastCheckedAt: string; resolvedAt: string | null;
 };
 type AuditRun = { trigger: "manual" | "tela" | "agendado"; actor: string | null; startedAt: string; finishedAt: string | null; newChecked: number; rechecked: number; resolved: number; stoppedReason: string | null };
-type Payload = { available: boolean; detail?: string; error?: string; items: AuditRecord[]; counts?: Record<AuditStatus, number>; lastRun?: AuditRun | null; ixc?: "full-base" | "allowlist" | null };
-type Outcome = { ran?: boolean; skipped?: string; newChecked?: number; rechecked?: number; resolved?: number; stoppedReason?: string | null; error?: string };
+type CreatorCount = { createdBy: string | null; total: number };
+type Payload = { available: boolean; detail?: string; error?: string; items: AuditRecord[]; counts?: Record<AuditStatus, number>; lastRun?: AuditRun | null; byCreator?: CreatorCount[]; ixc?: "full-base" | "allowlist" | null };
+type Outcome = { ran?: boolean; skipped?: string; newChecked?: number; rechecked?: number; resolved?: number; creatorsFilled?: number; stoppedReason?: string | null; error?: string };
 
 const FILTERS: Array<[AuditFilter, string]> = [["pending", "Pendentes"], ["resolved", "Corrigidos"], ["ok", "Sem pendência"], ["unverified", "Não verificados"], ["all", "Todos"]];
 const STATUS: Record<AuditStatus, { label: string; tone: string }> = {
@@ -34,6 +35,7 @@ function describe(outcome: Outcome) {
   if (outcome.skipped) return outcome.skipped;
   const parts = [`${outcome.newChecked ?? 0} contrato(s) novo(s) conferido(s)`, `${outcome.rechecked ?? 0} pendência(s) reconferida(s)`];
   if (outcome.resolved) parts.push(`${outcome.resolved} corrigida(s) desde a última vez`);
+  if (outcome.creatorsFilled) parts.push(`quem criou encontrado em ${outcome.creatorsFilled} contrato(s)`);
   return `${parts.join(", ")}.${outcome.stoppedReason ? ` ${outcome.stoppedReason}` : ""}`;
 }
 
@@ -56,6 +58,8 @@ export function ContractAuditModule() {
   const [running, setRunning] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
+  // Filtro por quem criou: `undefined` = todos; `null` = os que o log não identifica.
+  const [creator, setCreator] = useState<string | null | undefined>(undefined);
   const filterRef = useRef<AuditFilter>("pending");
 
   async function load(target: AuditFilter = filterRef.current) {
@@ -94,7 +98,7 @@ export function ContractAuditModule() {
     finally { setBusyId(null); }
   }
 
-  function choose(next: AuditFilter) { filterRef.current = next; setFilter(next); void load(next); }
+  function choose(next: AuditFilter) { filterRef.current = next; setFilter(next); setCreator(undefined); void load(next); }
 
   useEffect(() => {
     void load("pending").then(() => run("tela"));
@@ -106,7 +110,8 @@ export function ContractAuditModule() {
 
   const counts = data?.counts;
   const lastRun = data?.lastRun;
-  const items = data?.items ?? [];
+  const items = (data?.items ?? []).filter((item) => creator === undefined || item.createdBy === creator);
+  const byCreator = data?.byCreator ?? [];
 
   return <main className="content">
     <div className="page-heading"><div><h1>Auditoria de contratos</h1><p>Cada contrato novo do IXC, conferido no cadastro do cliente: celular ou WhatsApp, e-mail e o Número do endereço.</p></div>
@@ -127,6 +132,17 @@ export function ContractAuditModule() {
       {lastRun?.stoppedReason && <div className="state-card" style={{ marginTop: 14 }}>A última verificação parou antes do fim: {lastRun.stoppedReason}</div>}
       {message && <div className="state-card" style={{ marginTop: 14 }}>{message}</div>}
 
+      {byCreator.length > 0 && <section className="data-card" style={{ marginTop: 14 }}>
+        <div className="card-header"><strong>Pendências por quem criou o contrato</strong><span className="badge">pelo log do IXC</span></div>
+        <div className="creator-list">
+          {byCreator.map((entry) => <button key={entry.createdBy ?? "(sem registro)"} className={`creator-item ${filter === "pending" && creator === entry.createdBy ? "active" : ""}`}
+            onClick={() => { if (filterRef.current !== "pending") { filterRef.current = "pending"; setFilter("pending"); void load("pending"); } setCreator(creator === entry.createdBy ? undefined : entry.createdBy); }}>
+            <span>{entry.createdBy ?? "Não consta no log"}</span><b>{entry.total}</b>
+          </button>)}
+        </div>
+        <p className="audit-note-line">O vendedor do contrato e quem o digitou nem sempre são a mesma pessoa: o nome aqui vem do registro de inserção no IXC. Clique para filtrar a lista.</p>
+      </section>}
+
       <section className="data-card" style={{ marginTop: 14 }}>
         <div className="card-header">
           <div className="filter-chips">{FILTERS.map(([value, label]) =>
@@ -134,9 +150,11 @@ export function ContractAuditModule() {
           </div>
         </div>
         <div className="data-row header audit-row"><span>Contrato</span><span>Cliente</span><span>Cadastrado em</span><span>Pendências</span><span>Situação</span><span></span></div>
+        {creator !== undefined && <p className="audit-note-line">Mostrando só os contratos criados por <b>{creator ?? "quem não consta no log"}</b>. <button className="link-button" onClick={() => setCreator(undefined)}>Mostrar todos</button></p>}
         {items.length === 0 && <p className="conversation-empty">{filter === "pending" ? "Nenhum contrato com pendência." : "Nenhum contrato nesta lista ainda."}</p>}
         {items.map((item) => <div className="data-row audit-row" key={item.contractId}>
-          <span><strong>Contrato {item.contractId}</strong><small>{item.plan ?? "plano não informado"}</small></span>
+          <span><strong>Contrato {item.contractId}</strong><small>{item.plan ?? "plano não informado"}</small>
+            <small className="audit-creator">{item.createdBy ? `Criado por ${item.createdBy}` : item.creatorCheckedAt ? "Quem criou não consta no log do IXC" : "Procurando quem criou…"}</small></span>
           <span><strong>{item.customerName ?? "Nome não informado"}</strong><small>Cliente {item.customerId}</small></span>
           <span><strong>{ixcDate(item.contractCreatedAt)}</strong><small>conferido {item.checks}x</small></span>
           <span>

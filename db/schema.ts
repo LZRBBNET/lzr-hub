@@ -295,6 +295,17 @@ export const contractAudits = pgTable("contract_audits", {
   contractStatus: text("contract_status"),
   contractCreatedAt: text("contract_created_at"),
   sellerId: text("seller_id"),
+  /**
+   * Quem inseriu o contrato no IXC, pelo log de alterações (`ixc_logs`) — o nome
+   * do usuário como o IXC o mostra. Não é o vendedor: medido na base real, o
+   * vendedor creditado e quem digitou nem sempre são a mesma pessoa.
+   */
+  createdBy: text("created_by"),
+  /**
+   * Quando o log foi consultado. Separa "ainda não procurado" (nulo) de
+   * "procurado e o log não tem a inserção" (preenchido, com `created_by` nulo).
+   */
+  creatorCheckedAt: text("creator_checked_at"),
   /** `ok`, `pending`, `resolved` ou `unverified` (cadastro não encontrado). */
   status: text("status").notNull(),
   issues: jsonb("issues").notNull(),

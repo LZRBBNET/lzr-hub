@@ -6,7 +6,7 @@ import type { IxcCityDto, IxcCollectionWalletDto, IxcCustomerDto, IxcCustomerPag
 
 // `listOsCatalog` fica de fora porque não tem um endpoint só: a mesma operação
 // lê `su_oss_assunto` e `empresa_setor`, e o recurso vai explícito na chamada.
-const endpoints:Record<Exclude<IxcReadOperation,"testConnection"|"findCustomer"|"getCustomer"|"listCustomers"|"listOsCatalog"|"listFinanceCatalog">,string>={listContracts:"cliente_contrato",getPlan:"vd_contratos",listInvoices:"fn_areceber",listPayments:"fn_movim_finan",listServiceOrders:"su_oss_chamado",getConnection:"radusuarios",getCity:"cidade"};
+const endpoints:Record<Exclude<IxcReadOperation,"testConnection"|"findCustomer"|"getCustomer"|"listCustomers"|"listOsCatalog"|"listFinanceCatalog">,string>={listContracts:"cliente_contrato",getPlan:"vd_contratos",listInvoices:"fn_areceber",listPayments:"fn_movim_finan",listServiceOrders:"su_oss_chamado",getConnection:"radusuarios",getCity:"cidade",getRecordHistory:"ixc_logs"};
 export interface IxcTrace { event:string; correlationId:string; durationMs:number; status:"success"|"failed"|"cache-hit"|"blocked"; attributes:Record<string,unknown> }
 export interface IxcReadonlyOptions { baseUrl:string; token:string; allowedCustomerIds:string[]; fullBase?:boolean; timeoutMs?:number; retryLimit?:0|1; cacheTtlMs?:number; cityCacheTtlMs?:number; rateLimitPerMinute?:number; fetcher?:typeof fetch; trace?:(event:IxcTrace)=>void; now?:()=>number }
 interface ReadOptions { oper?:string; page?:number; sortname?:string; sortorder?:"asc"|"desc"; gridParam?:GridFilter[] }
@@ -414,6 +414,34 @@ export class IxcReadonlyProvider {
    */
   async getCustomerRecord(customerId:string,correlationId:string):Promise<Record<string,unknown>|undefined>{
     return (await this.read("getCustomer","cliente","id",customerId,correlationId,1))[0];
+  }
+  /**
+   * Quantas consultas ao IXC ainda cabem no minuto, para **todo** o app. O limite
+   * é um só por processo: painel, atendimento e auditoria disputam a mesma janela,
+   * e quem roda em segundo plano precisa saber quando parar para não tirar a vez
+   * de quem está atendendo.
+   */
+  rateLimitRemaining(){return this.limiter.remaining();}
+  /**
+   * Quem criou um registro, pelo log de alterações do IXC (`ixc_logs`).
+   *
+   * O contrato não tem campo de "criado por": `id_vendedor` é o vendedor
+   * creditado, e medido nos 200 contratos mais recentes ele **não** é quem
+   * digitou — 16% estão com o "Vendedor padrão", e há contrato de um vendedor
+   * inserido por outra atendente. O log guarda a operação `inseriu` com o
+   * `operador`, que já vem como o nome do usuário. Uma consulta, ~150 ms
+   * (`scripts/ixc-probe-contract-creator.mjs`).
+   *
+   * Só lê `tipo`, `operador` e `data`: `campos` e `executou` trazem os valores
+   * alterados, que podem ser dado de cliente, e nada aqui precisa deles.
+   */
+  async getRecordCreator(table:string,recordId:string,authorizedCustomerId:string,correlationId:string):Promise<{operator:string;at:string|null}|undefined>{
+    const {records}=await this.readPage("getRecordHistory",endpoints.getRecordHistory,"ixc_logs.id_tabela",recordId,correlationId,1,authorizedCustomerId,{oper:"=",sortname:"ixc_logs.id",sortorder:"asc",gridParam:[{TB:"ixc_logs.tabela",OP:"=",P:table},{TB:"ixc_logs.tipo",OP:"=",P:"inseriu"}]});
+    const log=records[0];
+    const operator=String(log?.operador??"").trim();
+    if(!log||!operator)return undefined;
+    const at=String(log.data??"").trim();
+    return{operator,at:at&&!at.startsWith("0000")?at:null};
   }
   /** Contagem de faturas em aberto na base inteira: uma consulta, sem varrer registro. */
   async countOpenInvoices(correlationId:string){

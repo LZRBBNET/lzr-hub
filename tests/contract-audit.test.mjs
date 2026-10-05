@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { classifyAddressNumber, evaluateContact } from "../lib/platform/contract-audit-shared.ts";
 import {
-  BASELINE_CONTRACTS, MemoryContractAuditRepository, RECHECK_WINDOW_DAYS,
+  BASELINE_CONTRACTS, MAX_IXC_CALLS_PER_RUN, MemoryContractAuditRepository, RECHECK_WINDOW_DAYS,
   contractFromRow, nextRecord, recheckContract, runContractAudit, stopReason,
 } from "../lib/platform/contract-audit-service.ts";
 
@@ -111,9 +111,15 @@ test("o registro não guarda telefone nem e-mail do cliente", () => {
 
 /* ------------------------------------------------------------ passada --- */
 
-function ixcFalso({ contracts = [], customers = {} } = {}) {
-  const calls = { latest: 0, after: [], customer: [] };
+function ixcFalso({ contracts = [], customers = {}, creators = {} } = {}) {
+  const calls = { latest: 0, after: [], customer: [], creator: [] };
   const provider = {
+    async getRecordCreator(table, recordId, authorizedCustomerId) {
+      calls.creator.push({ table, recordId, authorizedCustomerId });
+      const value = creators[recordId];
+      if (value instanceof Error) throw value;
+      return value === undefined ? { operator: `Atendente ${recordId}`, at: "2026-10-05 10:00:00" } : value;
+    },
     async listLatestContracts(limit) { calls.latest += 1; return [...contracts].sort((a, b) => Number(b.id) - Number(a.id)).slice(0, limit); },
     async listContractsAfter(afterId, limit) { calls.after.push(afterId); return contracts.filter((c) => Number(c.id) > afterId).sort((a, b) => Number(a.id) - Number(b.id)).slice(0, limit); },
     async getCustomerRecord(id) {
@@ -123,7 +129,7 @@ function ixcFalso({ contracts = [], customers = {} } = {}) {
       return value;
     },
   };
-  return { provider, calls, contracts, customers };
+  return { provider, calls, contracts, customers, creators };
 }
 const contratoIxc = (id, cliente) => ({ id: String(id), id_cliente: String(cliente), contrato: "FIBRA", status: "A", data_cadastro_sistema: "2026-10-05" });
 const relogio = (iso) => { let now = Date.parse(iso); return () => new Date(now += 1000); };
@@ -221,4 +227,121 @@ test("motivos de parada em português, e o da allowlist aponta a flag", () => {
   assert.match(stopReason(new Error("IXC_CIRCUIT_OPEN")), /instável/);
   assert.match(stopReason(Object.assign(new Error("IXC_TIMEOUT"), { code: "IXC_TIMEOUT" })), /demorou/);
   assert.match(stopReason(new Error("qualquer")), /não respondeu/);
+});
+
+/* ------------------------------------------------------- quem criou --- */
+
+test("quem criou vem do log do IXC, pela inserção do contrato, e com o cliente como autorização", async () => {
+  const ixc = ixcFalso({ contracts: [contratoIxc(50, 9)], customers: { 9: cliente() }, creators: { 50: { operator: "Maria Letycia", at: "2026-10-05 15:54:00" } } });
+  const repository = new MemoryContractAuditRepository();
+  repository.cursor = 49;
+  await runContractAudit({ repository, provider: ixc.provider, now: relogio("2026-10-05T16:00:00Z") }, { trigger: "agendado" });
+  const record = repository.records.get("50");
+  assert.equal(record.createdBy, "Maria Letycia");
+  assert.ok(record.creatorCheckedAt);
+  assert.deepEqual(ixc.calls.creator, [{ table: "cliente_contrato", recordId: "50", authorizedCustomerId: "9" }]);
+});
+
+test("log sem a inserção: registra que procurou, sem inventar autor", async () => {
+  const ixc = ixcFalso({ contracts: [contratoIxc(51, 9)], customers: { 9: cliente() }, creators: { 51: null } });
+  const repository = new MemoryContractAuditRepository();
+  repository.cursor = 50;
+  await runContractAudit({ repository, provider: ixc.provider, now: relogio("2026-10-05T16:00:00Z") }, { trigger: "agendado" });
+  const record = repository.records.get("51");
+  assert.equal(record.createdBy, null);
+  assert.ok(record.creatorCheckedAt, "procurado e não encontrado é diferente de não procurado");
+});
+
+test("reconferir não procura quem criou de novo: isso não muda", async () => {
+  const ixc = ixcFalso({ contracts: [contratoIxc(52, 9)], customers: { 9: cliente({ email: "" }) } });
+  const repository = new MemoryContractAuditRepository();
+  repository.cursor = 51;
+  await runContractAudit({ repository, provider: ixc.provider, now: relogio("2026-10-05T16:00:00Z") }, { trigger: "agendado" });
+  await runContractAudit({ repository, provider: ixc.provider, now: relogio("2026-10-05T17:00:00Z") }, { trigger: "agendado" });
+  await recheckContract({ repository, provider: ixc.provider }, "52");
+  assert.equal(ixc.calls.creator.length, 1);
+  assert.equal(repository.records.get("52").createdBy, "Atendente 52");
+});
+
+test("contratos auditados antes do log ganham quem criou nas passadas seguintes", async () => {
+  const ixc = ixcFalso({ creators: { 60: { operator: "Adeilza", at: null }, 61: null } });
+  const repository = new MemoryContractAuditRepository();
+  repository.cursor = 100;
+  repository.records.set("60", nextRecord(undefined, { ...contrato, id: "60" }, cliente(), "2026-10-05T09:00:00Z"));
+  repository.records.set("61", nextRecord(undefined, { ...contrato, id: "61" }, cliente(), "2026-10-05T09:00:00Z"));
+  const resultado = await runContractAudit({ repository, provider: ixc.provider, now: relogio("2026-10-05T16:00:00Z") }, { trigger: "agendado" });
+  assert.equal(resultado.creatorsFilled, 1);
+  assert.equal(repository.records.get("60").createdBy, "Adeilza");
+  assert.ok(repository.records.get("61").creatorCheckedAt, "procurado; o log não tinha");
+  const deNovo = await runContractAudit({ repository, provider: ixc.provider, now: relogio("2026-10-05T17:00:00Z") }, { trigger: "agendado" });
+  assert.equal(deNovo.creatorsFilled, 0);
+  assert.equal(ixc.calls.creator.length, 2, "cada um procurado uma vez só");
+});
+
+test("teto de consultas: a passada para antes de gravar pela metade, e a próxima continua", async () => {
+  const ixc = ixcFalso({ contracts: [contratoIxc(70, 1), contratoIxc(71, 2)], customers: { 1: cliente(), 2: cliente() } });
+  const repository = new MemoryContractAuditRepository();
+  repository.cursor = 69;
+  // 1 listagem + cadastro e log do 70 = 3; o cadastro do 71 seria a 4ª.
+  const primeira = await runContractAudit({ repository, provider: ixc.provider, now: relogio("2026-10-05T16:00:00Z") }, { trigger: "agendado", maxCalls: 3 });
+  assert.equal(primeira.newChecked, 1);
+  assert.equal(repository.cursor, 70);
+  assert.equal(repository.records.has("71"), false, "nada gravado pela metade");
+  assert.match(primeira.stoppedReason, /máximo de consultas/);
+  const segunda = await runContractAudit({ repository, provider: ixc.provider, now: relogio("2026-10-05T17:00:00Z") }, { trigger: "agendado" });
+  assert.equal(segunda.newChecked, 1);
+  assert.equal(repository.cursor, 71);
+  assert.ok(MAX_IXC_CALLS_PER_RUN <= 20, "o teto padrão deixa folga para o atendimento no limite por minuto");
+});
+
+test("se o log falha, o contrato não é gravado sem autor: fica para a próxima", async () => {
+  const ixc = ixcFalso({ contracts: [contratoIxc(80, 1)], customers: { 1: cliente() }, creators: { 80: new Error("IXC_RATE_LIMITED") } });
+  const repository = new MemoryContractAuditRepository();
+  repository.cursor = 79;
+  const resultado = await runContractAudit({ repository, provider: ixc.provider, now: relogio("2026-10-05T16:00:00Z") }, { trigger: "agendado" });
+  assert.equal(resultado.newChecked, 0);
+  assert.equal(repository.cursor, 79);
+  assert.match(resultado.stoppedReason, /Limite de consultas/);
+});
+
+test("pendências agrupadas por quem criou, quem tem mais primeiro", async () => {
+  const repository = new MemoryContractAuditRepository();
+  const pendente = (id, autor) => ({ ...nextRecord(undefined, { ...contrato, id }, cliente({ email: "" }), "2026-10-05T09:00:00Z", autor === undefined ? null : { operator: autor }) });
+  repository.records.set("1", pendente("1", "Sabrina"));
+  repository.records.set("2", pendente("2", "Sabrina"));
+  repository.records.set("3", pendente("3", "Adeilza"));
+  repository.records.set("4", pendente("4", undefined));
+  repository.records.set("5", nextRecord(undefined, { ...contrato, id: "5" }, cliente(), "2026-10-05T09:00:00Z", { operator: "Adeilza" }));
+  assert.deepEqual(await repository.pendingByCreator(), [{ createdBy: "Sabrina", total: 2 }, { createdBy: "Adeilza", total: 1 }, { createdBy: null, total: 1 }]);
+});
+
+test("a passada deixa folga no limite do IXC para o resto do sistema", async () => {
+  const ixc = ixcFalso({ contracts: [contratoIxc(90, 1), contratoIxc(91, 2)], customers: { 1: cliente(), 2: cliente() } });
+  // O painel já gastou quase tudo: sobram 13 consultas no minuto, e cada uma da auditoria tira uma.
+  let restantes = 13;
+  ixc.provider.rateLimitRemaining = () => restantes;
+  const original = { ...ixc.provider };
+  ixc.provider.getCustomerRecord = async (...args) => { restantes -= 1; return original.getCustomerRecord(...args); };
+  ixc.provider.getRecordCreator = async (...args) => { restantes -= 1; return original.getRecordCreator(...args); };
+  ixc.provider.listContractsAfter = async (...args) => { restantes -= 1; return original.listContractsAfter(...args); };
+  const repository = new MemoryContractAuditRepository();
+  repository.cursor = 89;
+  const resultado = await runContractAudit({ repository, provider: ixc.provider, now: relogio("2026-10-05T16:00:00Z") }, { trigger: "tela" });
+  // 13 → listagem (12) → cadastro e log do 90 (10) → parou: com 10, não consome mais.
+  assert.equal(resultado.newChecked, 1);
+  assert.equal(repository.cursor, 90);
+  assert.equal(restantes, 10, "a folga fica para o atendimento");
+  assert.match(resultado.stoppedReason, /não atrapalhar o atendimento/);
+});
+
+test("o limitador do IXC diz quanto sobra sem consumir", async () => {
+  const { SlidingWindowRateLimiter } = await import("../lib/integrations/ixc/resilience.ts");
+  let agora = 0;
+  const limiter = new SlidingWindowRateLimiter(3, 60_000, () => agora);
+  assert.equal(limiter.remaining(), 3);
+  limiter.assert(); limiter.assert();
+  assert.equal(limiter.remaining(), 1);
+  assert.equal(limiter.remaining(), 1, "perguntar não gasta");
+  agora = 61_000;
+  assert.equal(limiter.remaining(), 3, "a janela anda e as consultas antigas saem");
 });

@@ -127,6 +127,13 @@
       "when": 1791207758287,
       "tag": "0017_fearless_medusa",
       "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "7",
+      "when": 1791226795468,
+      "tag": "0018_broad_wolfpack",
+      "breakpoints": true
     }
   ]
 }

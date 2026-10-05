@@ -13,7 +13,9 @@ export type IxcReadOperation =
   /** Assuntos e setores de OS: configuração do provedor, não dado de cliente. */
   | "listOsCatalog"
   /** Carteiras de cobrança e condições de pagamento: definem juro, multa e parcelamento. */
-  | "listFinanceCatalog";
+  | "listFinanceCatalog"
+  /** Log de alterações do IXC (`ixc_logs`): quem inseriu ou editou cada registro, e quando. */
+  | "getRecordHistory";
 
 /** Assunto de ordem de serviço (`su_oss_assunto`) — é o `id_assunto` que a OS exige. */
 export interface IxcOsSubjectDto { id:string; name:string }

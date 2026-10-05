@@ -21,9 +21,25 @@ import { evaluateContact, type ContractIssue } from "./contract-audit-shared.ts"
  * atendente sem conseguir identificar o cliente na conversa.
  */
 
-export const NEW_PER_RUN = 15;
-export const BASELINE_CONTRACTS = 15;
+export const NEW_PER_RUN = 8;
+export const BASELINE_CONTRACTS = 8;
 export const RECHECK_PER_RUN = 5;
+/** Contratos já auditados que ainda não tiveram quem criou procurado no log. */
+export const BACKFILL_PER_RUN = 10;
+/**
+ * Teto de consultas ao IXC por passada. Contrato novo custa duas (cadastro e
+ * log); o limite do IXC por minuto é dividido com o atendimento, e uma passada
+ * que o esgotasse deixaria o atendente sem conseguir identificar o cliente.
+ */
+export const MAX_IXC_CALLS_PER_RUN = 20;
+/**
+ * Folga que a auditoria deixa no limite por minuto do IXC. O limite é do processo
+ * inteiro: ao abrir o app, o painel inicial já gasta metade dele — medido
+ * localmente, a primeira passada parou no limite depois de 15 consultas com o
+ * limite em 30. A auditoria pode esperar; o atendente com o cliente na linha, não.
+ */
+export const RATE_LIMIT_RESERVE = 10;
+const CONTRACT_TABLE = "cliente_contrato";
 /** Pendência mais velha que isto não é reconferida sozinha — só pelo botão. */
 export const RECHECK_WINDOW_DAYS = 30;
 /** Passada que começou há menos que isto e não terminou ainda conta como em andamento. */
@@ -45,6 +61,9 @@ export interface ContractAuditRecord {
   contractStatus: string | null;
   contractCreatedAt: string | null;
   sellerId: string | null;
+  /** Quem inseriu o contrato, pelo log do IXC. Nulo com `creatorCheckedAt` = o log não tem a inserção. */
+  createdBy: string | null;
+  creatorCheckedAt: string | null;
   status: AuditStatus;
   issues: ContractIssue[];
   firstIssues: ContractIssue[];
@@ -64,7 +83,12 @@ export interface ContractAuditProvider {
   listContractsAfter(afterId: number, limit: number, correlationId: string): Promise<Record<string, unknown>[]>;
   listLatestContracts(limit: number, correlationId: string): Promise<Record<string, unknown>[]>;
   getCustomerRecord(customerId: string, correlationId: string): Promise<Record<string, unknown> | undefined>;
+  getRecordCreator(table: string, recordId: string, authorizedCustomerId: string, correlationId: string): Promise<{ operator: string; at: string | null } | undefined>;
+  /** Consultas que ainda cabem no minuto, para o app inteiro. Sem isto, só vale o teto da passada. */
+  rateLimitRemaining?(): number;
 }
+
+export interface CreatorCount { createdBy: string | null; total: number }
 
 export interface ContractAuditRepository {
   getCursor(): Promise<number | null>;
@@ -76,6 +100,10 @@ export interface ContractAuditRepository {
   listForRecheck(limit: number, sinceIso: string, checkedBeforeIso: string): Promise<ContractAuditRecord[]>;
   list(filter: AuditFilter, limit: number): Promise<ContractAuditRecord[]>;
   counts(): Promise<Record<AuditStatus, number>>;
+  /** Auditados que ainda não tiveram o log consultado, os mais novos primeiro. */
+  listMissingCreator(limit: number): Promise<ContractAuditRecord[]>;
+  /** Pendentes agrupados por quem criou o contrato, os que mais têm primeiro. */
+  pendingByCreator(): Promise<CreatorCount[]>;
   runningSince(sinceIso: string): Promise<boolean>;
   startRun(run: Pick<AuditRun, "id" | "trigger" | "actor" | "startedAt" | "correlationId">): Promise<void>;
   finishRun(run: Pick<AuditRun, "id" | "finishedAt" | "newChecked" | "rechecked" | "resolved" | "stoppedReason">): Promise<void>;
@@ -116,10 +144,23 @@ const contractFromRecord = (record: ContractAuditRecord): AuditedContract => ({
  * - sem pendência nunca → `ok`;
  * - cadastro não encontrado → `unverified`, sem inventar pendência.
  */
-export function nextRecord(previous: ContractAuditRecord | undefined, contract: AuditedContract, customer: Record<string, unknown> | undefined, nowIso: string): ContractAuditRecord {
+/**
+ * `creator`: `undefined` = o log não foi consultado agora (mantém o que havia);
+ * `null` = consultado, e o log não tem a inserção.
+ */
+export function nextRecord(
+  previous: ContractAuditRecord | undefined,
+  contract: AuditedContract,
+  customer: Record<string, unknown> | undefined,
+  nowIso: string,
+  creator?: { operator: string } | null,
+): ContractAuditRecord {
   const base = {
     contractId: contract.id, customerId: contract.customerId, plan: contract.plan, contractStatus: contract.status,
     contractCreatedAt: contract.createdAt, sellerId: contract.sellerId,
+    ...(creator === undefined
+      ? { createdBy: previous?.createdBy ?? null, creatorCheckedAt: previous?.creatorCheckedAt ?? null }
+      : { createdBy: creator?.operator ?? null, creatorCheckedAt: nowIso }),
     customerName: customer ? text(customer.razao) : previous?.customerName ?? null,
     checks: (previous?.checks ?? 0) + 1,
     firstCheckedAt: previous?.firstCheckedAt ?? nowIso,
@@ -156,16 +197,28 @@ export function stopReason(error: unknown): string {
   return "O IXC não respondeu; a próxima verificação continua de onde parou.";
 }
 
-export interface RunOutcome { ran: boolean; skipped?: string; runId?: string; newChecked: number; rechecked: number; resolved: number; stoppedReason: string | null }
+/** A passada para por conta própria — não é falha do IXC, e a próxima continua do mesmo ponto. */
+class PassStopped extends Error {
+  readonly reason: string;
+  constructor(reason: string) { super("PASS_STOPPED"); this.name = "PassStopped"; this.reason = reason; }
+}
+
+export interface RunOutcome {
+  ran: boolean; skipped?: string; runId?: string;
+  newChecked: number; rechecked: number; resolved: number;
+  /** Contratos já auditados que tiveram quem criou preenchido nesta passada. */
+  creatorsFilled: number;
+  stoppedReason: string | null;
+}
 
 export async function runContractAudit(
   deps: { repository: ContractAuditRepository; provider: ContractAuditProvider; now?: () => Date },
-  input: { trigger: RunTrigger; actor?: string | null; correlationId?: string; newLimit?: number; recheckLimit?: number },
+  input: { trigger: RunTrigger; actor?: string | null; correlationId?: string; newLimit?: number; recheckLimit?: number; maxCalls?: number },
 ): Promise<RunOutcome> {
   const { repository, provider } = deps;
   const now = deps.now ?? (() => new Date());
   const correlationId = input.correlationId ?? randomUUID();
-  const outcome: RunOutcome = { ran: false, newChecked: 0, rechecked: 0, resolved: 0, stoppedReason: null };
+  const outcome: RunOutcome = { ran: false, newChecked: 0, rechecked: 0, resolved: 0, creatorsFilled: 0, stoppedReason: null };
 
   // Duas passadas ao mesmo tempo (o botão e o agendamento) gastariam o limite do
   // IXC em dobro para conferir as mesmas coisas.
@@ -177,23 +230,42 @@ export async function runContractAudit(
   await repository.startRun({ id: runId, trigger: input.trigger, actor: input.actor ?? null, startedAt, correlationId });
   outcome.ran = true; outcome.runId = runId;
 
+  // Cada consulta ao IXC passa por aqui. Estourou o teto, a passada para e a
+  // próxima continua do mesmo ponto — o que sobrou só espera, não se perde.
+  let calls = 0;
+  const budget = input.maxCalls ?? MAX_IXC_CALLS_PER_RUN;
+  const spend = () => {
+    if (calls >= budget) throw new PassStopped("A verificação usou o máximo de consultas ao IXC que pode fazer de uma vez; o restante fica para a próxima.");
+    if (provider.rateLimitRemaining && provider.rateLimitRemaining() <= RATE_LIMIT_RESERVE) {
+      throw new PassStopped("O IXC está sendo muito consultado agora pelo resto do sistema; a verificação parou para não atrapalhar o atendimento e continua na próxima.");
+    }
+    calls += 1;
+  };
   // O mesmo cliente com dois contratos novos é uma consulta só.
   const customers = new Map<string, Promise<Record<string, unknown> | undefined>>();
   const customer = (id: string) => {
-    if (!customers.has(id)) customers.set(id, provider.getCustomerRecord(id, correlationId));
+    if (!customers.has(id)) { spend(); customers.set(id, provider.getCustomerRecord(id, correlationId)); }
     return customers.get(id)!;
+  };
+  const creatorOf = async (contractId: string, customerId: string) => {
+    spend();
+    return (await provider.getRecordCreator(CONTRACT_TABLE, contractId, customerId, correlationId)) ?? null;
   };
 
   try {
     const cursor = await repository.getCursor();
+    spend();
     const rows = cursor === null
       ? await provider.listLatestContracts(BASELINE_CONTRACTS, correlationId)
       : await provider.listContractsAfter(cursor, input.newLimit ?? NEW_PER_RUN, correlationId);
     // Do mais antigo para o mais novo: o ponto de parada só pode avançar em ordem.
     const contracts = rows.map(contractFromRow).filter((item): item is AuditedContract => !!item).sort((a, b) => Number(a.id) - Number(b.id));
     for (const contract of contracts) {
-      const record = nextRecord(await repository.get(contract.id), contract, await customer(contract.customerId), now().toISOString());
-      await repository.save(record);
+      // Cadastro e log antes de gravar: se o IXC falhar entre os dois, nada é
+      // gravado e o ponto não avança — a próxima passada refaz este contrato inteiro.
+      const fields = await customer(contract.customerId);
+      const creator = await creatorOf(contract.id, contract.customerId);
+      await repository.save(nextRecord(await repository.get(contract.id), contract, fields, now().toISOString(), creator));
       await repository.saveCursor(Number(contract.id), correlationId);
       outcome.newChecked += 1;
     }
@@ -205,8 +277,16 @@ export async function runContractAudit(
       outcome.rechecked += 1;
       if (record.status === "resolved" && previous.status !== "resolved") outcome.resolved += 1;
     }
+
+    // Contratos auditados antes de existir esta coluna, ou cujo log falhou: quem
+    // criou não muda, então basta procurar uma vez.
+    for (const previous of await repository.listMissingCreator(BACKFILL_PER_RUN)) {
+      const creator = await creatorOf(previous.contractId, previous.customerId);
+      await repository.save({ ...previous, createdBy: creator?.operator ?? null, creatorCheckedAt: now().toISOString() });
+      if (creator) outcome.creatorsFilled += 1;
+    }
   } catch (error) {
-    outcome.stoppedReason = stopReason(error);
+    outcome.stoppedReason = error instanceof PassStopped ? error.reason : stopReason(error);
   } finally {
     await repository.finishRun({ id: runId, finishedAt: now().toISOString(), newChecked: outcome.newChecked, rechecked: outcome.rechecked, resolved: outcome.resolved, stoppedReason: outcome.stoppedReason }).catch(() => undefined);
   }
@@ -220,7 +300,11 @@ export async function recheckContract(
 ): Promise<ContractAuditRecord | undefined> {
   const previous = await deps.repository.get(contractId);
   if (!previous) return undefined;
-  const record = nextRecord(previous, contractFromRecord(previous), await deps.provider.getCustomerRecord(previous.customerId, randomUUID()), (deps.now ?? (() => new Date()))().toISOString());
+  const correlationId = randomUUID();
+  const fields = await deps.provider.getCustomerRecord(previous.customerId, correlationId);
+  // Quem criou não muda: só procura se ainda não procurou.
+  const creator = previous.creatorCheckedAt ? undefined : (await deps.provider.getRecordCreator(CONTRACT_TABLE, previous.contractId, previous.customerId, correlationId)) ?? null;
+  const record = nextRecord(previous, contractFromRecord(previous), fields, (deps.now ?? (() => new Date()))().toISOString(), creator);
   await deps.repository.save(record);
   return record;
 }
@@ -231,6 +315,7 @@ type Row = typeof contractAudits.$inferSelect;
 const fromRow = (row: Row): ContractAuditRecord => ({
   contractId: row.contractId, customerId: row.customerId, customerName: row.customerName, plan: row.plan,
   contractStatus: row.contractStatus, contractCreatedAt: row.contractCreatedAt, sellerId: row.sellerId,
+  createdBy: row.createdBy, creatorCheckedAt: row.creatorCheckedAt,
   status: row.status as AuditStatus, issues: (row.issues ?? []) as ContractIssue[], firstIssues: (row.firstIssues ?? []) as ContractIssue[],
   detail: row.detail, checks: row.checks, firstCheckedAt: row.firstCheckedAt, lastCheckedAt: row.lastCheckedAt, resolvedAt: row.resolvedAt,
 });
@@ -291,6 +376,18 @@ export class DbContractAuditRepository implements ContractAuditRepository {
     return result;
   }
 
+  async listMissingCreator(limit: number) {
+    const rows = await this.db.select().from(contractAudits).where(isNull(contractAudits.creatorCheckedAt))
+      .orderBy(desc(sql`cast(${contractAudits.contractId} as bigint)`)).limit(limit);
+    return rows.map(fromRow);
+  }
+
+  async pendingByCreator(): Promise<CreatorCount[]> {
+    const rows = await this.db.select({ createdBy: contractAudits.createdBy, total: sql<number>`count(*)` }).from(contractAudits)
+      .where(eq(contractAudits.status, "pending")).groupBy(contractAudits.createdBy).orderBy(desc(sql`count(*)`));
+    return rows.map((row: { createdBy: string | null; total: number }) => ({ createdBy: row.createdBy, total: Number(row.total) }));
+  }
+
   async runningSince(sinceIso: string) {
     const rows = await this.db.select({ id: contractAuditRuns.id }).from(contractAuditRuns)
       .where(and(isNull(contractAuditRuns.finishedAt), gte(contractAuditRuns.startedAt, sinceIso))).limit(1);
@@ -333,6 +430,14 @@ export class MemoryContractAuditRepository implements ContractAuditRepository {
     const result: Record<AuditStatus, number> = { ok: 0, pending: 0, resolved: 0, unverified: 0 };
     for (const record of this.records.values()) result[record.status] += 1;
     return result;
+  }
+  async listMissingCreator(limit: number) {
+    return [...this.records.values()].filter((r) => !r.creatorCheckedAt).sort((a, b) => Number(b.contractId) - Number(a.contractId)).slice(0, limit);
+  }
+  async pendingByCreator() {
+    const totals = new Map<string | null, number>();
+    for (const record of this.records.values()) if (record.status === "pending") totals.set(record.createdBy, (totals.get(record.createdBy) ?? 0) + 1);
+    return [...totals.entries()].map(([createdBy, total]) => ({ createdBy, total })).sort((a, b) => b.total - a.total);
   }
   async runningSince(sinceIso: string) { return this.runs.some((run) => !run.finishedAt && run.startedAt >= sinceIso); }
   async startRun(run: Pick<AuditRun, "id" | "trigger" | "actor" | "startedAt" | "correlationId">) {
