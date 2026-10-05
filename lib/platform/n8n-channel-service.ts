@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { and, asc, eq } from "drizzle-orm";
+import { and, asc, eq, sql } from "drizzle-orm";
 import { auditEvents, channelIdempotencyKeys, channelMessages } from "../../db/schema.ts";
 import { runAgentPipeline } from "../agent/pipeline.ts";
 import { classifyIntent, llmConfigFromEnv } from "../agent/llm-classifier.ts";
@@ -221,6 +221,48 @@ export async function processChannelMessage(
   return response;
 }
 
+export type UnsupportedKind = "audio" | "image" | "video" | "document" | "sticker" | "location" | "contacts" | "other";
+
+const UNSUPPORTED_LABELS: Record<UnsupportedKind, string> = {
+  audio: "Áudio recebido", image: "Imagem recebida", video: "Vídeo recebido", document: "Documento recebido",
+  sticker: "Figurinha recebida", location: "Localização recebida", contacts: "Contato compartilhado recebido",
+  other: "Mensagem de tipo não suportado recebida",
+};
+
+/** O que o atendente lê no lugar do que a tela não sabe exibir. */
+export function unsupportedMessageText(kind: UnsupportedKind, caption?: string): string {
+  const base = `[${UNSUPPORTED_LABELS[kind]} — esta tela ainda não exibe esse tipo de mensagem]`;
+  return caption ? `${base} Legenda: ${caption.slice(0, 500)}` : base;
+}
+
+/**
+ * Áudio, foto, documento: o cliente falou, só que não em texto. Antes isso era
+ * descartado em silêncio e ninguém sabia que havia alguém esperando.
+ *
+ * Fica registrado para o atendente, **sem** acionar a IA: não há texto para
+ * classificar, e responder à legenda de uma foto como se fosse o pedido seria
+ * responder a outra coisa. Também não grava desfecho — não houve atendimento.
+ */
+export async function recordUnsupportedMessage(
+  repository: ChannelRepository,
+  input: { externalConversationId: string; idempotencyKey: string; correlationId: string; kind: UnsupportedKind; caption?: string },
+): Promise<ChannelResponse> {
+  const existing = await repository.findIdempotent(input.idempotencyKey);
+  if (existing) return existing;
+  await repository.saveMessages(CHANNEL_NAME, input.externalConversationId, [
+    { role: "customer", content: unsupportedMessageText(input.kind, input.caption), correlationId: input.correlationId, externalMessageId: input.idempotencyKey },
+  ]);
+  const response: ChannelResponse = { response: null, autoReply: false, status: "unsupported", handoff: false, correlationId: input.correlationId };
+  await repository.saveIdempotency(input.idempotencyKey, CHANNEL_NAME, input.externalConversationId, response);
+  await repository.audit({
+    correlationId: input.correlationId,
+    entity: `conversation:${input.externalConversationId}`,
+    result: "unsupported",
+    reason: `${UNSUPPORTED_LABELS[input.kind]} pelo canal; registrada para o atendente, sem resposta da IA`,
+  });
+  return response;
+}
+
 export class D1ChannelRepository implements ChannelRepository {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   private readonly db: any;
@@ -232,7 +274,8 @@ export class D1ChannelRepository implements ChannelRepository {
   async getHistory(channel: string, externalConversationId: string): Promise<ChannelMessageRow[]> {
     const rows = await this.db.select().from(channelMessages)
       .where(and(eq(channelMessages.channel, channel), eq(channelMessages.externalConversationId, externalConversationId)))
-      .orderBy(asc(channelMessages.createdAt));
+      // Empate de carimbo (gravações antigas do mesmo lote): a fala do cliente vem antes da resposta.
+      .orderBy(asc(channelMessages.createdAt), asc(sql`case ${channelMessages.role} when 'customer' then 0 else 1 end`));
     return rows.map((row: { role: string; content: string; correlationId: string | null; createdAt: string; sentBy: string | null; externalMessageId: string | null }) => ({
       role: row.role === "agent" ? "agent" : row.role === SUGGESTION_ROLE ? SUGGESTION_ROLE : "customer",
       content: row.content,
@@ -245,12 +288,14 @@ export class D1ChannelRepository implements ChannelRepository {
     }));
   }
   async saveMessages(channel: string, externalConversationId: string, messages: ChannelMessageRow[]): Promise<void> {
-    const now = new Date().toISOString();
-    await this.db.insert(channelMessages).values(messages.map((message) => ({
+    // Um milissegundo a mais por mensagem do lote: com o mesmo carimbo, o banco
+    // devolvia a sugestão antes da fala do cliente que ela responde.
+    const base = Date.now();
+    await this.db.insert(channelMessages).values(messages.map((message, index) => ({
       id: randomUUID(), channel, externalConversationId, role: message.role, content: message.content,
       correlationId: message.correlationId ?? null,
       sentBy: message.sentBy ?? null, externalMessageId: message.externalMessageId ?? null,
-      createdAt: now,
+      createdAt: new Date(base + index).toISOString(),
     })));
   }
   async saveIdempotency(idempotencyKey: string, channel: string, externalConversationId: string, response: ChannelResponse): Promise<void> {

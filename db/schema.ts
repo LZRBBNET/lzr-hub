@@ -1,4 +1,4 @@
-import { boolean, index, integer, jsonb, pgTable, text, uniqueIndex } from "drizzle-orm/pg-core";
+import { boolean, index, integer, jsonb, pgTable, primaryKey, text, uniqueIndex } from "drizzle-orm/pg-core";
 
 const auditColumns = { createdAt: text("created_at").notNull(), updatedAt: text("updated_at").notNull() };
 export const customers = pgTable("customers", { id:text("id").primaryKey(), externalId:text("external_id").notNull().unique(), maskedDocument:text("masked_document").notNull(), name:text("name").notNull(), city:text("city").notNull(), neighborhood:text("neighborhood").notNull(), ...auditColumns });
@@ -337,8 +337,33 @@ export const channelMessages = pgTable("channel_messages", {
    * entrega. Anulável: o que foi gravado antes não tem como ser preenchido.
    */
   externalMessageId: text("external_message_id"),
+  /**
+   * Recibo da Meta para a resposta enviada: `sent`, `delivered`, `read` ou
+   * `failed`. Nulo = nenhum recibo chegou — a Meta aceitou, e só isso se sabe.
+   * Nunca anda para trás: "entregue" que chega depois de "lida" não rebaixa.
+   */
+  deliveryStatus: text("delivery_status"),
+  /** Motivo da falha, como a Meta descreveu, já traduzido. Só com `failed`. */
+  deliveryError: text("delivery_error"),
+  deliveryUpdatedAt: text("delivery_updated_at"),
   createdAt: text("created_at").notNull(),
-}, (table) => [index("channel_messages_conversation_idx").on(table.channel, table.externalConversationId, table.createdAt)]);
+}, (table) => [
+  index("channel_messages_conversation_idx").on(table.channel, table.externalConversationId, table.createdAt),
+  // O recibo de entrega chega só com o `wamid`: sem índice, cada recibo varreria a tabela.
+  index("channel_messages_external_id_idx").on(table.externalMessageId),
+]);
+
+/**
+ * Nome do perfil de WhatsApp de quem escreveu, o último visto. É o que a pessoa
+ * escolheu para si — serve para o atendente reconhecer a conversa, **nunca** para
+ * identificar o cliente, que continua sendo pelo telefone cruzado com o IXC.
+ */
+export const channelContacts = pgTable("channel_contacts", {
+  channel: text("channel").notNull(),
+  externalConversationId: text("external_conversation_id").notNull(),
+  displayName: text("display_name").notNull(),
+  updatedAt: text("updated_at").notNull(),
+}, (table) => [primaryKey({ columns: [table.channel, table.externalConversationId] })]);
 
 /**
  * Respostas aprovadas que o canal usa no lugar do texto de homologação do

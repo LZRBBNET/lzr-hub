@@ -67,8 +67,11 @@ variáveis estiverem certas, a verificação passa na hora.
 | Situação | O que acontece |
 |---|---|
 | Assinatura ausente, errada, ou **corpo adulterado** | **401** |
-| Recibo de entrega/leitura | ignorado, com 200 |
-| Áudio, imagem, documento, botão | ignorado — o pipeline lê texto |
+| Várias mensagens no mesmo POST | todas processadas, uma a uma |
+| Texto, ou resposta a botão | pipeline: classifica e grava a sugestão |
+| Áudio, imagem, documento, figurinha, localização | gravado como aviso para o atendente ("[Áudio recebido — …]"), **sem** IA |
+| Reação a mensagem, aviso de sistema | ignorado |
+| Recibo de entrega/leitura | grava o status na resposta enviada (nunca rebaixa) |
 | Outro objeto ou outro campo | ignorado |
 | Mesmo `wamid` reentregue | não processa duas vezes |
 
@@ -117,8 +120,10 @@ O que o envio faz, e por quê:
 código 131030 ("número fora da lista de destinatários"), o caminho é publicar
 o app em developers.facebook.com → Publicar.
 
-⚠️ "Enviada" quer dizer **aceita pela Meta**. O recibo de entrega e leitura
-(`statuses`) ainda é ignorado pelo webhook.
+Cada resposta enviada mostra o recibo da Meta: *Aceita pela Meta* (só o envio
+foi aceito), *Enviada*, *Entregue*, *Lida* — ou *Falhou*, com o motivo traduzido.
+Para isso o webhook do app precisa estar assinado no campo **`messages`**: é por
+ele que os recibos chegam.
 
 ## Conferir que funcionou
 

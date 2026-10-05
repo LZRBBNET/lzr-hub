@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState, useSyncExternalStore } from "react";
+import { Fragment, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import type { AgentResult, ChatMessage } from "@/lib/agent/types";
 import { navigation, viewTitles, type View } from "@/lib/platform/navigation";
 import { containsHomologationText } from "@/lib/platform/reply-templates-shared";
@@ -166,7 +166,7 @@ export function LzrHubApp({ ixcMode = "disabled" }: { ixcMode?: string }) {
 }
 
 type OverviewMetrics = { conversations:number; resolvedWithoutHuman:number; resolutionRate:number|null; handoffs:number; suggestionsOnly:number; handoffReasons:Record<string,number>; intents:Record<string,number>; csatAverage:number|null; csatCount:number; csatDistribution:Record<string,number>; costPerConversation:null };
-type ConversationSummary = { channel:string; externalConversationId:string; lastMessage:string; lastRole:"customer"|"agent"|"suggestion"; lastAt:string; messages:number; finalStatus?:string; intent?:string; handoff?:boolean };
+type ConversationSummary = { channel:string; externalConversationId:string; lastMessage:string; lastRole:"customer"|"agent"|"suggestion"; lastAt:string; messages:number; finalStatus?:string; intent?:string; handoff?:boolean; displayName?:string; awaitingSince?:string; lastSentBy?:string };
 type Overview = { period:string; available:boolean; detail?:string; metrics:OverviewMetrics|null; queue:ConversationSummary[]; averageHandlingSeconds:number|null; integrations:{ ixc:{mode:string;state:string}; channel:{enabled:boolean;configured:boolean;autoReply:boolean} } };
 
 const INTENT_LABELS: Record<string,string> = {
@@ -381,8 +381,12 @@ function CockpitPanel({ period }: { period:string }) {
 function Metric({ label, value, detail, icon }: { label:string; value:string; detail:string; icon:string }) { return <article className="metric"><div className="metric-top"><span>{label}</span><span className="metric-icon">{icon}</span></div><strong>{value}</strong><small>{detail}</small></article>; }
 function Progress({ label, value }: { label:string; value:number }) { return <div className="bar-row"><div className="bar-label"><span>{label}</span><strong>{value}%</strong></div><div className="bar"><span style={{width:`${value}%`}} /></div></div>; }
 
-type ConversationMessage = { role:"customer"|"agent"|"suggestion"; content:string; createdAt:string; sentBy?:string };
+type ConversationMessage = { role:"customer"|"agent"|"suggestion"; content:string; createdAt:string; sentBy?:string; deliveryStatus?:string; deliveryError?:string };
 type ChannelState = { enabled:boolean; autoReply:boolean; canReply:boolean };
+type ReplyWindow = { lastCustomerAt:string|null; closesAt:string|null; open:boolean };
+type IxcCustomer = { id:string; name:string; status:string; city:string; neighborhood:string };
+type IxcMatch = { state:"loading" } | { state:"found"; customer:IxcCustomer } | { state:"none" } | { state:"unavailable"; detail:string };
+type QuickReply = { intent:string; label:string; content:string };
 type ConversationAudit = { intent:string|null; finalStatus:string|null; handoff:boolean|null; handoffReason:string|null; intentSource:string|null; intentConfidence:number|null; intentModel:string|null; appVersion:string|null; correlationId:string|null; createdAt:string|null };
 
 /**
@@ -500,115 +504,375 @@ function Copilot({ channel, conversationId, onUse }: { channel:string; conversat
 }
 
 /**
- * Atendimentos mostra o que realmente entrou pelos canais. Não há conversa de
- * exemplo: sem histórico gravado, a tela explica por quê. O envio pela tela
- * ainda não existe: ninguém envia resposta ao cliente hoje, então o campo fica
- * desabilitado em vez de fingir que mandou.
+ * Atendimentos: o que de fato entrou pelos canais, e a resposta do atendente.
+ *
+ * A tela se atualiza sozinha a cada poucos segundos. Antes ela só carregava ao
+ * abrir, e mensagem nova de cliente exigia recarregar a página para aparecer —
+ * quem atende não pode depender de lembrar de apertar F5.
+ *
+ * Nada de conversa de exemplo: sem histórico gravado, a tela diz isso.
  */
+const POLL_MS = 5000;
+/** Com a aba escondida, a lista é consultada a cada 6 voltas (30 s). */
+const HIDDEN_POLL_EVERY = 6;
+const FINAL_STATUS_LABELS: Record<string,string> = {
+  suggested:"Sugestão registrada", handoff:"Transbordo", resolved:"Resolvido", waiting_customer:"Aguardando cliente",
+  blocked:"Bloqueado", failed:"Falhou", simulated:"Simulado", rated:"Avaliado", unsupported:"Mídia recebida",
+};
+const DELIVERY_LABELS: Record<string,string> = { sent:"Enviada", delivered:"Entregue", read:"Lida", failed:"Falhou" };
+const conversationKey = (item:{ channel:string; externalConversationId:string }) => `${item.channel}:${item.externalConversationId}`;
+const conversationTitle = (item:ConversationSummary) => item.displayName ?? conversationLabel(item.externalConversationId);
+function nameInitials(name:string) {
+  // Por caractere, não por unidade de código: a primeira "letra" pode ser um emoji.
+  const parts = name.trim().split(/\s+/).filter(Boolean).map((part) => Array.from(part));
+  const letters = parts.length > 1 ? `${parts[0][0]}${parts[parts.length-1][0]}` : (parts[0] ?? []).slice(0,2).join("");
+  return letters.toUpperCase() || "?";
+}
+const conversationInitials = (item:ConversationSummary) => item.displayName ? nameInitials(item.displayName) : conversationLabel(item.externalConversationId).slice(-2);
+function lastMessagePrefix(item:ConversationSummary) {
+  if (item.lastRole==="suggestion") return "Sugestão: ";
+  // Resposta sem autor registrado não é atribuída a ninguém — nem à IA.
+  if (item.lastRole==="agent") return item.lastSentBy ? "Atendente: " : "Resposta: ";
+  return "";
+}
+function waitLabel(iso:string) { const elapsed = relativeTime(iso); return elapsed==="agora" ? "Aguardando" : `Aguarda ${elapsed}`; }
+const messagesSignature = (messages:ConversationMessage[]) => messages.map((message) => `${message.createdAt}|${message.role}|${message.deliveryStatus ?? ""}`).join(";");
+function dayLabel(iso:string, now:number) {
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return "—";
+  const day = (value:Date) => `${value.getFullYear()}-${value.getMonth()}-${value.getDate()}`;
+  if (day(date)===day(new Date(now))) return "Hoje";
+  if (day(date)===day(new Date(now - 86_400_000))) return "Ontem";
+  return date.toLocaleDateString("pt-BR", { day:"2-digit", month:"2-digit", year:"numeric" });
+}
+/** A janela de 24 horas da Meta, dita antes de o atendente escrever — não depois de uma recusa. */
+function windowInfo(replyWindow:ReplyWindow|null, now:number): { tone:string; text:string } | null {
+  if (!replyWindow) return null;
+  if (!replyWindow.lastCustomerAt || !replyWindow.closesAt) return { tone:"", text:"Sem mensagem do cliente" };
+  const remaining = Date.parse(replyWindow.closesAt) - now;
+  if (remaining <= 0) return { tone:"red", text:"Janela de 24 h fechada" };
+  const hours = Math.floor(remaining / 3_600_000);
+  if (hours >= 1) return { tone: hours < 2 ? "amber" : "green", text:`Janela aberta · ${hours} h restantes` };
+  return { tone:"amber", text:`Janela fecha em ${Math.max(1, Math.ceil(remaining / 60_000))} min` };
+}
+/** Áudio, foto e documento chegam como aviso entre colchetes, gravado pelo canal. */
+const isMediaNote = (message:ConversationMessage) => message.role==="customer" && /^\[[^\]]*recebid[oa] — /.test(message.content);
+
+/**
+ * Quem é o cliente no IXC, pelo telefone. Exatamente um cadastro ou nada:
+ * identificar o cliente errado é pior que não identificar.
+ */
+function IxcPanel({ match }: { match:IxcMatch|null }) {
+  return <div className="info-section">
+    <h4>Cadastro no IXC</h4>
+    {(!match || match.state==="loading") && <p className="audit-empty">Procurando pelo telefone…</p>}
+    {match?.state==="found" && <>
+      <div className="info-line"><span>Cliente</span><strong>{match.customer.name}</strong></div>
+      <div className="info-line"><span>Código IXC</span><strong>{match.customer.id}</strong></div>
+      <div className="info-line"><span>Situação</span><strong>{match.customer.status || "—"}</strong></div>
+      <div className="info-line"><span>Local</span><strong>{[match.customer.neighborhood, match.customer.city].filter(Boolean).join(" — ") || "—"}</strong></div>
+    </>}
+    {match?.state==="none" && <p className="audit-empty">Nenhum cadastro com este número — ou mais de um. A busca só identifica quando há exatamente um, para não confundir clientes.</p>}
+    {match?.state==="unavailable" && <p className="audit-empty">{match.detail}</p>}
+  </div>;
+}
+
 function Conversation() {
   const [items,setItems] = useState<ConversationSummary[]>([]);
   const [channelState,setChannelState] = useState<ChannelState>({enabled:false,autoReply:false,canReply:false});
+  const [available,setAvailable] = useState(true);
+  const [state,setState] = useState<"loading"|"ready"|"error">("loading");
+  const [syncedAt,setSyncedAt] = useState<number|null>(null);
+  const [syncFailed,setSyncFailed] = useState(false);
+  const [filter,setFilter] = useState<"todas"|"aguardando">("todas");
+  const [query,setQuery] = useState("");
+  const [selected,setSelected] = useState<ConversationSummary|null>(null);
+  const [messages,setMessages] = useState<ConversationMessage[]>([]);
+  const [messagesState,setMessagesState] = useState<"idle"|"loading"|"ready"|"error">("idle");
+  const [audit,setAudit] = useState<ConversationAudit|null>(null);
+  const [replyWindow,setReplyWindow] = useState<ReplyWindow|null>(null);
+  const [ixc,setIxc] = useState<IxcMatch|null>(null);
+  const [quickReplies,setQuickReplies] = useState<QuickReply[]>([]);
   const [draft,setDraft] = useState("");
   const [sending,setSending] = useState(false);
   const [sendError,setSendError] = useState<string|null>(null);
-  const [available,setAvailable] = useState(true);
-  const [state,setState] = useState<"loading"|"ready"|"error">("loading");
-  const [selected,setSelected] = useState<ConversationSummary|null>(null);
-  const [messages,setMessages] = useState<ConversationMessage[]>([]);
-  const [messagesState,setMessagesState] = useState<"idle"|"loading"|"ready">("idle");
-  const [audit,setAudit] = useState<ConversationAudit|null>(null);
+  const [newBelow,setNewBelow] = useState(false);
+  const [now,setNow] = useState(() => Date.now());
   const messagesRef = useRef<HTMLDivElement>(null);
+  // Refs porque o temporizador enxerga só a primeira renderização: sem elas ele
+  // atualizaria sempre a conversa que estava aberta quando a tela montou.
+  const selectedRef = useRef<ConversationSummary|null>(null);
+  const queryRef = useRef("");
+  const signatureRef = useRef("");
+  const countRef = useRef(0);
+  const stickRef = useRef(true);
+  const listBusy = useRef(false);
+  const messagesBusy = useRef(false);
+  const titleRef = useRef<string|null>(null);
 
-  useEffect(() => {
-    const el = messagesRef.current;
-    if (el) el.scrollTop = el.scrollHeight;
-  }, [messages]);
+  const isOpen = (key:string) => selectedRef.current !== null && conversationKey(selectedRef.current)===key;
 
-  useEffect(() => {
-    let active = true;
-    fetch("/api/conversations")
-      .then((response) => response.ok ? response.json() : Promise.reject(new Error("falhou")))
-      .then((payload:{available:boolean;items:ConversationSummary[];channelState:ChannelState}) => {
-        if (!active) return;
-        setAvailable(payload.available); setItems(payload.items ?? []); setChannelState(payload.channelState ?? {enabled:false,autoReply:false,canReply:false}); setState("ready");
-        if (payload.items?.length) void open(payload.items[0]);
-      })
-      .catch(() => { if (active) setState("error"); });
-    return () => { active = false; };
-  }, []);
+  async function loadList(mode:"first"|"poll"|"force") {
+    // Atualização que se sobrepõe à anterior só empilharia requisições.
+    if (mode==="poll" && listBusy.current) return;
+    listBusy.current = true;
+    const q = queryRef.current.trim();
+    try {
+      const response = await fetch(`/api/conversations${q ? `?q=${encodeURIComponent(q)}` : ""}`);
+      if (!response.ok) throw new Error("falhou");
+      const payload = await response.json() as { available:boolean; items:ConversationSummary[]; channelState:ChannelState };
+      // A busca mudou enquanto esta resposta vinha: ela já não vale.
+      if (q!==queryRef.current.trim()) return;
+      const list = payload.items ?? [];
+      setAvailable(payload.available); setItems(list);
+      setChannelState(payload.channelState ?? {enabled:false,autoReply:false,canReply:false});
+      setState("ready"); setSyncedAt(Date.now()); setSyncFailed(false);
+      const current = selectedRef.current;
+      const fresh = current ? list.find((item) => conversationKey(item)===conversationKey(current)) : undefined;
+      if (fresh) { selectedRef.current = fresh; setSelected(fresh); }
+      else if (mode==="first" && !current && list.length) open(list[0]);
+    } catch {
+      // Falha de atualização não apaga o que já está na tela: avisa e tenta de novo.
+      if (mode==="first") setState("error"); else setSyncFailed(true);
+    } finally { listBusy.current = false; }
+  }
+
+  async function loadMessages(item:ConversationSummary, mode:"open"|"poll"|"force") {
+    const key = conversationKey(item);
+    if (mode==="poll" && messagesBusy.current) return;
+    messagesBusy.current = true;
+    try {
+      const response = await fetch(`/api/conversations?channel=${encodeURIComponent(item.channel)}&id=${encodeURIComponent(item.externalConversationId)}`);
+      if (!isOpen(key)) return;
+      if (!response.ok) throw new Error("falhou");
+      const payload = await response.json() as { messages:ConversationMessage[]; audit:ConversationAudit|null; replyWindow?:ReplyWindow };
+      // Trocou de conversa enquanto esperava: esta resposta é de outro cliente.
+      if (!isOpen(key)) return;
+      const next = payload.messages ?? [];
+      const signature = messagesSignature(next);
+      if (mode!=="poll" || signature!==signatureRef.current) {
+        const el = messagesRef.current;
+        const nearBottom = !el || el.scrollHeight - el.scrollTop - el.clientHeight < 80;
+        // Quem está lendo o histórico lá em cima não é puxado para baixo: ganha um aviso.
+        stickRef.current = mode!=="poll" || nearBottom;
+        if (mode==="poll" && next.length > countRef.current && !nearBottom) setNewBelow(true);
+        signatureRef.current = signature; countRef.current = next.length;
+        setMessages(next);
+      }
+      setAudit(payload.audit ?? null); setReplyWindow(payload.replyWindow ?? null); setMessagesState("ready");
+    } catch {
+      if (mode==="open" && isOpen(key)) setMessagesState("error");
+    } finally { messagesBusy.current = false; }
+  }
+
+  async function lookupIxc(item:ConversationSummary) {
+    const key = conversationKey(item);
+    if (!/^\d{10,15}$/.test(item.externalConversationId)) { setIxc({ state:"unavailable", detail:"Esta conversa não é de um número de telefone." }); return; }
+    setIxc({ state:"loading" });
+    try {
+      const response = await fetch(`/api/conversations/customer?id=${encodeURIComponent(item.externalConversationId)}`);
+      const payload = await response.json().catch(() => ({})) as { available?:boolean; detail?:string; error?:string; customer?:IxcCustomer|null };
+      if (!isOpen(key)) return;
+      if (!response.ok || !payload.available) { setIxc({ state:"unavailable", detail:payload.detail ?? payload.error ?? "O IXC não respondeu agora." }); return; }
+      setIxc(payload.customer ? { state:"found", customer:payload.customer } : { state:"none" });
+    } catch {
+      if (isOpen(key)) setIxc({ state:"unavailable", detail:"O IXC não respondeu agora." });
+    }
+  }
+
+  function open(item:ConversationSummary) {
+    const same = isOpen(conversationKey(item));
+    selectedRef.current = item; setSelected(item);
+    if (same) return;
+    signatureRef.current = ""; countRef.current = 0; stickRef.current = true;
+    setMessages([]); setMessagesState("loading"); setAudit(null); setReplyWindow(null); setNewBelow(false);
+    // O rascunho é da conversa em que foi escrito: trocar de cliente não o carrega junto.
+    setDraft(""); setSendError(null);
+    void loadMessages(item, "open");
+    // O IXC tem limite de consultas por minuto: uma vez ao abrir, nunca a cada atualização.
+    void lookupIxc(item);
+  }
 
   async function send() {
-    if (!selected || sending || !draft.trim()) return;
+    const item = selectedRef.current;
+    if (!item || sending || !draft.trim()) return;
     setSending(true); setSendError(null);
     try {
       // Uma chave por clique: o duplo clique devolve o mesmo resultado em vez de mandar duas mensagens.
       const response = await fetch("/api/conversations/reply", { method:"POST", headers:{"content-type":"application/json"},
-        body:JSON.stringify({ conversationId:selected.externalConversationId, text:draft, idempotencyKey:crypto.randomUUID() }) });
+        body:JSON.stringify({ conversationId:item.externalConversationId, text:draft, idempotencyKey:crypto.randomUUID() }) });
       const payload = await response.json().catch(() => ({})) as { error?:string; recorded?:boolean };
       if (!response.ok) { setSendError(payload.error ?? "Não consegui enviar. Nada foi enviado."); return; }
       setDraft("");
-      await open(selected, true);
-      if (payload.recorded === false) setSendError("A mensagem foi enviada ao cliente, mas não consegui gravá-la no histórico. Não reenvie.");
+      if (payload.recorded===false) setSendError("A mensagem foi enviada ao cliente, mas não consegui gravá-la no histórico. Não reenvie.");
+      await loadMessages(item, "force");
+      void loadList("force");
     } catch { setSendError("Não consegui falar com o servidor. Confira a conversa antes de reenviar."); }
     finally { setSending(false); }
   }
 
-  async function open(item:ConversationSummary, keepDraft = false) {
-    setSelected(item); setMessagesState("loading"); setMessages([]); setAudit(null);
-    // O rascunho é da conversa em que foi escrito: trocar de cliente não o carrega junto.
-    if (!keepDraft) { setDraft(""); setSendError(null); }
-    const response = await fetch(`/api/conversations?channel=${encodeURIComponent(item.channel)}&id=${encodeURIComponent(item.externalConversationId)}`);
-    if (response.ok) { const payload = await response.json() as {messages:ConversationMessage[];audit:ConversationAudit|null}; setMessages(payload.messages ?? []); setAudit(payload.audit ?? null); }
-    setMessagesState("ready");
+  function insertReply(content:string) {
+    setDraft((current) => current.trim() ? `${current.trimEnd()}\n${content}` : content);
+    setSendError(null);
   }
+
+  useEffect(() => {
+    void loadList("first");
+    fetch("/api/agent/replies").then((response) => response.ok ? response.json() : null)
+      .then((payload:{ items?:QuickReply[] }|null) => { if (payload?.items) setQuickReplies(payload.items.map(({ intent, label, content }) => ({ intent, label, content }))); })
+      .catch(() => undefined);
+    const refresh = () => {
+      setNow(Date.now());
+      void loadList("poll");
+      if (selectedRef.current) void loadMessages(selectedRef.current, "poll");
+    };
+    let ticks = 0;
+    const tick = () => {
+      ticks += 1;
+      if (document.visibilityState==="visible") { refresh(); return; }
+      // Aba escondida continua olhando a lista, mais devagar: é o que mantém o
+      // "(3)" do título avisando de cliente esperando enquanto o atendente está
+      // em outra aba. A conversa aberta não — ninguém a está lendo.
+      if (ticks % HIDDEN_POLL_EVERY===0) { setNow(Date.now()); void loadList("poll"); }
+    };
+    const onVisibility = () => { if (document.visibilityState==="visible") refresh(); };
+    const timer = window.setInterval(tick, POLL_MS);
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => { window.clearInterval(timer); document.removeEventListener("visibilitychange", onVisibility); };
+    // Monta uma vez só: as funções leem o que muda pelas refs, e recriar o
+    // temporizador a cada renderização zeraria a contagem dos 5 segundos.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
+    // Espera curta: sem ela cada letra digitada viraria uma consulta.
+    if (query.trim()===queryRef.current.trim()) return;
+    const timer = window.setTimeout(() => { queryRef.current = query; void loadList("force"); }, 350);
+    return () => window.clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- `loadList` lê a busca pela ref
+  }, [query]);
+
+  useEffect(() => {
+    const el = messagesRef.current;
+    if (el && stickRef.current) el.scrollTop = el.scrollHeight;
+  }, [messages]);
+
+  const awaitingCount = items.filter((item) => item.awaitingSince).length;
+  useEffect(() => {
+    titleRef.current = document.title;
+    return () => { if (titleRef.current) document.title = titleRef.current; };
+  }, []);
+  useEffect(() => {
+    // O número na aba avisa de cliente esperando mesmo com o atendente em outra janela.
+    const base = titleRef.current ?? document.title;
+    document.title = awaitingCount ? `(${awaitingCount}) ${base}` : base;
+  }, [awaitingCount]);
 
   if (state==="loading") return <main className="content"><div className="state-card">Carregando conversas…</div></main>;
   if (state==="error") return <main className="content"><div className="state-card error">Não foi possível carregar as conversas.</div></main>;
   if (!available) return <main className="content"><div className="state-card error">Histórico de conversas indisponível. Nenhuma conversa de exemplo é exibida no lugar.</div></main>;
-  if (items.length===0) return <main className="content"><div className="state-card"><strong>Nenhuma conversa registrada.</strong><p style={{marginTop:6,lineHeight:1.6}}>As conversas aparecem aqui assim que o canal do WhatsApp receber mensagens. Nada fictício é mostrado enquanto isso.</p></div></main>;
+  if (items.length===0 && !query.trim() && !selected) return <main className="content"><div className="state-card"><strong>Nenhuma conversa registrada.</strong><p style={{marginTop:6,lineHeight:1.6}}>As conversas aparecem aqui assim que o canal do WhatsApp receber mensagens — esta tela se atualiza sozinha. Nada fictício é mostrado enquanto isso.</p></div></main>;
+
+  const visible = filter==="aguardando"
+    // Na fila, quem espera há mais tempo vem primeiro.
+    ? items.filter((item) => item.awaitingSince).sort((a,b) => (a.awaitingSince ?? "").localeCompare(b.awaitingSince ?? ""))
+    : items;
+  const windowState = windowInfo(replyWindow, now);
+  const windowOpen = !!replyWindow?.closesAt && now <= Date.parse(replyWindow.closesAt);
+  const canCompose = channelState.canReply && messagesState==="ready" && windowOpen;
+  const composerHint = !channelState.canReply ? "Responder pela tela está desligado. Nenhuma resposta é enviada ao cliente por aqui."
+    : messagesState!=="ready" ? "Carregando a conversa…"
+    : !replyWindow?.lastCustomerAt ? "Não há mensagem deste cliente para responder."
+    : !windowOpen ? "Passaram mais de 24 horas desde a última mensagem do cliente. A Meta só aceita texto livre dentro dessa janela: é preciso que o cliente escreva de novo."
+    : "Escreva a resposta ao cliente… (Enter envia, Shift+Enter quebra a linha)";
+  const statusLabel = selected?.handoff ? "Transbordo" : selected?.finalStatus ? FINAL_STATUS_LABELS[selected.finalStatus] ?? selected.finalStatus : "Sem desfecho";
 
   return <main className="content" style={{paddingTop:18}}>
-    {channelState.enabled && !channelState.autoReply && <div className="state-card" style={{marginBottom:14}}><strong>Modo observação.</strong> O canal recebe e registra as mensagens, e a IA propõe a resposta — mas nada é enviado automaticamente. As sugestões aparecem marcadas no histórico. {channelState.canReply ? "Quem responde é o atendente, pelo campo abaixo da conversa." : "O envio pela tela está desligado: ninguém responde ao cliente por aqui."}</div>}
+    {channelState.enabled && !channelState.autoReply && <div className="state-card" style={{marginBottom:14}}><strong>Modo observação.</strong> O canal recebe e registra as mensagens, e a IA propõe a resposta — mas nada é enviado automaticamente. {channelState.canReply ? "Quem responde é o atendente, pelo campo abaixo da conversa." : "O envio pela tela está desligado: ninguém responde ao cliente por aqui."}</div>}
     <div className="conversation-layout">
     <aside className="conversation-list">
-      {items.map((item)=><div className={`contact ${selected?.externalConversationId===item.externalConversationId?"active":""}`} key={`${item.channel}:${item.externalConversationId}`} onClick={()=>void open(item)} role="button" tabIndex={0} onKeyDown={(e)=>{if(e.key==="Enter")void open(item)}}>
-        <Avatar initials={conversationLabel(item.externalConversationId).slice(-2)} />
-        <div><p>{conversationLabel(item.externalConversationId)}</p><span>{item.lastRole==="agent"?"IA: ":item.lastRole==="suggestion"?"Sugestão: ":""}{item.lastMessage.slice(0,48)}</span></div>
-        <time>{relativeTime(item.lastAt)}</time>
+      <div className="conversation-tools">
+        <input value={query} onChange={(e)=>setQuery(e.target.value)} placeholder="Buscar por nome ou número" aria-label="Buscar conversa" />
+        <div className="conversation-filters">
+          <button className={filter==="todas"?"active":""} onClick={()=>setFilter("todas")}>Todas</button>
+          <button className={filter==="aguardando"?"active":""} onClick={()=>setFilter("aguardando")}>Aguardando resposta{awaitingCount ? ` (${awaitingCount})` : ""}</button>
+        </div>
+        <span className={`conversation-sync ${syncFailed?"stale":""}`}>{syncFailed ? "Falha ao atualizar — tentando de novo" : syncedAt ? `Atualiza sozinha · ${new Date(syncedAt).toLocaleTimeString("pt-BR")}` : ""}</span>
+      </div>
+      {visible.length===0 && <p className="conversation-empty">{filter==="aguardando" ? "Nenhum cliente aguardando resposta." : `Nenhuma conversa encontrada para “${query.trim()}”.`}</p>}
+      {visible.map((item)=><div className={`contact ${selected && conversationKey(selected)===conversationKey(item)?"active":""}`} key={conversationKey(item)} onClick={()=>open(item)} role="button" tabIndex={0} onKeyDown={(e)=>{if(e.key==="Enter")open(item)}}>
+        <Avatar initials={conversationInitials(item)} />
+        <div>
+          <p>{conversationTitle(item)}</p>
+          {item.displayName && <small className="contact-phone">{conversationLabel(item.externalConversationId)}</small>}
+          <span>{lastMessagePrefix(item)}{item.lastMessage.slice(0,60)}</span>
+        </div>
+        <div className="contact-meta">
+          <time>{relativeTime(item.lastAt)}</time>
+          {item.awaitingSince && <i className="wait-badge" title="Tempo desde a primeira mensagem do cliente ainda sem resposta">{waitLabel(item.awaitingSince)}</i>}
+        </div>
       </div>)}
     </aside>
     <section className="conversation-main">
-      <div className="chat-header"><div className="person"><Avatar initials={selected?conversationLabel(selected.externalConversationId).slice(-2):"—"} /><div><strong>{selected?conversationLabel(selected.externalConversationId):"—"}</strong><span>● {selected?.channel ?? "canal"}</span></div></div><span className={`badge ${selected?.handoff?"amber":"blue"}`}>{selected?.handoff?"Transbordo":selected?.finalStatus ?? "Sem desfecho"}</span></div>
-      <div className="messages" ref={messagesRef}>
-        {messagesState==="loading" && <div className="message agent">Carregando histórico…</div>}
-        {messagesState==="ready" && messages.length===0 && <div className="message agent">Conversa sem mensagens gravadas.</div>}
-        {messages.map((message,index)=><div className={`message ${message.role==="customer"?"":"agent"}`} key={index} style={message.role==="suggestion"?{opacity:0.72,borderLeft:"3px solid var(--warn)"}:undefined}>
-          {message.role==="suggestion" && <strong style={{display:"block",fontSize:11,color:"var(--warn)",textTransform:"uppercase",letterSpacing:0.4,marginBottom:4}}>Sugestão da IA — não enviada ao cliente</strong>}
-          {message.content}
-          {message.role==="suggestion" && channelState.canReply && (containsHomologationText(message.content)
-            ? <small style={{display:"block",marginTop:6,color:"var(--warn)"}}>Texto de homologação — não pode ser enviado a um cliente.</small>
-            : <button className="button secondary" style={{marginTop:8}} onClick={()=>{setDraft(message.content);setSendError(null)}}>Usar como rascunho</button>)}
-          {message.role==="agent" && message.sentBy && <small style={{display:"block",marginTop:4,color:"var(--text-3)"}}>Enviada por {message.sentBy}</small>}
-          <time>{new Date(message.createdAt).toLocaleString("pt-BR",{day:"2-digit",month:"2-digit",hour:"2-digit",minute:"2-digit"})}</time>
-        </div>)}
+      <div className="chat-header">
+        <div className="person"><Avatar initials={selected?conversationInitials(selected):"—"} /><div><strong>{selected?conversationTitle(selected):"—"}</strong><span>● {selected?.displayName ? `${conversationLabel(selected.externalConversationId)} · ` : ""}{selected?.channel ?? "canal"}</span></div></div>
+        <div className="chat-badges">
+          {windowState && <span className={`badge ${windowState.tone}`}>{windowState.text}</span>}
+          <span className={`badge ${selected?.handoff?"amber":"blue"}`}>{statusLabel}</span>
+        </div>
+      </div>
+      <div className="messages-wrap">
+        <div className="messages" ref={messagesRef} onScroll={(e)=>{ const el = e.currentTarget; if (newBelow && el.scrollHeight - el.scrollTop - el.clientHeight < 80) setNewBelow(false); }}>
+          {messagesState==="loading" && <div className="message agent">Carregando histórico…</div>}
+          {messagesState==="error" && <div className="message agent">Não consegui carregar esta conversa. Abra de novo em instantes.</div>}
+          {messagesState==="ready" && messages.length===0 && <div className="message agent">Conversa sem mensagens gravadas.</div>}
+          {messages.map((message,index)=>{
+            const day = dayLabel(message.createdAt, now);
+            const newDay = index===0 || dayLabel(messages[index-1].createdAt, now)!==day;
+            return <Fragment key={`${message.createdAt}-${index}`}>
+              {newDay && <div className="day-separator">{day}</div>}
+              <div className={`message ${message.role==="customer"?"":"agent"} ${isMediaNote(message)?"media-note":""}`} style={message.role==="suggestion"?{opacity:0.72,borderLeft:"3px solid var(--warn)"}:undefined}>
+                {message.role==="suggestion" && <strong style={{display:"block",fontSize:11,color:"var(--warn)",textTransform:"uppercase",letterSpacing:0.4,marginBottom:4}}>Sugestão da IA — não enviada ao cliente</strong>}
+                {message.content}
+                {message.role==="suggestion" && canCompose && (containsHomologationText(message.content)
+                  ? <small style={{display:"block",marginTop:6,color:"var(--warn)"}}>Texto de homologação — não pode ser enviado a um cliente.</small>
+                  : <button className="button secondary" style={{marginTop:8}} onClick={()=>insertReply(message.content)}>Usar como rascunho</button>)}
+                {message.role==="agent" && message.sentBy && <small className="delivery">Enviada por {message.sentBy} · <b className={message.deliveryStatus ?? "accepted"}>{DELIVERY_LABELS[message.deliveryStatus ?? ""] ?? "Aceita pela Meta"}</b></small>}
+                {message.deliveryStatus==="failed" && message.deliveryError && <small className="delivery-error">{message.deliveryError}</small>}
+                <time>{new Date(message.createdAt).toLocaleTimeString("pt-BR",{hour:"2-digit",minute:"2-digit"})}</time>
+              </div>
+            </Fragment>;
+          })}
+        </div>
+        {newBelow && <button className="new-messages" onClick={()=>{ const el = messagesRef.current; if (el) el.scrollTop = el.scrollHeight; setNewBelow(false); }}>Novas mensagens ↓</button>}
       </div>
       {sendError && <p className="form-error" style={{margin:"0 15px 8px"}}>{sendError}</p>}
       <div className="composer">
-        <textarea value={draft} disabled={!channelState.canReply || sending} maxLength={4096}
+        {quickReplies.length>0 && <select aria-label="Respostas rápidas" disabled={!canCompose || sending} value="" onChange={(e)=>{ const reply = quickReplies.find((entry)=>entry.intent===e.target.value); if (reply) insertReply(reply.content); }}>
+          <option value="">Respostas rápidas</option>
+          {quickReplies.map((reply)=><option key={reply.intent} value={reply.intent}>{reply.label}</option>)}
+        </select>}
+        <textarea value={draft} disabled={!canCompose || sending} maxLength={4096}
           onChange={(e)=>{setDraft(e.target.value);setSendError(null)}}
-          onKeyDown={(e)=>{ if(e.key==="Enter"&&(e.ctrlKey||e.metaKey)){ e.preventDefault(); void send(); } }}
-          placeholder={channelState.canReply ? "Escreva a resposta ao cliente… (Ctrl+Enter envia)" : "Responder pela tela está desligado. Nenhuma resposta é enviada ao cliente por aqui."} />
-        <button aria-label="Enviar" disabled={!channelState.canReply || sending || !draft.trim()} onClick={()=>void send()}>{sending?"…":"➤"}</button>
+          onKeyDown={(e)=>{ if(e.key==="Enter"&&!e.shiftKey&&!e.nativeEvent.isComposing){ e.preventDefault(); void send(); } }}
+          placeholder={composerHint} />
+        <button aria-label="Enviar" disabled={!canCompose || sending || !draft.trim()} onClick={()=>void send()}>{sending?"…":"➤"}</button>
       </div>
     </section>
     <aside className="customer-panel">
-      <div className="customer-head"><Avatar initials={selected?conversationLabel(selected.externalConversationId).slice(-2):"—"} /><h3>{selected?conversationLabel(selected.externalConversationId):"—"}</h3><p>Identificador do canal • {selected?.channel}</p></div>
+      <div className="customer-head"><Avatar initials={selected?conversationInitials(selected):"—"} /><h3>{selected?conversationTitle(selected):"—"}</h3><p>{selected ? `${conversationLabel(selected.externalConversationId)} • ${selected.channel}` : "—"}</p></div>
+      {selected && <IxcPanel match={ixc} />}
       {/* `key` troca o copiloto inteiro ao mudar de conversa: sem isso a resposta
           de um cliente ficaria na tela ao lado do histórico de outro. */}
-      {selected && <Copilot key={`${selected.channel}:${selected.externalConversationId}`} channel={selected.channel} conversationId={selected.externalConversationId} onUse={channelState.canReply ? (text)=>{setDraft(text);setSendError(null)} : undefined} />}
+      {selected && <Copilot key={conversationKey(selected)} channel={selected.channel} conversationId={selected.externalConversationId} onUse={canCompose ? insertReply : undefined} />}
       {selected && <ConversationAuditPanel audit={audit} />}
-      <Info title="Conversa" rows={[["Mensagens",String(selected?.messages ?? 0)],["Última",selected?relativeTime(selected.lastAt):"—"],["Intenção",selected?.intent?intentLabel(selected.intent):"Não registrada"],["Desfecho",selected?.finalStatus ?? "Não registrado"]]} />
-      <Info title="Cadastro" rows={[["Vínculo com o IXC","Não associado"],["Como associar","Depende de casar o telefone do canal com o cadastro do IXC — ainda não implementado"]]} />
+      <Info title="Conversa" rows={[
+        ["Mensagens",String(selected?.messages ?? 0)],
+        ["Última",selected?relativeTime(selected.lastAt):"—"],
+        ["Aguardando resposta",selected?.awaitingSince?`há ${relativeTime(selected.awaitingSince)}`:"Não"],
+        ["Intenção",selected?.intent?intentLabel(selected.intent):"Não registrada"],
+        ["Desfecho",statusLabel],
+      ]} />
     </aside>
   </div></main>;
 }

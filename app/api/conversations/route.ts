@@ -1,8 +1,8 @@
 import { NextResponse } from "next/server";
 import { getDb } from "@/db";
-import { DbConversationsRepository } from "@/lib/platform/conversations-service";
+import { DbConversationsRepository, replyWindowFrom } from "@/lib/platform/conversations-service";
 import { metaSendConfigFromEnv } from "@/lib/integrations/meta/cloud-client";
-import { attendantReplyEnabled } from "@/lib/platform/attendant-reply-service";
+import { REPLY_WINDOW_MS, attendantReplyEnabled } from "@/lib/platform/attendant-reply-service";
 import { CHANNEL_NAME } from "@/lib/platform/n8n-channel-service";
 import { authEnforced, authorize } from "@/lib/platform/session-guard";
 
@@ -41,9 +41,11 @@ export async function GET(request: Request) {
         // que aconteceu não deveria precisar de uma segunda tela.
         repository.getAudit(channel, id).catch(() => undefined),
       ]);
-      return NextResponse.json({ available: true, channel, id, messages, audit: audit ?? null, channelState });
+      // A janela de 24 horas vem daqui, com a mesma régua do envio: a tela avisa
+      // antes, em vez de deixar o atendente escrever para receber uma recusa.
+      return NextResponse.json({ available: true, channel, id, messages, audit: audit ?? null, channelState, replyWindow: replyWindowFrom(messages, REPLY_WINDOW_MS) });
     }
-    return NextResponse.json({ available: true, items: await repository.listConversations(LIST_LIMIT), channelState });
+    return NextResponse.json({ available: true, items: await repository.listConversations(LIST_LIMIT, url.searchParams.get("q")), channelState });
   } catch {
     return NextResponse.json({ available: false, detail: "Histórico de conversas indisponível", items: [], messages: [], channelState });
   }

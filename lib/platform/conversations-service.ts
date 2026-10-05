@@ -1,6 +1,6 @@
-import { and, desc, eq, inArray, notLike, sql } from "drizzle-orm";
+import { and, desc, eq, ilike, inArray, like, notLike, sql } from "drizzle-orm";
 import { NON_CUSTOMER_LIKE, isNonCustomerConversation } from "./conversation-scope.ts";
-import { channelMessages, conversationOutcomes } from "../../db/schema.ts";
+import { channelContacts, channelMessages, conversationOutcomes } from "../../db/schema.ts";
 
 /**
  * Conversas reais recebidas pelos canais (hoje só o n8n/WhatsApp). Nada aqui é
@@ -23,10 +23,74 @@ export interface ConversationSummary {
   finalStatus?: string;
   intent?: string;
   handoff?: boolean;
+  /** Nome do perfil de WhatsApp, o último visto. */
+  displayName?: string;
+  /**
+   * Desde quando o cliente espera resposta: a primeira fala dele depois da
+   * última resposta enviada. Ausente = não está esperando. Sugestão da IA não
+   * conta como resposta — o cliente nunca a recebeu.
+   */
+  awaitingSince?: string;
+  /** Autor da última mensagem, quando é resposta de atendente. */
+  lastSentBy?: string;
 }
 
-/** `sentBy` é o e-mail do atendente que escreveu a resposta; ausente = não registrado, não "a IA". */
-export interface ConversationMessage { role: ConversationRole; content: string; createdAt: string; sentBy?: string }
+/**
+ * `sentBy` é o e-mail do atendente que escreveu a resposta; ausente = não
+ * registrado, não "a IA". `deliveryStatus` ausente = nenhum recibo chegou.
+ */
+export interface ConversationMessage {
+  role: ConversationRole;
+  content: string;
+  createdAt: string;
+  sentBy?: string;
+  deliveryStatus?: string;
+  deliveryError?: string;
+}
+
+/** Linhas da mais nova para a mais antiga. */
+export function awaitingSinceFrom(rowsNewestFirst: Array<{ role: string; createdAt: string }>): string | undefined {
+  let since: string | undefined;
+  for (const row of rowsNewestFirst) {
+    if (row.role === "suggestion") continue;
+    if (row.role !== "customer") break;
+    since = row.createdAt;
+  }
+  return since;
+}
+
+/**
+ * A janela em que a Meta aceita texto livre: 24 horas desde a última fala do
+ * cliente. Calculada aqui para a tela avisar antes — o envio confere de novo.
+ */
+export function replyWindowFrom(messages: Array<{ role: string; createdAt: string }>, windowMs: number, now = Date.now()) {
+  const last = [...messages].reverse().find((message) => message.role === "customer")?.createdAt;
+  if (!last || !Number.isFinite(Date.parse(last))) return { lastCustomerAt: null, closesAt: null, open: false };
+  const closesAt = Date.parse(last) + windowMs;
+  return { lastCustomerAt: last, closesAt: new Date(closesAt).toISOString(), open: now <= closesAt };
+}
+
+/**
+ * Busca por número (só dígitos, a partir de 3) ou por nome do perfil (a partir
+ * de 2 letras). Abaixo disso não filtra: "9" casaria com quase tudo.
+ */
+export function searchTerm(raw?: string | null): { kind: "digits" | "name"; value: string } | undefined {
+  const value = (raw ?? "").trim().slice(0, 60);
+  if (!value) return undefined;
+  if (/^[\d\s()+.-]+$/.test(value)) {
+    const digits = value.replace(/\D/g, "");
+    return digits.length >= 3 ? { kind: "digits", value: digits } : undefined;
+  }
+  return value.length >= 2 ? { kind: "name", value } : undefined;
+}
+
+const escapeLike = (value: string) => value.replace(/[\\%_]/g, (char) => `\\${char}`);
+
+/**
+ * Desempate de mensagens com o mesmo carimbo — o canal gravava a fala do cliente
+ * e a sugestão no mesmo milissegundo. A fala vem antes da resposta a ela.
+ */
+const replyAfterCustomer = sql`case ${channelMessages.role} when 'customer' then 0 else 1 end`;
 
 export interface ConversationOutcome { intent: string; finalStatus: string; handoff: boolean }
 
@@ -54,7 +118,7 @@ export interface ConversationAudit {
 }
 
 export interface ConversationsRepository {
-  listConversations(limit: number): Promise<ConversationSummary[]>;
+  listConversations(limit: number, search?: string | null): Promise<ConversationSummary[]>;
   getMessages(channel: string, externalConversationId: string, limit: number): Promise<ConversationMessage[]>;
   /**
    * Último desfecho de uma conversa só. O copiloto precisa disto vindo do banco:
@@ -74,32 +138,43 @@ export class DbConversationsRepository implements ConversationsRepository {
   private readonly db: any;
   constructor(db: unknown) { this.db = db; }
 
-  async listConversations(limit: number): Promise<ConversationSummary[]> {
+  async listConversations(limit: number, search?: string | null): Promise<ConversationSummary[]> {
+    // Conversa de grupo não é atendimento e não aparece na fila.
+    const filters = [notLike(channelMessages.externalConversationId, NON_CUSTOMER_LIKE)];
+    const term = searchTerm(search);
+    if (term?.kind === "digits") filters.push(like(channelMessages.externalConversationId, `%${term.value}%`));
+    if (term?.kind === "name") {
+      filters.push(inArray(
+        channelMessages.externalConversationId,
+        this.db.select({ id: channelContacts.externalConversationId }).from(channelContacts).where(ilike(channelContacts.displayName, `%${escapeLike(term.value)}%`)),
+      ));
+    }
+
     const grouped = await this.db.select({
       channel: channelMessages.channel,
       externalConversationId: channelMessages.externalConversationId,
       lastAt: sql<string>`max(${channelMessages.createdAt})`.as("last_at"),
       messages: sql<number>`count(*)`.as("messages"),
     }).from(channelMessages)
-      // Conversa de grupo não é atendimento e não aparece na fila.
-      .where(notLike(channelMessages.externalConversationId, NON_CUSTOMER_LIKE))
+      .where(and(...filters))
       .groupBy(channelMessages.channel, channelMessages.externalConversationId)
       .orderBy(desc(sql`max(${channelMessages.createdAt})`))
       .limit(limit);
     if (grouped.length === 0) return [];
 
     const ids = grouped.map((row: { externalConversationId: string }) => row.externalConversationId);
-    // Última mensagem e último desfecho de cada conversa, em duas consultas só —
-    // a redução por conversa acontece aqui e não por chamada dentro do laço.
-    const [recent, outcomes] = await Promise.all([
+    // Mensagens, desfechos e nomes de todas as conversas da página em três
+    // consultas só — a redução por conversa acontece aqui, não dentro do laço.
+    const [recent, outcomes, contacts] = await Promise.all([
       this.db.select({
         externalConversationId: channelMessages.externalConversationId,
         role: channelMessages.role,
         content: channelMessages.content,
         createdAt: channelMessages.createdAt,
+        sentBy: channelMessages.sentBy,
       }).from(channelMessages)
         .where(inArray(channelMessages.externalConversationId, ids))
-        .orderBy(desc(channelMessages.createdAt)),
+        .orderBy(desc(channelMessages.createdAt), desc(replyAfterCustomer)),
       this.db.select({
         externalConversationId: conversationOutcomes.externalConversationId,
         intent: conversationOutcomes.intent,
@@ -109,15 +184,27 @@ export class DbConversationsRepository implements ConversationsRepository {
       }).from(conversationOutcomes)
         .where(inArray(conversationOutcomes.externalConversationId, ids))
         .orderBy(desc(conversationOutcomes.createdAt)),
+      this.db.select({
+        channel: channelContacts.channel,
+        externalConversationId: channelContacts.externalConversationId,
+        displayName: channelContacts.displayName,
+      }).from(channelContacts)
+        .where(inArray(channelContacts.externalConversationId, ids)),
     ]);
 
-    const lastMessage = new Map<string, { role: string; content: string }>();
-    for (const row of recent) if (!lastMessage.has(row.externalConversationId)) lastMessage.set(row.externalConversationId, row);
+    const byConversation = new Map<string, Array<{ role: string; content: string; createdAt: string; sentBy: string | null }>>();
+    for (const row of recent) {
+      const rows = byConversation.get(row.externalConversationId) ?? [];
+      rows.push(row);
+      byConversation.set(row.externalConversationId, rows);
+    }
     const lastOutcome = new Map<string, { intent: string; finalStatus: string; handoff: boolean }>();
     for (const row of outcomes) if (!lastOutcome.has(row.externalConversationId)) lastOutcome.set(row.externalConversationId, row);
+    const names = new Map<string, string>(contacts.map((row: { channel: string; externalConversationId: string; displayName: string }) => [`${row.channel}:${row.externalConversationId}`, row.displayName]));
 
     return grouped.map((row: { channel: string; externalConversationId: string; lastAt: string; messages: number }) => {
-      const last = lastMessage.get(row.externalConversationId);
+      const rows = byConversation.get(row.externalConversationId) ?? [];
+      const last = rows[0];
       const outcome = lastOutcome.get(row.externalConversationId);
       return {
         channel: row.channel,
@@ -129,6 +216,9 @@ export class DbConversationsRepository implements ConversationsRepository {
         finalStatus: outcome?.finalStatus,
         intent: outcome?.intent,
         handoff: outcome?.handoff,
+        displayName: names.get(`${row.channel}:${row.externalConversationId}`),
+        awaitingSince: awaitingSinceFrom(rows),
+        lastSentBy: last?.role === "agent" ? last.sentBy ?? undefined : undefined,
       };
     });
   }
@@ -139,12 +229,15 @@ export class DbConversationsRepository implements ConversationsRepository {
       content: channelMessages.content,
       createdAt: channelMessages.createdAt,
       sentBy: channelMessages.sentBy,
+      deliveryStatus: channelMessages.deliveryStatus,
+      deliveryError: channelMessages.deliveryError,
     }).from(channelMessages)
       .where(and(eq(channelMessages.channel, channel), eq(channelMessages.externalConversationId, externalConversationId)))
-      .orderBy(desc(channelMessages.createdAt))
+      .orderBy(desc(channelMessages.createdAt), desc(replyAfterCustomer))
       .limit(limit);
-    return rows.map((row: { role: string; content: string; createdAt: string; sentBy: string | null }) => ({
+    return rows.map((row: { role: string; content: string; createdAt: string; sentBy: string | null; deliveryStatus: string | null; deliveryError: string | null }) => ({
       role: role(row.role), content: row.content, createdAt: row.createdAt, sentBy: row.sentBy ?? undefined,
+      deliveryStatus: row.deliveryStatus ?? undefined, deliveryError: row.deliveryError ?? undefined,
     })).reverse();
   }
 
@@ -182,29 +275,42 @@ export class DbConversationsRepository implements ConversationsRepository {
 
 export class MemoryConversationsRepository implements ConversationsRepository {
   async getAudit() { return undefined; }
-  readonly rows: Array<{ channel: string; externalConversationId: string; role: ConversationRole; content: string; createdAt: string; sentBy?: string }> = [];
-  add(row: { channel: string; externalConversationId: string; role: ConversationRole; content: string; createdAt: string; sentBy?: string }) { this.rows.push(row); }
-  async listConversations(limit: number): Promise<ConversationSummary[]> {
-    const byId = new Map<string, ConversationSummary>();
-    for (const row of [...this.rows].sort((a, b) => a.createdAt.localeCompare(b.createdAt))) {
+  readonly rows: Array<{ channel: string; externalConversationId: string; role: ConversationRole; content: string; createdAt: string; sentBy?: string; deliveryStatus?: string; deliveryError?: string }> = [];
+  /** `canal:conversa` → nome do perfil. */
+  readonly contacts = new Map<string, string>();
+  add(row: { channel: string; externalConversationId: string; role: ConversationRole; content: string; createdAt: string; sentBy?: string; deliveryStatus?: string; deliveryError?: string }) { this.rows.push(row); }
+  async listConversations(limit: number, search?: string | null): Promise<ConversationSummary[]> {
+    const term = searchTerm(search);
+    const byId = new Map<string, typeof this.rows>();
+    for (const row of [...this.rows].sort((a, b) => b.createdAt.localeCompare(a.createdAt))) {
       // Mesma regra do repositório real: grupo não é atendimento.
       if (isNonCustomerConversation(row.externalConversationId)) continue;
       const key = `${row.channel}:${row.externalConversationId}`;
-      const current = byId.get(key);
-      byId.set(key, {
-        channel: row.channel, externalConversationId: row.externalConversationId,
-        lastMessage: row.content, lastRole: row.role, lastAt: row.createdAt,
-        messages: (current?.messages ?? 0) + 1,
-      });
+      byId.set(key, [...(byId.get(key) ?? []), row]);
     }
-    return [...byId.values()].sort((a, b) => b.lastAt.localeCompare(a.lastAt)).slice(0, limit);
+    const summaries: ConversationSummary[] = [...byId.entries()].map(([key, rows]) => {
+      const last = rows[0];
+      return {
+        channel: last.channel, externalConversationId: last.externalConversationId,
+        lastMessage: last.content, lastRole: last.role, lastAt: last.createdAt, messages: rows.length,
+        displayName: this.contacts.get(key),
+        awaitingSince: awaitingSinceFrom(rows),
+        lastSentBy: last.role === "agent" ? last.sentBy : undefined,
+      };
+    });
+    return summaries
+      .filter((item) => !term || (term.kind === "digits"
+        ? item.externalConversationId.includes(term.value)
+        : (item.displayName ?? "").toLowerCase().includes(term.value.toLowerCase())))
+      .sort((a, b) => b.lastAt.localeCompare(a.lastAt))
+      .slice(0, limit);
   }
   async getMessages(channel: string, externalConversationId: string, limit: number): Promise<ConversationMessage[]> {
     return this.rows
       .filter((row) => row.channel === channel && row.externalConversationId === externalConversationId)
       .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
       .slice(-limit)
-      .map(({ role: value, content, createdAt, sentBy }) => ({ role: value, content, createdAt, sentBy }));
+      .map(({ role: value, content, createdAt, sentBy, deliveryStatus, deliveryError }) => ({ role: value, content, createdAt, sentBy, deliveryStatus, deliveryError }));
   }
   readonly outcomes = new Map<string, ConversationOutcome>();
   async getOutcome(channel: string, externalConversationId: string) { return this.outcomes.get(`${channel}:${externalConversationId}`); }

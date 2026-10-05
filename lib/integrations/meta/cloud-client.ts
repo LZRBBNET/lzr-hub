@@ -48,15 +48,24 @@ interface GraphError { error?: { message?: string; code?: number; error_subcode?
  * vêm da documentação de erros da Cloud API; o que não está aqui cai em
  * `rejected` com a mensagem da própria Meta, em vez de ganhar um palpite.
  */
+/**
+ * Mesmo dicionário para a recusa no envio e para o recibo `failed` que chega
+ * depois pelo webhook: o atendente lê a mesma frase pelos dois caminhos.
+ */
+export function describeMetaError(code: number | undefined, detail?: string, httpStatus?: number): { kind: Exclude<SendFailureKind, "timeout" | "unreachable">; reason: string } {
+  if (code === 131047) return { kind: "window_closed", reason: "Passaram mais de 24 horas desde a última mensagem do cliente. A Meta só aceita texto livre dentro dessa janela." };
+  if (code === 131030) return { kind: "not_allowed", reason: "A conta da Meta ainda só envia para números cadastrados como destinatários de teste." };
+  if (code === 131026) return { kind: "invalid_recipient", reason: "A mensagem não pôde ser entregue: o número pode não ter WhatsApp ou estar indisponível." };
+  if (code === 190 || code === 102 || httpStatus === 401) return { kind: "invalid_token", reason: "A autorização de envio da Meta é inválida ou expirou. Avise quem administra a integração." };
+  if (code === 130429 || code === 131056 || httpStatus === 429) return { kind: "rate_limited", reason: "A Meta limitou a taxa de envio. Tente de novo em instantes." };
+  const text = String(detail ?? "").slice(0, 200);
+  return { kind: "rejected", reason: `A Meta recusou a mensagem${code ? ` (código ${code})` : ""}${text ? `: ${text}` : "."}` };
+}
+
 function failureFrom(status: number, body: GraphError): SendResult & { ok: false } {
   const code = body.error?.code;
-  const detail = String(body.error?.message ?? "").slice(0, 200);
-  if (code === 131047) return { ok: false, kind: "window_closed", metaCode: code, reason: "Passaram mais de 24 horas desde a última mensagem do cliente. A Meta só aceita texto livre dentro dessa janela." };
-  if (code === 131030) return { ok: false, kind: "not_allowed", metaCode: code, reason: "A conta da Meta ainda só envia para números cadastrados como destinatários de teste." };
-  if (code === 131026) return { ok: false, kind: "invalid_recipient", metaCode: code, reason: "A mensagem não pôde ser entregue: o número pode não ter WhatsApp ou estar indisponível." };
-  if (code === 190 || code === 102 || status === 401) return { ok: false, kind: "invalid_token", metaCode: code, reason: "A autorização de envio da Meta é inválida ou expirou. Avise quem administra a integração." };
-  if (code === 130429 || code === 131056 || status === 429) return { ok: false, kind: "rate_limited", metaCode: code, reason: "A Meta limitou a taxa de envio. Tente de novo em instantes." };
-  return { ok: false, kind: "rejected", metaCode: code, reason: `A Meta recusou o envio${code ? ` (código ${code})` : ""}${detail ? `: ${detail}` : "."}` };
+  const { kind, reason } = describeMetaError(code, body.error?.message, status);
+  return { ok: false, kind, metaCode: code, reason };
 }
 
 async function post(config: MetaSendConfig, payload: unknown): Promise<{ status: number; body: unknown } | { failure: SendResult & { ok: false } }> {

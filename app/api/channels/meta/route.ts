@@ -1,12 +1,14 @@
 import { NextResponse } from "next/server";
 import { randomUUID } from "node:crypto";
 import { getDb } from "@/db";
-import { D1ChannelRepository, MAX_MESSAGE_LENGTH, processChannelMessage } from "@/lib/platform/n8n-channel-service";
+import { CHANNEL_NAME, D1ChannelRepository, MAX_MESSAGE_LENGTH, processChannelMessage, recordUnsupportedMessage } from "@/lib/platform/n8n-channel-service";
+import { DbContactsRepository, rememberContactName } from "@/lib/platform/channel-contacts";
+import { DbDeliveryRepository, applyStatuses } from "@/lib/platform/delivery-status-service";
 import { DbReplyTemplatesRepository, loadOverrides } from "@/lib/platform/reply-templates-service";
 import { DbSupportMetricsRepository } from "@/lib/platform/support-metrics";
 import { DbCrmRepository, captureLeadFromContact } from "@/lib/platform/crm-service";
 import { getIxcRuntime } from "@/lib/integrations/ixc/runtime";
-import { parseMetaWebhook, signatureIsValid } from "@/lib/integrations/meta/webhook-parser";
+import { parseMetaMessages, parseMetaStatuses, parseMetaWebhook, signatureIsValid } from "@/lib/integrations/meta/webhook-parser";
 
 /**
  * Webhook oficial do **WhatsApp Business Platform (Cloud API)**.
@@ -61,34 +63,51 @@ export async function POST(request: Request) {
   let payload: unknown;
   try { payload = JSON.parse(rawBody); } catch { return NextResponse.json({ error: "Corpo inválido" }, { status: 400 }); }
 
-  const parsed = parseMetaWebhook(payload);
-  // Evento ignorado responde 200: a Meta reenvia o que não recebe 200, e um
-  // recibo de leitura recusado viraria reentrega infinita de algo que não
-  // queremos processar.
-  if (!parsed.ok) return NextResponse.json({ ignored: true, reason: parsed.skip });
+  // Um POST pode trazer várias mensagens e recibos de entrega juntos. Ler só o
+  // primeiro item, como antes, perdia o resto em silêncio.
+  const messages = parseMetaMessages(payload);
+  const statuses = parseMetaStatuses(payload);
+  if (messages.length === 0 && statuses.length === 0) {
+    // Evento ignorado responde 200: a Meta reenvia o que não recebe 200, e um
+    // evento recusado viraria reentrega infinita de algo que não queremos processar.
+    const parsed = parseMetaWebhook(payload);
+    return NextResponse.json({ ignored: true, reason: parsed.ok ? "sem-mensagem" : parsed.skip });
+  }
 
-  const { phone, text, messageId } = parsed.message;
-  if (text.length > MAX_MESSAGE_LENGTH) return NextResponse.json({ ignored: true, reason: "mensagem-longa" });
-
-  const correlationId = randomUUID();
   const db = await getDb();
-  const result = await processChannelMessage(
-    new D1ChannelRepository(db),
+  const channel = new D1ChannelRepository(db);
+  const updated = statuses.length > 0 ? await applyStatuses(new DbDeliveryRepository(db), statuses) : 0;
+  const templates = messages.some((message) => message.kind === "text") ? await loadOverrides(new DbReplyTemplatesRepository(db)) : undefined;
+
+  const results = [];
+  for (const message of messages) {
+    const correlationId = randomUUID();
     // `wamid` é a chave de idempotência: a Meta reenvia o webhook quando não
     // recebe 200, e sem isso a reentrega viraria atendimento em dobro.
-    { externalConversationId: phone, text, idempotencyKey: messageId, correlationId },
-    new DbSupportMetricsRepository(db),
-    { autoReply: autoReplyEnabled(), templates: await loadOverrides(new DbReplyTemplatesRepository(db)) },
-    (input) => captureLeadFromContact(
-      new DbCrmRepository(db),
-      input,
-      async (contactPhone) => {
-        const runtime = getIxcRuntime();
-        if (!runtime.provider) throw new Error("IXC indisponível");
-        return runtime.provider.findCustomerByPhone(contactPhone, correlationId);
-      },
-    ),
-  );
+    if (message.kind === "text") {
+      if (message.text.length > MAX_MESSAGE_LENGTH) { results.push({ ignored: true, reason: "mensagem-longa" }); continue; }
+      results.push(await processChannelMessage(
+        channel,
+        { externalConversationId: message.phone, text: message.text, idempotencyKey: message.messageId, correlationId },
+        new DbSupportMetricsRepository(db),
+        { autoReply: autoReplyEnabled(), templates },
+        (input) => captureLeadFromContact(
+          new DbCrmRepository(db),
+          input,
+          async (contactPhone) => {
+            const runtime = getIxcRuntime();
+            if (!runtime.provider) throw new Error("IXC indisponível");
+            return runtime.provider.findCustomerByPhone(contactPhone, correlationId);
+          },
+        ),
+      ));
+    } else {
+      results.push(await recordUnsupportedMessage(channel, {
+        externalConversationId: message.phone, idempotencyKey: message.messageId, correlationId, kind: message.kind, caption: message.caption,
+      }));
+    }
+    await rememberContactName(new DbContactsRepository(db), CHANNEL_NAME, message.phone, message.profileName);
+  }
 
-  return NextResponse.json(result);
+  return NextResponse.json({ results, statuses: updated });
 }
