@@ -1,0 +1,51 @@
+# Dispara a auditoria de contratos no LZR HUB de hora em hora, mesmo sem ninguém
+# abrir a tela. O app não tem relógio interno: o Railway roda um processo web.
+#
+# O que roda aqui é só um POST — toda a lógica fica no app, que confere os
+# contratos novos a partir do último ponto de parada. Se uma execução falhar,
+# a próxima continua de onde a anterior parou; nada é pulado.
+#
+# Precisa do segredo CONTRACT_AUDIT_JOB_SECRET cadastrado em
+# Settings → Secrets and variables → Actions, com o MESMO valor da variável
+# de mesmo nome no Railway.
+name: Auditoria de contratos
+
+on:
+  schedule:
+    # De hora em hora, das 07h às 20h (horário de Brasília, UTC-3), todos os dias.
+    # Fora do expediente quase não se cria contrato, e cada execução conta minutos
+    # de Actions.
+    - cron: "0 10-23 * * *"
+  workflow_dispatch: {}
+
+# Duas execuções ao mesmo tempo só gastariam o limite de consultas ao IXC em dobro.
+concurrency:
+  group: contract-audit
+  cancel-in-progress: false
+
+permissions: {}
+
+jobs:
+  disparar:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Dispara a verificação
+        env:
+          JOB_SECRET: ${{ secrets.CONTRACT_AUDIT_JOB_SECRET }}
+          LZR_HUB_URL: ${{ vars.LZR_HUB_URL || 'https://lzr-hub-production.up.railway.app' }}
+        run: |
+          if [ -z "$JOB_SECRET" ]; then
+            echo "::error::Segredo CONTRACT_AUDIT_JOB_SECRET não cadastrado neste repositório."
+            exit 1
+          fi
+          status=$(curl -sS -o resposta.json -w "%{http_code}" --max-time 120 \
+            -X POST "$LZR_HUB_URL/api/audit/contracts" \
+            -H "content-type: application/json" \
+            -H "x-job-secret: $JOB_SECRET" \
+            -d '{"action":"run"}')
+          cat resposta.json; echo
+          if [ "$status" != "200" ]; then
+            echo "::error::A auditoria respondeu HTTP $status."
+            exit 1
+          fi
