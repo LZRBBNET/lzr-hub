@@ -2,8 +2,11 @@
 import { useEffect, useState } from "react";
 import { BarChart } from "./bar-chart";
 import { ReplyTemplates } from "./reply-templates";
+import { Icon } from "@/components/ui/icons";
+import { Badge, Bar, Card, Empty, InfoTip, Limits, Loading, Modal, Notice, Row, Segmented, Stat, Stats, Toolbar, count, dateTime, money, useToast } from "@/components/ui/kit";
 
-export function IntelligenceModule({view}:{view:"churn"|"conhecimento"}){
+export function IntelligenceModule({view}:{view:"churn"|"conhecimento"|"respostas"}){
+  if(view==="respostas")return <ReplyTemplates/>;
   return view==="conhecimento" ? <Knowledge/> : <Churn/>;
 }
 
@@ -11,66 +14,64 @@ export function IntelligenceModule({view}:{view:"churn"|"conhecimento"}){
 
 type ChurnSummary={cancellations:number;scanned:number;truncated:boolean;activeContracts:number;inactiveContracts:number;churnRate:number|null;netContracts:number|null;monthlyRecurringLost:number;reasonCodes:Array<{code:string;contracts:number}>;byDay:Array<{day:string;contracts:number}>;withoutValue:number};
 type ChurnPayload={available:boolean;detail?:string;period:string;summary:ChurnSummary|null};
+const CHURN_PERIODS=[["30d","30 dias"],["90d","90 dias"],["365d","12 meses"]] as const;
 
-const money=(value:number)=>`R$ ${value.toLocaleString("pt-BR",{minimumFractionDigits:2,maximumFractionDigits:2})}`;
-const CHURN_PERIODS:[string,string][]=[["30d","30 dias"],["90d","90 dias"],["365d","12 meses"]];
-
+/**
+ * Churn realizado (quem já saiu, lido do IXC) em cima; a fila de risco, que é
+ * indício e não fato, embaixo e com o nome certo.
+ */
 function Churn(){
-  const [period,setPeriod]=useState("30d");
+  const [period,setPeriod]=useState<typeof CHURN_PERIODS[number][0]>("30d");
   const [data,setData]=useState<ChurnPayload|null>(null);
-  const [state,setState]=useState<"loading"|"ready"|"error">("loading");
+  const [loadedFor,setLoadedFor]=useState<string|null>(null);
+  const [failed,setFailed]=useState(false);
   useEffect(()=>{let active=true;
     fetch(`/api/intelligence/churn?period=${period}`).then(r=>r.ok?r.json():Promise.reject(new Error("falhou")))
-      .then((payload:ChurnPayload)=>{if(active){setData(payload);setState("ready")}})
-      .catch(()=>{if(active)setState("error")});
+      .then((payload:ChurnPayload)=>{if(active){setData(payload);setFailed(false);setLoadedFor(period)}})
+      .catch(()=>{if(active){setFailed(true);setLoadedFor(period)}});
     return()=>{active=false}},[period]);
   const summary=data?.summary;
+  const loading=loadedFor!==period;
 
-  return <main className="content">
-    <Heading title="Churn" text="Contratos que a BBNET perdeu, lidos do IXC."/>
-    {/* A distinção importa: perda medida é fato; sinal de risco é indício, e a
-        seção de baixo diz explicitamente que não é previsão validada. */}
-    <div className="state-card">Os números abaixo são o churn <strong>realizado</strong> — quem já saiu, lido do IXC. A fila de risco, no fim da tela, é outra coisa: sinais observados em quem <em>ainda não</em> saiu.</div>
-    <section className="filter-bar"><select value={period} onChange={e=>{setState("loading");setPeriod(e.target.value)}}>{CHURN_PERIODS.map(([v,l])=><option key={v} value={v}>Últimos {l}</option>)}</select></section>
-    {state==="loading"&&<div className="state-card">Consultando o IXC…</div>}
-    {state==="error"&&<div className="state-card error">Não foi possível consultar os cancelamentos.</div>}
-    {state==="ready"&&data&&!data.available&&<div className="state-card error">{data.detail}.</div>}
-    {state==="ready"&&summary&&<>
-      {summary.truncated&&<div className="state-card">A leitura parou antes do fim: o valor perdido e os motivos abaixo cobrem {summary.scanned.toLocaleString("pt-BR")} dos {summary.cancellations.toLocaleString("pt-BR")} cancelamentos.</div>}
-      <section className="metrics">
-        <Metric label={`Cancelamentos (${CHURN_PERIODS.find(([v])=>v===period)?.[1]})`} value={summary.cancellations.toLocaleString("pt-BR")} detail="Contratos encerrados no período"/>
-        <Metric label="Taxa sobre a base ativa" value={summary.churnRate===null?"—":`${(summary.churnRate*100).toFixed(2).replace(".",",")}%`} detail={`Sobre ${summary.activeContracts.toLocaleString("pt-BR")} contratos ativos`}/>
-        <Metric label="Saldo do período" value={summary.netContracts===null?"—":`${summary.netContracts>0?"+":""}${summary.netContracts.toLocaleString("pt-BR")}`} detail="Ativações menos cancelamentos"/>
-        <Metric label="Receita recorrente perdida" value={money(summary.monthlyRecurringLost)} detail={summary.withoutValue?`${summary.withoutValue} sem valor legível ficaram de fora`:"Mensalidade dos contratos encerrados"}/>
-      </section>
-      <div className="dashboard-grid">
-        <section className="data-card"><div className="card-header"><strong>Motivo do cancelamento</strong><span className="badge amber">Só o código</span></div>
-          <p style={{fontSize:11,color:"var(--muted)",lineHeight:1.6,padding:"6px 0 12px"}}>O IXC devolve o motivo como código numérico e não expõe a tabela que traduz — testei cinco endpoints prováveis, todos recusados. Os códigos abaixo são reais; o significado precisa vir do painel do IXC ou do suporte.</p>
-          {summary.reasonCodes.length===0
-            ? <p style={{fontSize:12,color:"var(--muted)"}}>Nenhum cancelamento no período.</p>
-            : summary.reasonCodes.slice(0,10).map(item=><div className="aging-row" key={item.code}><div><strong>Código {item.code}</strong><span>{item.contracts} contrato(s) • {Math.round(item.contracts/summary.scanned*100)}%</span></div></div>)}
-        </section>
-        <section className="data-card"><div className="card-header"><strong>Cancelamentos por dia</strong><span className="badge blue">{summary.byDay.length} dia(s)</span></div>
+  return <>
+    <Toolbar><Segmented label="Período" value={period} options={CHURN_PERIODS} onChange={setPeriod}/></Toolbar>
+    {loading&&<Loading stats={4} rows={3}/>}
+    {!loading&&failed&&<Notice tone="bad">Não foi possível consultar os cancelamentos.</Notice>}
+    {!loading&&!failed&&data&&!data.available&&<Notice tone="bad">{data.detail}.</Notice>}
+    {!loading&&!failed&&summary&&<>
+      {summary.truncated&&<Notice tone="warn">A leitura parou antes do fim: valor perdido e motivos cobrem {count(summary.scanned)} dos {count(summary.cancellations)} cancelamentos.</Notice>}
+      <Stats>
+        <Stat label="Cancelamentos" icon="churn" tone={summary.cancellations?"warn":"neutral"} value={count(summary.cancellations)} hint={`Contratos encerrados em ${CHURN_PERIODS.find(([v])=>v===period)?.[1]}`}/>
+        <Stat label="Taxa sobre a base ativa" icon="users" value={summary.churnRate===null?"—":`${(summary.churnRate*100).toFixed(2).replace(".",",")}%`} hint={`Sobre ${count(summary.activeContracts)} contratos ativos`}/>
+        <Stat label="Saldo do período" icon="trending" tone={summary.netContracts!==null&&summary.netContracts<0?"bad":summary.netContracts?"ok":"neutral"} value={summary.netContracts===null?"—":`${summary.netContracts>0?"+":""}${count(summary.netContracts)}`} hint="Ativações menos cancelamentos"/>
+        <Stat label="Receita recorrente perdida" icon="wallet" value={money(summary.monthlyRecurringLost)} hint={summary.withoutValue?`${summary.withoutValue} sem valor legível ficaram de fora`:"Mensalidade dos contratos encerrados"}/>
+      </Stats>
+      <div className="grid-2">
+        <Card title="Cancelamentos por dia" badge={<Badge>{summary.byDay.length} dia(s)</Badge>} flush>
           <BarChart data={summary.byDay} noun="cancelamento(s)"/>
-          <div style={{marginTop:18,padding:14,background:"var(--blue-soft)",borderRadius:10,fontSize:11,color:"var(--text-2)",lineHeight:1.6}}><strong style={{display:"block",fontSize:12,color:"var(--blue)",marginBottom:4}}>Base histórica</strong>{summary.inactiveContracts.toLocaleString("pt-BR")} contratos encerrados desde sempre, contra {summary.activeContracts.toLocaleString("pt-BR")} ativos hoje.</div>
-        </section>
+        </Card>
+        <Card title={<>Motivo do cancelamento <InfoTip label="Por que só o código">O IXC devolve o motivo como código numérico e não expõe a tabela que traduz — cinco endpoints prováveis foram testados, todos recusados. Os códigos são reais; o significado precisa vir do painel do IXC.</InfoTip></>} badge={<Badge tone="warn">só o código</Badge>}>
+          {summary.reasonCodes.length===0
+            ? <Empty icon="check" title="Nenhum cancelamento no período"/>
+            : <div className="bars">{summary.reasonCodes.slice(0,8).map(item=><Bar key={item.code} label={`Código ${item.code}`} value={item.contracts} max={summary.reasonCodes[0].contracts} display={`${Math.round(item.contracts/Math.max(summary.scanned,1)*100)}%`}/>)}</div>}
+          <p className="hint" style={{marginTop:14}}>Base histórica: {count(summary.inactiveContracts)} contratos encerrados desde sempre, contra {count(summary.activeContracts)} ativos hoje.</p>
+        </Card>
       </div>
     </>}
     <ChurnRiskQueue/>
-  </main>;
+  </>;
 }
 
 type ChurnRiskRow={customerId:string;customerName:string|null;score:number;level:string;mainReason:string;suggestedAction:string;factors:Array<{points:number;reason:string}>};
 type ChurnRiskPayload={available:boolean;detail?:string;queue:ChurnRiskRow[];missingSignals:string[];caveats?:string[];scope?:{candidatesFromOpenTickets:number;scored:number;unavailable:number;detail:string}};
-
-const RISK_BADGE:Record<string,string>={"crítico":"red","alto":"amber","médio":"amber","baixo":"green"};
+const RISK_TONE:Record<string,"bad"|"warn"|"ok"|"info">={"crítico":"bad","alto":"warn","médio":"warn","baixo":"ok"};
 
 /**
  * Fila de ação por risco (issue #19, item 3).
  *
  * Deliberadamente **não** chamada de "previsão": os pesos nunca foram
  * comparados contra quem de fato cancelou. Chamar de previsão antes de medir o
- * acerto (item 5 da issue) seria vender adivinhação como ciência.
+ * acerto seria vender adivinhação como ciência.
  */
 function ChurnRiskQueue(){
   const [data,setData]=useState<ChurnRiskPayload|null>(null);
@@ -81,42 +82,30 @@ function ChurnRiskQueue(){
       .catch(()=>{if(active)setState("error")});
     return()=>{active=false}},[]);
 
-  return <section className="data-card" style={{marginTop:14}}>
-    <div className="card-header"><strong>Fila de risco de cancelamento</strong><span className="badge amber">Sinais, não previsão</span></div>
-    <div style={{padding:"14px 18px 0"}}>
-      <p style={{margin:0,fontSize:12,color:"var(--muted)",lineHeight:1.6}}>
-        Cada cliente abaixo soma sinais que costumam preceder cancelamento, com o peso de cada um visível.
-        <strong> Isto não é previsão validada</strong> — os pesos nunca foram comparados contra quem de fato cancelou, então não há taxa de acerto para mostrar ainda.
-      </p>
-    </div>
-    {state==="loading"&&<p className="card-empty">Consultando chamados e faturas…</p>}
-    {state==="error"&&<p className="card-empty">Não foi possível montar a fila.</p>}
-    {state==="ready"&&data&&!data.available&&<p className="card-empty">{data.detail}.</p>}
-    {state==="ready"&&data?.available&&<>
-      {data.queue.length===0
-        ? <p className="card-empty">Nenhum cliente com sinal de risco entre os avaliados.</p>
+  return <>
+    <h3 className="section-title" style={{marginTop:28}}>Clientes com sinal de risco</h3>
+    <Card title={<>Fila de risco <InfoTip label="Como ler a fila">Cada cliente soma sinais que costumam preceder cancelamento, com o peso de cada um visível. <strong>Não é previsão validada</strong>: os pesos nunca foram comparados contra quem de fato cancelou.</InfoTip></>} badge={<Badge tone="warn">sinais, não previsão</Badge>} flush>
+      {state==="loading"&&<Loading rows={3}/>}
+      {state==="error"&&<div className="card-content"><Notice tone="bad">Não foi possível montar a fila.</Notice></div>}
+      {state==="ready"&&data&&!data.available&&<Empty icon="churn" title="Fila indisponível">{data.detail}.</Empty>}
+      {state==="ready"&&data?.available&&(data.queue.length===0
+        ? <Empty icon="check" title="Nenhum cliente com sinal de risco entre os avaliados"/>
         : data.queue.map(row=><div className="team-row" key={row.customerId}>
             <div className="team-head">
-              <div>
-                <strong>{row.customerName ?? `Cliente ${row.customerId}`}<span className={`badge ${RISK_BADGE[row.level]??"blue"}`} style={{marginLeft:8}}>{row.level}</span></strong>
-                <span>{row.mainReason}</span>
-              </div>
+              <div><strong>{row.customerName ?? `Cliente ${row.customerId}`}<Badge tone={RISK_TONE[row.level]??"info"}>{row.level}</Badge></strong><span>{row.mainReason}</span></div>
               <div className="team-load"><b>{row.score}</b><small>de 100</small></div>
             </div>
-            <div className="team-tags">{row.factors.map((f,i)=><span key={i}>{f.reason} <b>+{f.points}</b></span>)}</div>
-            <div style={{fontSize:11,color:"var(--blue)"}}>➜ {row.suggestedAction}</div>
-          </div>)}
-      <div className="insight">
-        <strong>Como ler estes números.</strong>
-        {data.caveats?.map((c,i)=><span key={i} style={{display:"block"}}>• {c}</span>)}
-        <span style={{display:"block",marginTop:6}}>{data.scope?.detail} Sinais não coletados: {data.missingSignals.join("; ")}.</span>
-      </div>
-    </>}
-  </section>;
+            <div className="chips">{row.factors.map((f,i)=><span className="chip" key={i}>{f.reason} <b>+{f.points}</b></span>)}</div>
+            <div className="risk-action"><Icon name="chevron-right" size={14}/>{row.suggestedAction}</div>
+          </div>))}
+    </Card>
+    {state==="ready"&&data?.available&&<Limits title="Como ler estes números" items={[
+      ...(data.caveats?.length?[["Ressalvas",<ul key="c" className="plain-list">{data.caveats.map((c,i)=><li key={i}>{c}</li>)}</ul>] as [string,React.ReactNode]]:[]),
+      ...(data.scope?.detail?[["Quem foi avaliado",data.scope.detail] as [string,string]]:[]),
+      ...(data.missingSignals.length?[["Sinais não coletados",data.missingSignals.join("; ")] as [string,string]]:[]),
+    ]}/>}
+  </>;
 }
-
-// Saúde do Cliente, Upgrade e Customer Intelligence saíram do menu: nenhuma
-// tinha modelo calculando nada. Ver `docs/telas-removidas.md`.
 
 /* ----------------------------------------------------------- conhecimento --- */
 
@@ -130,9 +119,14 @@ function Knowledge(){
   const [nonce,setNonce]=useState(0);
   const [query,setQuery]=useState("");
   const [results,setResults]=useState<Hit[]|null>(null);
+  const [searching,setSearching]=useState(false);
+  const [creating,setCreating]=useState(false);
+  const [viewing,setViewing]=useState<Doc|null>(null);
   const [form,setForm]=useState({title:"",category:"Geral",content:""});
-  const [message,setMessage]=useState<string|null>(null);
+  const [error,setError]=useState<string|null>(null);
   const [busy,setBusy]=useState(false);
+  const [statusFilter,setStatusFilter]=useState<"all"|"published"|"draft">("all");
+  const toast=useToast();
 
   useEffect(()=>{let active=true;
     fetch("/api/knowledge").then(r=>r.ok?r.json():Promise.reject(new Error("falhou")))
@@ -141,68 +135,77 @@ function Knowledge(){
     return()=>{active=false}},[nonce]);
 
   async function ingest(){
-    setBusy(true);setMessage(null);
+    setBusy(true);setError(null);
     const response=await fetch("/api/knowledge",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({action:"ingest",...form})});
     const payload=await response.json();
-    if(response.ok){setForm({title:"",category:"Geral",content:""});setMessage(`Rascunho "${payload.title}" criado.`);setNonce(n=>n+1)}
-    else setMessage(payload.error??"Não foi possível criar o documento.");
+    if(response.ok){setForm({title:"",category:"Geral",content:""});setCreating(false);toast(`Rascunho "${payload.title}" criado.`);setNonce(n=>n+1)}
+    else setError(payload.error??"Não foi possível criar o documento.");
     setBusy(false);
   }
   async function publish(id:string){
-    setBusy(true);setMessage(null);
+    setBusy(true);
     const response=await fetch("/api/knowledge",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({action:"publish",id})});
-    setMessage(response.ok?"Documento publicado.":"Não foi possível publicar.");
+    toast(response.ok?"Documento publicado — já pode ser citado.":"Não foi possível publicar.",response.ok?"ok":"bad");
     setNonce(n=>n+1);setBusy(false);
   }
   async function search(){
     if(!query.trim()){setResults(null);return}
+    setSearching(true);
     const response=await fetch(`/api/knowledge?q=${encodeURIComponent(query)}`);
     if(response.ok){const payload=await response.json() as {results:Hit[]};setResults(payload.results??[])}
+    setSearching(false);
   }
 
-  return <main className="content">
-    <Heading title="Base de Conhecimento" text="Fontes internas que a IA pode citar. Só documento publicado vira fonte."/>
-    {state==="loading"&&<div className="state-card">Carregando documentos…</div>}
-    {state==="error"&&<div className="state-card error">Não foi possível carregar a base.</div>}
-    {state==="ready"&&!available&&<div className="state-card error">Base de conhecimento indisponível — sem banco não há onde ler nem gravar.</div>}
-    {state==="ready"&&available&&<>
-      {message&&<div className="state-card">{message}</div>}
-      <div className="support-grid">
-        <section className="data-card"><div className="card-header"><strong>Novo documento</strong><span className="badge blue">Nasce como rascunho</span></div>
-          <div className="wizard" style={{display:"grid",gap:8}}>
-            <input placeholder="Título" value={form.title} onChange={e=>{setForm({...form,title:e.target.value});setMessage(null)}}/>
-            <input placeholder="Categoria" value={form.category} onChange={e=>setForm({...form,category:e.target.value})}/>
-            <textarea placeholder="Conteúdo que a IA vai citar…" rows={5} value={form.content} onChange={e=>setForm({...form,content:e.target.value})}/>
-            <button className="button" disabled={busy} onClick={()=>void ingest()}>{busy?"Salvando…":"Criar rascunho"}</button>
-          </div>
-        </section>
-        <section className="data-card"><div className="card-header"><strong>Buscar na base</strong><span className="badge">Texto, não semântica</span></div>
-          <div className="wizard" style={{display:"grid",gap:8}}>
-            <input placeholder="Ex.: segunda via boleto" value={query} onChange={e=>setQuery(e.target.value)} onKeyDown={e=>{if(e.key==="Enter")void search()}}/>
-            <button className="button secondary" onClick={()=>void search()}>Buscar</button>
-            {results===null
-              ? <p style={{fontSize:11,color:"var(--muted)",lineHeight:1.6}}>A busca é por correspondência de texto. Busca semântica dependeria de embeddings (<code>FEATURE_PGVECTOR</code>), que não estão gerados.</p>
-              : results.length===0
-                ? <p style={{fontSize:12,color:"var(--muted)"}}>Nenhum documento publicado corresponde.</p>
-                : results.map(hit=><div className="aging-row" key={hit.document.id}><div><strong>{hit.document.title}</strong><span>{hit.evidence}</span></div><b>{Math.round(hit.score*100)}%</b></div>)}
-          </div>
-        </section>
+  if(state==="loading")return <Loading rows={5}/>;
+  if(state==="error")return <Notice tone="bad">Não foi possível carregar a base.</Notice>;
+  if(!available)return <Notice tone="bad">Base de conhecimento indisponível — sem banco não há onde ler nem gravar.</Notice>;
+  const published=items.filter(doc=>doc.status==="published").length;
+  const shown=items.filter(doc=>statusFilter==="all"||(statusFilter==="published"?doc.status==="published":doc.status!=="published"));
+  return <>
+    <Toolbar actions={<button className="button" onClick={()=>{setCreating(true);setError(null)}}><Icon name="plus" size={16}/>Novo documento</button>}>
+      <form className="search-field" onSubmit={e=>{e.preventDefault();void search()}}>
+        <Icon name="search" size={16}/><input placeholder="Testar a busca da IA: ex. segunda via boleto" value={query} onChange={e=>{setQuery(e.target.value);if(!e.target.value.trim())setResults(null)}} aria-label="Buscar na base"/>
+        {query&&<button type="button" className="icon-button" style={{width:24,height:24}} aria-label="Limpar busca" onClick={()=>{setQuery("");setResults(null)}}><Icon name="x" size={14}/></button>}
+      </form>
+      <InfoTip label="Como a busca funciona">A busca é por correspondência de texto, a mesma que o copiloto usa. Busca semântica dependeria de embeddings (<code>FEATURE_PGVECTOR</code>), que não estão gerados. Só documento publicado vira fonte.</InfoTip>
+    </Toolbar>
+
+    {results!==null&&<Card title={`Resultado para “${query}”`} badge={<Badge>{results.length}</Badge>} actions={<button className="link-button" onClick={()=>{setResults(null);setQuery("")}}>limpar</button>} flush>
+      {searching?<Loading rows={2}/>:results.length===0
+        ? <Empty icon="search" title="Nenhum documento publicado corresponde"/>
+        : <div className="list">{results.map(hit=><Row key={hit.document.id} title={hit.document.title} detail={hit.evidence} value={`${Math.round(hit.score*100)}%`} onClick={()=>setViewing(hit.document)}/>)}</div>}
+    </Card>}
+
+    <Card title="Documentos" badge={<Badge>{published} publicado(s) de {items.length}</Badge>}
+      actions={items.length>0&&<Segmented label="Filtrar documentos" value={statusFilter} options={[["all","Todos"],["published","Publicados"],["draft","Rascunhos"]]} onChange={setStatusFilter}/>} flush>
+      {items.length===0
+        ? <Empty icon="book" title="Nenhum documento cadastrado" action={<button className="button secondary" onClick={()=>setCreating(true)}>Criar o primeiro</button>}>A base começa vazia — nada de exemplo é pré-carregado, porque a IA citaria isso como se fosse procedimento da BBNET.</Empty>
+        : <div className="list">{shown.map(doc=><div className="row" key={doc.id}>
+            <button type="button" className="row-main link-like" onClick={()=>setViewing(doc)}><strong>{doc.title}</strong><span>{doc.category} · versão {doc.version} · {dateTime(doc.updatedAt)}</span></button>
+            <div className="row-value">
+              {doc.status==="published"?<Badge tone="ok">Publicado</Badge>:<><Badge>Rascunho</Badge><button className="button secondary small" disabled={busy} onClick={()=>void publish(doc.id)}>Publicar</button></>}
+            </div>
+          </div>)}</div>}
+    </Card>
+
+    <Modal open={creating} title="Novo documento" wide onClose={()=>setCreating(false)}
+      footer={<><button className="button secondary" onClick={()=>setCreating(false)}>Cancelar</button><button className="button" disabled={busy||!form.title.trim()||!form.content.trim()} onClick={()=>void ingest()}>{busy?"Salvando…":"Criar rascunho"}</button></>}>
+      <div className="form-grid">
+        <label className="field"><span>Título</span><input data-autofocus value={form.title} placeholder="ex.: Cliente sem conexão em fibra" onChange={e=>setForm({...form,title:e.target.value})}/></label>
+        <label className="field"><span>Categoria</span><input value={form.category} onChange={e=>setForm({...form,category:e.target.value})}/></label>
+        <label className="field span-2"><span>Conteúdo que a IA vai citar</span><textarea rows={10} value={form.content} onChange={e=>setForm({...form,content:e.target.value})}/></label>
+        {error&&<p className="form-error span-2">{error}</p>}
+        <p className="field-hint span-2">Nasce como rascunho: só vira fonte da IA e do copiloto depois de publicado.</p>
       </div>
-      <section className="data-card" style={{marginTop:14}}><div className="card-header"><strong>Documentos</strong><span className="badge green">{items.length}</span></div>
-        {items.length===0
-          ? <p style={{padding:14,lineHeight:1.6,color:"var(--muted)"}}>Nenhum documento cadastrado. A base começa vazia — nada de exemplo é pré-carregado, porque a IA citaria isso como se fosse procedimento da BBNET.</p>
-          : items.map(doc=><div className="aging-row" key={doc.id}>
-              <div><strong>{doc.title}</strong><span>{doc.category} • versão {doc.version} • {new Date(doc.updatedAt).toLocaleString("pt-BR")}</span></div>
-              <div style={{display:"flex",gap:8,alignItems:"center"}}>
-                <i className={`badge ${doc.status==="published"?"green":""}`}>{doc.status==="published"?"Publicado":"Rascunho"}</i>
-                {doc.status!=="published"&&<button disabled={busy} onClick={()=>void publish(doc.id)}>Publicar</button>}
-              </div>
-            </div>)}
-      </section>
-      <ReplyTemplates/>
-    </>}
-  </main>;
+    </Modal>
+
+    <Modal side open={!!viewing} title={viewing?.title??""} onClose={()=>setViewing(null)}>
+      {viewing&&<div className="stack">
+        <div className="chips">{viewing.status==="published"?<Badge tone="ok">Publicado</Badge>:<Badge>Rascunho</Badge>}<Badge>{viewing.category}</Badge><Badge>versão {viewing.version}</Badge></div>
+        <p className="doc-content">{viewing.content}</p>
+        <p className="hint">Atualizado em {dateTime(viewing.updatedAt)}</p>
+      </div>}
+    </Modal>
+  </>;
 }
 
-function Heading({title,text}:{title:string;text:string}){return <div className="page-heading"><div><h1>{title}</h1><p>{text}</p></div></div>}
-function Metric({label,value,detail}:{label:string;value:string;detail:string}){return <article className="metric"><div className="metric-top"><span>{label}</span><span className="metric-icon">◈</span></div><strong>{value}</strong><small>{detail}</small></article>}

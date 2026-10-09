@@ -1,120 +1,92 @@
 "use client";
 import { useEffect, useState } from "react";
+import type { Navigate } from "@/components/lzr-hub-app";
+import { Badge, Bar, Card, Empty, Limits, Loading, Notice, PERIODS_SHORT, Row, Segmented, Stat, Stats, Toolbar, count } from "@/components/ui/kit";
+import { handoffLabel } from "@/components/modules/labels";
 
 /**
- * Avaliações e Prompts eram servidas por uma tela genérica com números fixos no
- * código ("Nota média 9,4", "Aprovadas 96%", "Versão ativa v12"). Nada disso
- * vinha de lugar nenhum.
+ * Avaliações e "Como a IA decide". A primeira já foi uma tela genérica com
+ * números fixos no código ("Nota média 9,4", "Aprovadas 96%"); hoje tudo vem
+ * das conversas gravadas.
  */
-export function QualityModule({ view }: { view: "avaliacoes" | "prompts" }) {
-  return view === "prompts" ? <Prompts /> : <Evaluations />;
+export function QualityModule({ view, onNavigate }: { view: "avaliacoes" | "prompts"; onNavigate: Navigate }) {
+  return view === "prompts" ? <HowAiDecides /> : <Evaluations onNavigate={onNavigate} />;
 }
 
 type Metrics = {
   conversations: number; resolvedWithoutHuman: number; resolutionRate: number | null;
   handoffs: number; suggestionsOnly: number; handoffReasons: Record<string, number>;
   intents: Record<string, number>; csatAverage: number | null; csatCount: number;
-  csatDistribution: Record<string, number>; costPerConversation: null;
+  csatDistribution: Record<string, number>;
 };
 type Payload = { period: string; available: boolean; detail?: string } & Partial<Metrics>;
 
-const PERIODS: [string, string][] = [["24h", "24 horas"], ["7d", "7 dias"], ["30d", "30 dias"]];
-const HANDOFF_LABELS: Record<string, string> = {
-  low_intent_confidence: "A IA não entendeu o pedido",
-  customer_requested_human: "Cliente pediu atendente",
-  customer_irritated: "Cliente irritado",
-  unauthorized_request: "Pedido não autorizado",
-  cancellation_risk: "Risco de cancelamento",
-};
-
-function Evaluations() {
-  const [period, setPeriod] = useState("7d");
+function Evaluations({ onNavigate }: { onNavigate: Navigate }) {
+  const [period, setPeriod] = useState<"24h" | "7d" | "30d">("7d");
   const [data, setData] = useState<Payload | null>(null);
-  const [state, setState] = useState<"loading" | "ready" | "error">("loading");
+  const [loadedFor, setLoadedFor] = useState<string | null>(null);
+  const [failed, setFailed] = useState(false);
   useEffect(() => {
     let active = true;
     fetch(`/api/support/metrics?period=${period}`)
       .then((response) => response.ok ? response.json() : Promise.reject(new Error("falhou")))
-      .then((payload: Payload) => { if (active) { setData(payload); setState("ready"); } })
-      .catch(() => { if (active) setState("error"); });
+      .then((payload: Payload) => { if (active) { setData(payload); setFailed(false); setLoadedFor(period); } })
+      .catch(() => { if (active) { setFailed(true); setLoadedFor(period); } });
     return () => { active = false; };
   }, [period]);
 
+  const loading = loadedFor !== period;
   const total = data?.conversations ?? 0;
   const handoffs = Object.entries(data?.handoffReasons ?? {}).sort((a, b) => b[1] - a[1]);
   const csat = data?.csatDistribution ?? {};
   const csatTotal = data?.csatCount ?? 0;
+  const handoffTotal = Math.max(data?.handoffs ?? 0, 1);
 
-  return <main className="content">
-    <Heading title="Avaliações da IA" text="Como o atendimento automático se saiu, medido nas conversas reais." />
-    <section className="filter-bar"><select value={period} onChange={(event) => { setState("loading"); setPeriod(event.target.value); }}>{PERIODS.map(([value, label]) => <option key={value} value={value}>Últimos {label}</option>)}</select></section>
-    {state === "loading" && <div className="state-card">Consultando os atendimentos…</div>}
-    {state === "error" && <div className="state-card error">Não foi possível consultar as avaliações.</div>}
-    {state === "ready" && data && !data.available && <div className="state-card error">{data.detail ?? "Fonte indisponível"}.</div>}
-    {state === "ready" && data?.available && <>
-      {total === 0
-        ? <div className="state-card">Nenhuma conversa no período — não há o que avaliar.</div>
-        : <>
-          <section className="metrics">
-            <Metric label="Conversas avaliadas" value={String(total)} detail="Base de tudo abaixo" />
-            <Metric label="Resolvidas sem humano" value={data.resolutionRate === null || data.resolutionRate === undefined ? "—" : `${Math.round(data.resolutionRate * 100)}%`} detail={`${data.resolvedWithoutHuman ?? 0} de ${total}`} />
-            <Metric label="Transbordos" value={String(data.handoffs ?? 0)} detail={data.handoffs ? "Passaram para humano" : "Nenhum"} />
-            <Metric label="CSAT médio" value={data.csatAverage === null || data.csatAverage === undefined ? "—" : data.csatAverage.toFixed(1).replace(".", ",")} detail={csatTotal ? `${csatTotal} avaliação(ões)` : "Nenhuma nota recebida"} />
-          </section>
-
-          <div className="dashboard-grid">
-            <section className="data-card">
-              <div className="card-header"><strong>Por que a IA passou para humano</strong><span className="badge amber">{data.handoffs ?? 0}</span></div>
-              {handoffs.length === 0
-                ? <p className="card-empty">Nenhum transbordo no período.</p>
-                : <div className="ranked-list">{handoffs.map(([reason, count]) => <div className="ranked-row" key={reason}>
-                    <div className="ranked-label"><strong>{HANDOFF_LABELS[reason] ?? reason}</strong><span>{count} de {data.handoffs} transbordo(s)</span></div>
-                    <div className="ranked-bar"><span style={{ width: `${Math.round(count / Math.max(data.handoffs ?? 1, 1) * 100)}%` }} /></div>
-                    <b>{Math.round(count / Math.max(data.handoffs ?? 1, 1) * 100)}%</b>
-                  </div>)}</div>}
-              {/* A causa mais comum tem nome técnico e consequência clara: vale explicar. */}
-              {handoffs[0]?.[0] === "low_intent_confidence" && <div className="insight insight-warning">
-                <strong>A causa principal é o classificador, não o cliente.</strong>
-                Quando nenhuma regra casa, a confiança fica em 0,55 — abaixo do corte de 0,6 — e a conversa transborda. Cliente real raramente escreve exatamente o que a regra espera. Estes números são do período selecionado: se o classificador por modelo tiver sido ligado depois, as conversas mais novas não passam mais por aqui. O estado atual está em <strong>Prompts e versões</strong>.
-              </div>}
-            </section>
-
-            <section className="data-card">
-              <div className="card-header"><strong>Notas dos clientes</strong><span className="badge blue">CSAT</span></div>
-              {csatTotal === 0
-                ? <p className="card-empty">Nenhuma nota recebida. A pergunta de avaliação só é feita quando a IA responde — e ela está em modo observação.</p>
-                : <div className="ranked-list">{[5, 4, 3, 2, 1].map((score) => {
-                    const count = csat[String(score)] ?? 0;
-                    return <div className="ranked-row" key={score}>
-                      <div className="ranked-label"><strong>{score} {score === 1 ? "estrela" : "estrelas"}</strong><span>{count} resposta(s)</span></div>
-                      <div className="ranked-bar"><span style={{ width: `${csatTotal ? Math.round(count / csatTotal * 100) : 0}%` }} /></div>
-                      <b>{count}</b>
-                    </div>;
-                  })}</div>}
-              <div className="insight">
-                <strong>Custo por atendimento não é medido.</strong>
-                Depende de instrumentar o Langfuse. Enquanto não estiver, nenhum número de custo aparece aqui.
-              </div>
-            </section>
-          </div>
-        </>}
-    </>}
-  </main>;
+  return <>
+    <Toolbar><Segmented label="Período" value={period} options={PERIODS_SHORT} onChange={setPeriod} /></Toolbar>
+    {loading && <Loading stats={4} rows={3} />}
+    {!loading && failed && <Notice tone="bad">Não foi possível consultar as avaliações.</Notice>}
+    {!loading && !failed && data && !data.available && <Notice tone="bad">{data.detail ?? "Fonte indisponível"}.</Notice>}
+    {!loading && !failed && data?.available && (total === 0
+      ? <Card><Empty icon="sparkles" title="Nenhuma conversa no período">Não há o que avaliar.</Empty></Card>
+      : <>
+        <Stats>
+          <Stat label="Conversas avaliadas" icon="chat" value={count(total)} hint="Base de tudo abaixo" />
+          <Stat label="Resolvidas sem humano" icon="sparkles" value={data.resolutionRate === null || data.resolutionRate === undefined ? "—" : `${Math.round(data.resolutionRate * 100)}%`} hint={`${data.resolvedWithoutHuman ?? 0} de ${total}`} />
+          <Stat label="Transbordos" icon="users" value={count(data.handoffs ?? 0)} hint={data.handoffs ? "Passaram para humano" : "Nenhum"} />
+          <Stat label="CSAT médio" icon="check" value={data.csatAverage === null || data.csatAverage === undefined ? "—" : data.csatAverage.toFixed(1).replace(".", ",")} hint={csatTotal ? `${csatTotal} avaliação(ões)` : "Nenhuma nota recebida"} />
+        </Stats>
+        {/* A causa mais comum tem nome técnico e consequência clara: vale explicar. */}
+        {handoffs[0]?.[0] === "low_intent_confidence" && <Notice tone="warn" title="A causa principal é o classificador, não o cliente."
+          action={<button className="button secondary small" onClick={() => onNavigate("prompts")}>Ver como a IA decide</button>}
+          more="Quando nenhuma regra casa, a confiança fica em 0,55 — abaixo do corte de 0,6 — e a conversa transborda. Se o classificador por modelo foi ligado depois do início do período, as conversas mais novas já não passam por aqui.">Cliente real raramente escreve como a regra espera.</Notice>}
+        <div className="grid-2 even">
+          <Card title="Por que a IA passou para humano" badge={<Badge tone="warn">{data.handoffs ?? 0}</Badge>}>
+            {handoffs.length === 0
+              ? <Empty icon="check" title="Nenhum transbordo no período" />
+              : <div className="bars">{handoffs.map(([reason, n]) => <Bar key={reason} label={handoffLabel(reason)} detail={`${n} de ${data.handoffs}`} value={n} max={handoffTotal} display={`${Math.round(n / handoffTotal * 100)}%`} />)}</div>}
+          </Card>
+          <Card title="Notas dos clientes" badge={<Badge tone="info">CSAT</Badge>}>
+            {csatTotal === 0
+              ? <Empty icon="check" title="Nenhuma nota recebida">A pergunta de avaliação só é feita quando a IA responde — e ela está em modo observação.</Empty>
+              : <div className="bars">{[5, 4, 3, 2, 1].map((score) => <Bar key={score} label={`${score} ${score === 1 ? "estrela" : "estrelas"}`} value={csat[String(score)] ?? 0} max={csatTotal} />)}</div>}
+          </Card>
+        </div>
+        <Limits items={[["Custo por atendimento", "Depende de instrumentar o Langfuse. Enquanto não estiver, nenhum número de custo aparece aqui."]]} />
+      </>)}
+  </>;
 }
 
 type Service = { name: string; state: string; mode: string; detail: string };
 
 /**
  * Existe **um** prompt no sistema: o do classificador de intenção. Ele não
- * escreve nada para o cliente — escolhe um item de uma lista fechada de
- * intenções, e a resposta continua sendo texto fixo.
+ * escreve nada para o cliente — escolhe um item de uma lista fechada.
  *
  * Por isso esta tela não versiona prompt em banco: quem muda esse texto muda um
- * arquivo, e o histórico já está no Git com autor, data e revisão. Uma segunda
- * cópia versionada no banco só criaria divergência entre o que a tela mostra e
- * o que o servidor executa.
+ * arquivo, e o histórico já está no Git com autor, data e revisão.
  */
-function Prompts() {
+function HowAiDecides() {
   const [service, setService] = useState<Service | null>(null);
   const [state, setState] = useState<"loading" | "ready" | "error">("loading");
   useEffect(() => {
@@ -130,54 +102,31 @@ function Prompts() {
     return () => { active = false; };
   }, []);
 
+  if (state === "loading") return <Loading stats={3} rows={4} />;
+  if (state === "error") return <Notice tone="bad">Não foi possível consultar o estado do classificador.</Notice>;
   const ativo = service?.state === "ok";
   const meioLigado = service?.state === "degraded";
-
-  return <main className="content">
-    <Heading title="Prompts e versões" text="As instruções que guiam a IA, e onde elas realmente moram." />
-
-    {state === "loading" && <div className="state-card">Consultando o estado do classificador…</div>}
-    {state === "error" && <div className="state-card error">Não foi possível consultar o estado do classificador.</div>}
-    {state === "ready" && <>
-      {meioLigado && <div className="state-card error">
-        <strong>A flag está ligada, mas não há chave.</strong>
-        <p style={{ marginTop: 8, lineHeight: 1.7 }}>{service?.detail} Toda mensagem está sendo classificada por expressão regular, como antes.</p>
-      </div>}
-
-      <section className="metrics">
-        <Metric label="Classificador" value={ativo ? "Modelo" : "Regra"} detail={ativo ? String(service?.mode) : "Expressões regulares"} />
-        <Metric label="Quem escreve ao cliente" value="Ninguém" detail="Texto fixo por intenção — o modelo nunca redige" />
-        <Metric label="Prompts em uso" value={ativo ? "1" : "0"} detail={ativo ? "Só o da classificação" : "Nenhum: sem modelo, sem prompt"} />
-        <Metric label="Versionamento" value="Git" detail="Autor, data e revisão de cada alteração" />
-      </section>
-
-      <section className="data-card" style={{ marginTop: 14 }}>
-        <div className="card-header"><strong>Como a IA decide hoje</strong><span className={`badge ${ativo ? "green" : "amber"}`}>{ativo ? "● modelo ativo" : "● só regra"}</span></div>
-        <div className="ranked-list">
-          {[
-            ["Classificação de intenção", ativo
-              ? `O modelo (${service?.mode}) escolhe um item de uma lista fechada de 16 intenções. Resposta fora da lista é descartada e a regra assume.`
-              : "Cadeia de expressões regulares em lib/agent/pipeline.ts. Se nenhuma casar, a confiança fica em 0,55 e a conversa transborda."],
-            ["Resposta ao cliente", "Textos fixos por intenção e por desfecho da ferramenta. Não há geração de linguagem — isso é deliberado: a resposta carrega garantias (nunca afirmar ação não executada, exigir evidência) que texto livre jogaria fora."],
-            ["Decisão de transbordo", "Regras explícitas em lib/agent/handoff.ts: confiança baixa, pedido de humano, risco de cancelamento, pedido não autorizado."],
-            ["Privacidade", "A mensagem sai sanitizada — e-mail, CPF e telefone removidos antes de qualquer chamada externa. A Groq não treina com dado de cliente em nenhuma camada."],
-            ["Se o modelo falhar", "Sem chave não há chamada; erro ou demora acima de 4s cai na regra; resposta inválida é descartada. Em nenhum caso o atendimento para."],
-          ].map(([item, detail]) => <div className="ranked-row" key={item}>
-            <div className="ranked-label"><strong>{item}</strong><span>{detail}</span></div>
-          </div>)}
-        </div>
-        <div className="insight">
-          <strong>Por que não há histórico de versões aqui.</strong>
-          O único prompt do sistema é o do classificador, e ele vive em <code>lib/agent/llm-classifier.ts</code>. Quem o altera abre um commit — com autor, data e revisão. Guardar uma segunda cópia no banco criaria divergência entre o que esta tela mostra e o que o servidor executa, e a tela perderia primeiro.
-        </div>
-      </section>
-    </>}
-  </main>;
-}
-
-function Heading({ title, text }: { title: string; text: string }) {
-  return <div className="page-heading"><div><h1>{title}</h1><p>{text}</p></div></div>;
-}
-function Metric({ label, value, detail }: { label: string; value: string; detail: string }) {
-  return <article className="metric"><div className="metric-top"><span>{label}</span><span className="metric-icon">✓</span></div><strong>{value}</strong><small>{detail}</small></article>;
+  const steps: Array<[string, string]> = [
+    ["1. Entender o pedido", ativo
+      ? `O modelo (${service?.mode}) escolhe um item de uma lista fechada de intenções. Resposta fora da lista é descartada e a regra assume.`
+      : "Cadeia de expressões regulares. Se nenhuma casar, a confiança fica em 0,55 e a conversa transborda."],
+    ["2. Decidir se passa para humano", "Regras explícitas: confiança baixa, pedido de humano, risco de cancelamento, pedido não autorizado."],
+    ["3. Escrever a resposta", "Texto aprovado por assunto (Base de conhecimento → Respostas aprovadas). Não há geração de texto livre para o cliente — a resposta carrega garantias que texto livre jogaria fora."],
+  ];
+  return <>
+    {meioLigado && <Notice tone="bad" title="A flag está ligada, mas não há chave.">{service?.detail} Toda mensagem está sendo classificada por expressão regular.</Notice>}
+    <Stats>
+      <Stat label="Classificador" icon="sparkles" tone={ativo ? "ok" : "warn"} value={ativo ? "Modelo" : "Regra"} hint={ativo ? String(service?.mode) : "Expressões regulares"} />
+      <Stat label="Quem escreve ao cliente" icon="chat" value="Texto aprovado" hint="O modelo nunca redige a resposta" />
+      <Stat label="Versionamento do prompt" icon="book" value="Git" hint="Autor, data e revisão de cada alteração" />
+    </Stats>
+    <Card title="Como a IA decide, passo a passo" badge={<Badge tone={ativo ? "ok" : "warn"} dot>{ativo ? "modelo ativo" : "só regra"}</Badge>} flush>
+      <div className="list">{steps.map(([title, detail]) => <Row key={title} title={title} detail={detail} />)}</div>
+    </Card>
+    <Limits title="Garantias e detalhes técnicos" items={[
+      ["Privacidade", "A mensagem sai sanitizada — e-mail, CPF e telefone removidos antes de qualquer chamada externa. A Groq não treina com dado de cliente em nenhuma camada."],
+      ["Se o modelo falhar", "Sem chave não há chamada; erro ou demora acima de 4 s cai na regra; resposta inválida é descartada. Em nenhum caso o atendimento para."],
+      ["Onde o prompt mora", "lib/agent/llm-classifier.ts. Uma segunda cópia versionada no banco criaria divergência entre o que esta tela mostra e o que o servidor executa."],
+    ]} />
+  </>;
 }

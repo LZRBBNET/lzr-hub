@@ -29,15 +29,19 @@ export async function GET(request: Request) {
         mode: runtime.config.ixcMode,
         scope: runtime.config.ixcFullBase ? "base inteira" : `allowlist (${runtime.config.ixcAllowlist.length})`,
         state: health.state,
-        detail: `Somente leitura. Escrita bloqueada no guard, não por configuração.`,
+        detail: "Leitura pelo provider somente-leitura; escrita só pelas operações do catálogo (ver \"Escrita no ERP\").",
       };
     }
   } catch {
     ixc = { mode: "inválido", scope: "—", state: "error", detail: "Configuração do IXC recusada no carregamento" };
   }
 
-  const channelEnabled = process.env.FEATURE_N8N_CHANNEL === "true";
-  const autoReply = channelEnabled && process.env.FEATURE_N8N_AUTOREPLY === "true";
+  const metaEnabled = process.env.FEATURE_META_WHATSAPP === "true";
+  const metaAutoReply = process.env.FEATURE_N8N_AUTOREPLY === "true";
+  const metaReceives = !!process.env.META_APP_SECRET?.trim() && !!process.env.META_VERIFY_TOKEN?.trim();
+  const metaSends = !!process.env.META_ACCESS_TOKEN?.trim() && !!process.env.META_PHONE_NUMBER_ID?.trim();
+  const attendantReply = process.env.FEATURE_ATTENDANT_REPLY === "true";
+  const ixcWrite = process.env.FEATURE_IXC_WRITE === "true";
 
   let database: { state: string; detail: string };
   try { await getDb(); database = { state: "ok", detail: "Postgres no Railway; migrações aplicadas no deploy" }; }
@@ -54,13 +58,17 @@ export async function GET(request: Request) {
       { name: "IXC (ERP)", state: ixc.state, mode: `${ixc.mode} • ${ixc.scope}`, detail: ixc.detail },
       { name: "Banco de dados", state: database.state, mode: "Postgres", detail: database.detail },
       {
-        name: "WhatsApp (n8n)",
-        state: channelEnabled ? (process.env.N8N_CHANNEL_SECRET ? (autoReply ? "ok" : "observação") : "degraded") : "disabled",
-        mode: autoReply ? "responde ao cliente" : channelEnabled ? "recebe, não responde" : "desligado",
-        detail: !channelEnabled ? "Canal desligado; nenhuma mensagem entra"
-          : !process.env.N8N_CHANNEL_SECRET ? "Ligado sem N8N_CHANNEL_SECRET — o fluxo não consegue autenticar"
-          : autoReply ? "A IA responde o cliente sem humano no meio"
-          : "Recebe e classifica; a resposta fica como sugestão não enviada",
+        // O canal oficial é a Cloud API da Meta; o nome "n8n" da flag é histórico.
+        // A tela anunciava "WhatsApp (n8n)" e só olhava o segredo do n8n — com a
+        // Meta ligada e o n8n fora do caminho, o painel dizia "incompleto".
+        name: "WhatsApp (Meta)",
+        state: !metaEnabled ? "disabled" : !metaReceives ? "degraded" : metaAutoReply ? "ok" : "observação",
+        mode: !metaEnabled ? "desligado" : metaAutoReply ? "a IA responde ao cliente" : attendantReply && metaSends ? "recebe; o atendente responde pela tela" : "recebe, não responde",
+        detail: !metaEnabled ? "Canal desligado; nenhuma mensagem entra"
+          : !metaReceives ? "Ligado sem META_APP_SECRET ou META_VERIFY_TOKEN — o webhook recusa as mensagens"
+          : metaAutoReply ? "A IA responde o cliente sem humano no meio"
+          : attendantReply && !metaSends ? "Resposta pela tela ligada, mas falta META_ACCESS_TOKEN ou META_PHONE_NUMBER_ID"
+          : "Recebe e classifica; a resposta da IA fica como sugestão para o atendente",
       },
       {
         // A flag ligada sem chave não liga nada — e essa diferença precisa aparecer,
@@ -76,7 +84,16 @@ export async function GET(request: Request) {
       },
       { name: "Filas (BullMQ/Redis)", state: queues?.enabled ? "ok" : "disabled", mode: queues?.runtime ?? "—", detail: queues?.enabled ? "Jobs reais em processamento" : (queues?.detail ?? "FEATURE_QUEUES desligada") },
       { name: "Observabilidade (Langfuse)", state: process.env.FEATURE_LANGFUSE === "true" ? "ok" : "disabled", mode: "OTLP", detail: process.env.FEATURE_LANGFUSE === "true" ? "Rastro do pipeline sendo enviado" : "Sem rastro externo; custo por atendimento não é medido" },
-      { name: "Escrita no ERP", state: "disabled", mode: "bloqueada", detail: "Nenhuma operação de escrita existe no guard do IXC — não é flag, é ausência de código" },
+      {
+        // Antes era uma linha fixa dizendo "ausência de código" — falsa desde que
+        // segunda via, OS, renegociação e cadastro passaram a gravar no IXC.
+        name: "Escrita no ERP",
+        state: ixcWrite ? "ok" : "disabled",
+        mode: ixcWrite ? "ligada · segunda via, OS, renegociação e cadastro" : "desligada",
+        detail: ixcWrite
+          ? "Só para quem tem a permissão ixc.write. Cada operação passa por idempotência e política, e fica no ledger — inclusive o que foi bloqueado"
+          : "FEATURE_IXC_WRITE desligada: nenhuma operação grava no IXC",
+      },
     ],
   });
 }

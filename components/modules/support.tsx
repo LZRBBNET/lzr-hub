@@ -1,8 +1,11 @@
 "use client";
 import { useCallback, useEffect, useState } from "react";
+import type { Navigate } from "@/components/lzr-hub-app";
+import { Icon } from "@/components/ui/icons";
+import { Badge, Card, Empty, InfoTip, Limits, Loading, Modal, Notice, Stat, Stats, Toolbar, count, dateOnly, plural, useToast } from "@/components/ui/kit";
 
-export function SupportModule({view,onNavigateMassivas}:{view:"monitoramento"|"mapa-alertas"|"massivas"|"chamados";onNavigateMassivas?:()=>void}){
-  if(view==="mapa-alertas")return <AlertMap/>; if(view==="massivas")return <MassIncidents/>; if(view==="chamados")return <Tickets/>; return <MonitoringCenter onNavigateMassivas={onNavigateMassivas}/>;
+export function SupportModule({view,onNavigate}:{view:"monitoramento"|"mapa-alertas"|"massivas"|"chamados";onNavigate:Navigate}){
+  if(view==="mapa-alertas")return <AlertMap/>; if(view==="massivas")return <MassIncidents/>; if(view==="chamados")return <Tickets/>; return <MonitoringCenter onNavigate={onNavigate}/>;
 }
 
 type Incident={id:string;title:string;severity:"low"|"medium"|"high"|"critical";status:"investigating"|"monitoring"|"resolved";city:string;neighborhood:string;equipment:string|null;affectedCustomers:number;startedAt:string;endedAt:string|null};
@@ -11,7 +14,6 @@ type TicketPayload={available:boolean;detail?:string;scope:string;allowlistSize?
 
 /** OS aberta no IXC: "F" e "finalizada" marcam encerramento; o resto segue em aberto. */
 const isOpenTicket=(status:string)=>!/^f$|finaliz|encerr|conclu/i.test(status.trim());
-const dateLabel=(value:string|null)=>{if(!value)return "—";const parsed=new Date(value);return Number.isNaN(parsed.getTime())?value:parsed.toLocaleDateString("pt-BR")};
 
 function useIncidents(){
   const [items,setItems]=useState<Incident[]>([]);const [available,setAvailable]=useState(true);const [state,setState]=useState<"loading"|"ready"|"error">("loading");
@@ -28,12 +30,12 @@ function useIncidents(){
 }
 
 function useTickets(page:number){
-  const [data,setData]=useState<TicketPayload|null>(null);const [state,setState]=useState<"loading"|"ready"|"error">("loading");
+  const [data,setData]=useState<TicketPayload|null>(null);const [loadedPage,setLoadedPage]=useState<number|null>(null);const [failed,setFailed]=useState(false);
   useEffect(()=>{let active=true;
     fetch(`/api/support/tickets?page=${page}`).then(r=>r.ok?r.json():Promise.reject(new Error("falhou")))
-      .then((payload:TicketPayload)=>{if(active){setData(payload);setState("ready")}}).catch(()=>{if(active)setState("error")});
+      .then((payload:TicketPayload)=>{if(active){setData(payload);setFailed(false);setLoadedPage(page)}}).catch(()=>{if(active){setFailed(true);setLoadedPage(page)}});
     return()=>{active=false}},[page]);
-  return {data,state};
+  return {data,state:loadedPage!==page?"loading":failed?"error":"ready" as "loading"|"ready"|"error"};
 }
 
 type NetworkAlert={id:string;kind:string;equipment:string;description:string|null;status:"open"|"resolved";startedAt:string;resolvedAt:string|null;parsed:boolean};
@@ -52,8 +54,10 @@ function useNetworkAlerts(refreshMs=30_000){
 }
 
 const ALERT_KIND_LABELS:Record<string,string>={olt_interface:"Interface de OLT",fiber_link:"Possível rompimento de fibra",unrecognized:"Formato não reconhecido"};
+const SEVERITY_LABELS:Record<string,string>={low:"baixa",medium:"média",high:"alta",critical:"crítica"};
+const STATUS_LABELS:Record<string,string>={investigating:"Investigando",monitoring:"Monitorando",resolved:"Encerrada"};
 
-function MonitoringCenter({onNavigateMassivas}:{onNavigateMassivas?:()=>void}){
+function MonitoringCenter({onNavigate}:{onNavigate:Navigate}){
   const {items,available,state}=useIncidents();
   const {data:tickets,state:ticketState}=useTickets(1);
   const {data:alerts,state:alertState}=useNetworkAlerts();
@@ -63,49 +67,55 @@ function MonitoringCenter({onNavigateMassivas}:{onNavigateMassivas?:()=>void}){
   const fullBase=tickets?.scope==="full-base";
   const openTicketCount=fullBase?(tickets?.total??0):(tickets?.items.filter(t=>isOpenTicket(t.status)).length??0);
   const openAlerts=alerts?.open??[];
-  return <main className="content">
-    <Heading title="Centro de Monitoramento" text="O que existe de medido hoje: massivas registradas pela operação, alertas reais do Telegram e ordens de serviço do IXC."/>
-    <section className="metrics">
-      <Metric label="Massivas em aberto" value={state==="ready"&&available?String(open.length):"—"} detail={state==="ready"&&available?(open.length?`${open.reduce((sum,i)=>sum+i.affectedCustomers,0)} clientes estimados`:"Nenhuma massiva aberta"):"Registro indisponível"}/>
-      <Metric label="Chamados em aberto" value={ticketState==="ready"&&tickets?.available?openTicketCount.toLocaleString("pt-BR"):"—"} detail={ticketState==="ready"&&tickets?.available?(fullBase?"Fila real do IXC, base inteira":`De ${tickets.items.length} OS dos cadastros da allowlist`):"IXC indisponível"}/>
-      <Metric label="Alertas de rede" value={alertState==="ready"&&alerts?.available?String(openAlerts.length):"—"} detail={alertState==="ready"&&alerts?.available?"Abertos agora, via Telegram":alerts?.detail??"Sem integração conectada"}/>
-      <Metric label="Clientes impactados" value="—" detail="Depende de decodificar local do equipamento"/>
-    </section>
-    {alerts?.suggestMassiva&&<div className="state-card error" style={{marginTop:14}}>
-      <strong>{openAlerts.length} alertas de rede abertos ao mesmo tempo</strong> — pode ser um problema regional. O nome do equipamento não é decodificado em cidade/bairro automaticamente; confira os alertas abaixo e registre uma massiva se fizer sentido.
-      {onNavigateMassivas&&<div style={{marginTop:8}}><button className="button secondary" onClick={onNavigateMassivas}>Ir para Massivas</button></div>}
-    </div>}
-    <AiMetrics/>
-    <div className="support-grid">
-      <section className="data-card"><div className="card-header"><strong>Massivas registradas</strong><span className={`badge ${open.length?"amber":"green"}`}>{open.length?"● atenção necessária":"● nada em aberto"}</span></div>
-        {state==="loading"&&<p style={{padding:14}}>Carregando…</p>}
-        {state==="error"&&<p style={{padding:14}}>Não foi possível consultar as massivas.</p>}
-        {state==="ready"&&!available&&<p style={{padding:14}}>Registro de massivas indisponível.</p>}
-        {state==="ready"&&available&&items.length===0&&<p style={{padding:14,lineHeight:1.6,color:"var(--muted)"}}>Nenhuma massiva registrada. Elas são cadastradas por uma pessoa na tela de Massivas — não existe integração de monitoramento alimentando isso automaticamente.</p>}
-        {items.map(i=><IncidentRow incident={i} key={i.id}/>)}
-      </section>
-      <section className="data-card"><div className="card-header"><strong>Alertas de rede (Telegram)</strong><span className="badge blue">{alertState==="ready"&&alerts?.available?`${openAlerts.length} aberto(s)`:"origem declarada"}</span></div>
-        {alertState==="loading"&&<p style={{padding:14}}>Carregando…</p>}
-        {alertState==="ready"&&!alerts?.available&&<p style={{padding:14,lineHeight:1.6,color:"var(--muted)"}}>{alerts?.detail}.</p>}
-        {alertState==="ready"&&alerts?.available&&openAlerts.length===0&&<p style={{padding:14,color:"var(--muted)"}}>Nenhum alerta aberto agora.</p>}
+  const affected=open.reduce((sum,i)=>sum+i.affectedCustomers,0);
+  return <>
+    {alerts?.suggestMassiva&&<Notice tone="bad" title={`${openAlerts.length} alertas de rede abertos ao mesmo tempo`}
+      action={<button className="button secondary small" onClick={()=>onNavigate("massivas")}>Registrar massiva</button>}
+      more="O nome do equipamento não é decodificado em cidade/bairro automaticamente: confira os alertas abaixo antes de registrar.">pode ser um problema regional.</Notice>}
+    <Stats>
+      <Stat label="Massivas em aberto" icon="network" tone={open.length?"bad":"neutral"} value={state==="ready"&&available?count(open.length):"—"} hint={state==="ready"&&available?(open.length?`${count(affected)} clientes estimados`:"Nenhuma aberta"):"Registro indisponível"}/>
+      <Stat label="Alertas de rede" icon="alert" tone={openAlerts.length?"warn":"neutral"} value={alertState==="ready"&&alerts?.available?count(openAlerts.length):"—"} hint={alertState==="ready"&&alerts?.available?"Abertos agora, via Telegram":alerts?.detail??"Sem integração conectada"}/>
+      <Stat label="Chamados em aberto" icon="ticket" value={ticketState==="ready"&&tickets?.available?count(openTicketCount):"—"} hint={ticketState==="ready"&&tickets?.available?(fullBase?"Fila real do IXC":`Das OS da allowlist`):ticketState==="loading"?"Consultando o IXC…":"IXC indisponível"}/>
+    </Stats>
+    <div className="grid-2 even">
+      <Card title="Massivas" badge={<Badge tone={open.length?"warn":"ok"} dot>{open.length?`${open.length} aberta(s)`:"nada em aberto"}</Badge>}
+        actions={<button className="link-button" onClick={()=>onNavigate("massivas")}>Gerenciar</button>} flush>
+        {state==="loading"&&<Loading rows={2} />}
+        {state==="error"&&<div className="card-content"><Notice tone="bad">Não foi possível consultar as massivas.</Notice></div>}
+        {state==="ready"&&!available&&<div className="card-content"><Notice tone="bad">Registro de massivas indisponível.</Notice></div>}
+        {state==="ready"&&available&&items.length===0&&<Empty icon="network" title="Nenhuma massiva registrada">Elas são cadastradas por uma pessoa, na aba Massivas.</Empty>}
+        {items.slice(0,6).map(i=><IncidentRow incident={i} key={i.id}/>)}
+      </Card>
+      <Card title="Alertas de rede" badge={<Badge tone="info">Telegram</Badge>} flush>
+        {alertState==="loading"&&<Loading rows={2} />}
+        {alertState==="error"&&<div className="card-content"><Notice tone="bad">Não foi possível consultar os alertas.</Notice></div>}
+        {alertState==="ready"&&!alerts?.available&&<Empty icon="alert" title="Alertas indisponíveis">{alerts?.detail}.</Empty>}
+        {alertState==="ready"&&alerts?.available&&openAlerts.length===0&&<Empty icon="check" title="Nenhum alerta aberto agora" />}
         {openAlerts.map(a=><NetworkAlertRow alert={a} key={a.id}/>)}
-      </section>
+      </Card>
     </div>
-    <section className="data-card" style={{marginTop:14}}><div className="card-header"><strong>Fontes desta tela</strong><span className="badge blue">Origem declarada</span></div><div style={{padding:16,fontSize:12,lineHeight:1.9,color:"var(--text-2)"}}>
-      <p><strong>Massivas</strong> — banco do LZR HUB, registradas manualmente.</p>
-      <p><strong>Alertas de rede</strong> — grupo de Telegram onde o monitoramento posta queda e normalização, recebido por webhook. O código do equipamento (OLT-ZTE-CDB-SUP-02, por exemplo) não é decodificado em cidade/bairro: mostrar o código bruto é mais honesto que adivinhar geografia.</p>
-      <p><strong>Chamados</strong> — ordens de serviço reais do IXC, limitadas aos cadastros da allowlist.</p>
-      <p><strong>IA de Atendimento</strong> — desfechos e avaliações das conversas gravadas.</p>
-      <p style={{marginTop:12,paddingTop:12,borderTop:"1px solid var(--line)"}}><strong>O que ainda não temos:</strong> potência de ONU em massa e correlação geográfica automática dos alertas. Isso exigiria uma tabela de tradução do código do equipamento para cidade/bairro, que ainda não existe.</p>
-    </div></section>
-  </main>;
+    <Limits title="De onde vêm estes números" items={[
+      ["Massivas","Banco do LZR HUB, registradas manualmente. Não existe integração de monitoramento alimentando isso."],
+      ["Alertas de rede","Grupo do Telegram onde o monitoramento posta queda e normalização. O código do equipamento (OLT-ZTE-CDB-SUP-02) não é decodificado em cidade/bairro: mostrar o código bruto é mais honesto que adivinhar."],
+      ["Clientes impactados","Estimativa digitada por quem registra a massiva. Potência de ONU em massa e correlação geográfica automática não existem."],
+    ]}/>
+  </>;
 }
 
 function NetworkAlertRow({alert:a}:{alert:NetworkAlert}){
-  return <div className="incident-row">
+  return <div className="incident">
     <i className={`severity-dot ${a.kind==="unrecognized"?"medium":"high"}`}/>
-    <div><strong>{a.equipment}</strong><span>{ALERT_KIND_LABELS[a.kind]??a.kind}{a.description?` • ${a.description}`:""}</span><small>desde {new Date(a.startedAt).toLocaleString("pt-BR")}</small></div>
-    <div><i className={`severity ${a.kind==="unrecognized"?"medium":"high"}`}>{a.status==="open"?"Aberto":"Resolvido"}</i></div>
+    <div><strong>{a.equipment}</strong><span>{ALERT_KIND_LABELS[a.kind]??a.kind}{a.description?` · ${a.description}`:""}</span><small>desde {new Date(a.startedAt).toLocaleString("pt-BR")}</small></div>
+    <div className="incident-side"><span className={`status ${a.status==="open"?"bad":"ok"}`}>{a.status==="open"?"Aberto":"Resolvido"}</span></div>
+  </div>;
+}
+
+function IncidentRow({incident:i,children}:{incident:Incident;children?:React.ReactNode}){
+  return <div className="incident">
+    <i className={`severity-dot ${i.severity}`}/>
+    <div><strong>{i.title}</strong><span>{i.city} · {i.neighborhood}{i.equipment?` · ${i.equipment}`:""}</span><small>{STATUS_LABELS[i.status]??i.status} · aberta em {dateOnly(i.startedAt)}{i.endedAt?` · encerrada em ${dateOnly(i.endedAt)}`:""}</small></div>
+    <div className="incident-side"><b>{count(i.affectedCustomers)}</b><small>clientes</small><i className={`severity ${i.severity}`}>{SEVERITY_LABELS[i.severity]??i.severity}</i></div>
+    {children&&<div className="incident-actions">{children}</div>}
   </div>;
 }
 
@@ -114,25 +124,24 @@ function AlertMap(){
   const {data:alerts,state:alertState}=useNetworkAlerts();
   const open=items.filter(i=>i.status!=="resolved");
   const openAlerts=alerts?.open??[];
-  const byCity=Object.entries(open.reduce<Record<string,{count:number;affected:number}>>((acc,i)=>{const key=`${i.city} • ${i.neighborhood}`;acc[key]={count:(acc[key]?.count??0)+1,affected:(acc[key]?.affected??0)+i.affectedCustomers};return acc},{}));
-  return <main className="content">
-    <Heading title="Mapa de Alertas" text="Agrupamento por cidade e bairro das massivas registradas. Sem coordenada de cliente."/>
-    {state==="loading"&&<div className="state-card">Carregando…</div>}
-    {state==="error"&&<div className="state-card error">Não foi possível consultar as massivas.</div>}
-    {state==="ready"&&!available&&<div className="state-card error">Registro de massivas indisponível.</div>}
-    {state==="ready"&&available&&open.length===0&&<div className="state-card"><strong>Nenhuma região com massiva aberta.</strong><p style={{marginTop:6,lineHeight:1.6}}>Este mapa mostra as massivas que a operação registrar. Um mapa de alertas automático dependeria de decodificar o código do equipamento em cidade/bairro, que ainda não existe — por isso não há pino de exemplo.</p></div>}
-    {open.length>0&&<div className="support-grid">
-      <section className="data-card"><div className="card-header"><strong>Regiões afetadas</strong><span className="badge amber">{byCity.length} região(ões)</span></div>
-        {byCity.map(([region,{count,affected}])=><div className="incident-row" key={region}><i className="severity-dot high"/><div><strong>{region}</strong><span>{count} massiva(s) em aberto</span></div><div><b>{affected}</b><small>clientes</small></div></div>)}
-      </section>
-      <section className="data-card"><div className="card-header"><strong>Massivas em aberto</strong></div>{open.map(i=><IncidentRow incident={i} key={i.id}/>)}</section>
-    </div>}
-    {alertState==="ready"&&alerts?.available&&openAlerts.length>0&&<section className="data-card" style={{marginTop:14}}>
-      <div className="card-header"><strong>Alertas de rede sem local decodificado</strong><span className="badge blue">{openAlerts.length} aberto(s)</span></div>
-      <p style={{padding:"0 16px",margin:"10px 0",fontSize:11,color:"var(--muted)",lineHeight:1.6}}>Estes alertas vêm do Telegram com o código bruto do equipamento — sem tradução confirmada para cidade/bairro, não entram no agrupamento por região acima.</p>
+  const byCity=Object.entries(open.reduce<Record<string,{count:number;affected:number}>>((acc,i)=>{const key=`${i.city} · ${i.neighborhood}`;acc[key]={count:(acc[key]?.count??0)+1,affected:(acc[key]?.affected??0)+i.affectedCustomers};return acc},{})).sort((a,b)=>b[1].affected-a[1].affected);
+  if(state==="loading")return <Loading rows={3}/>;
+  if(state==="error")return <Notice tone="bad">Não foi possível consultar as massivas.</Notice>;
+  if(!available)return <Notice tone="bad">Registro de massivas indisponível.</Notice>;
+  return <>
+    {open.length===0
+      ? <Card><Empty icon="network" title="Nenhuma região com massiva aberta">Esta visão agrupa as massivas que a operação registrar. Não há pino de exemplo.</Empty></Card>
+      : <div className="grid-2 even">
+          <Card title="Regiões afetadas" badge={<Badge tone="warn">{byCity.length}</Badge>} flush>
+            {byCity.map(([region,{count:total,affected}])=><div className="incident" key={region}><i className="severity-dot high"/><div><strong>{region}</strong><span>{plural(total,"massiva em aberto","massivas em aberto")}</span></div><div className="incident-side"><b>{count(affected)}</b><small>clientes</small></div></div>)}
+          </Card>
+          <Card title="Massivas em aberto" flush>{open.map(i=><IncidentRow incident={i} key={i.id}/>)}</Card>
+        </div>}
+    {alertState==="ready"&&alerts?.available&&openAlerts.length>0&&<Card title="Alertas sem local decodificado" badge={<Badge tone="info">{openAlerts.length}</Badge>} flush>
       {openAlerts.map(a=><NetworkAlertRow alert={a} key={a.id}/>)}
-    </section>}
-  </main>;
+    </Card>}
+    <Limits items={[["Mapa automático","Dependeria de traduzir o código do equipamento em cidade/bairro, tabela que ainda não existe. Por isso os alertas do Telegram ficam fora do agrupamento por região."]]}/>
+  </>;
 }
 
 const EMPTY_FORM={title:"",severity:"high",city:"",neighborhood:"",equipment:"",affectedCustomers:""};
@@ -140,56 +149,59 @@ const EMPTY_FORM={title:"",severity:"high",city:"",neighborhood:"",equipment:"",
 function MassIncidents(){
   const {items,available,state,reload}=useIncidents();
   const [form,setForm]=useState(EMPTY_FORM);
+  const [creating,setCreating]=useState(false);
   const [busy,setBusy]=useState(false);
   const [error,setError]=useState("");
+  const [showClosed,setShowClosed]=useState(false);
+  const toast=useToast();
 
   async function submit(){
     setBusy(true);setError("");
     const response=await fetch("/api/support/incidents",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({...form,affectedCustomers:Number(form.affectedCustomers||0)})});
-    if(response.ok){setForm(EMPTY_FORM);reload()}
+    if(response.ok){setForm(EMPTY_FORM);setCreating(false);toast("Massiva registrada.");reload()}
     else{const payload=await response.json().catch(()=>({}));setError(payload.error??"Não foi possível registrar a massiva")}
     setBusy(false);
   }
   async function close(id:string){
     setBusy(true);
-    await fetch("/api/support/incidents",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({action:"close",id})});
+    const response=await fetch("/api/support/incidents",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({action:"close",id})});
+    toast(response.ok?"Massiva encerrada.":"Não foi possível encerrar.",response.ok?"ok":"bad");
     reload();setBusy(false);
   }
 
   const set=(key:keyof typeof EMPTY_FORM)=>(event:{target:{value:string}})=>setForm(current=>({...current,[key]:event.target.value}));
-  return <main className="content">
-    <Heading title="Massivas" text="Registre, avise a área afetada e encerre incidentes de rede. Tudo fica auditado."/>
-    <div className="support-grid">
-      <section className="data-card"><div className="card-header"><strong>Registrar massiva</strong><span className="badge blue">Fica auditado</span></div>
-        <div style={{padding:16,display:"grid",gap:10}}>
-          {/* Rótulo visível, não só placeholder: o placeholder some ao digitar. */}
-          <label className="field"><span>O que está acontecendo</span><input placeholder="ex.: rompimento de fibra no anel norte" value={form.title} onChange={set("title")}/></label>
-          <label className="field"><span>Cidade</span><input placeholder="ex.: Itabaiana" value={form.city} onChange={set("city")}/></label>
-          <label className="field"><span>Bairro ou região</span><input placeholder="ex.: Centro" value={form.neighborhood} onChange={set("neighborhood")}/></label>
-          <label className="field"><span>Equipamento (opcional)</span><input placeholder="ex.: OLT-ITA-02 / PON 4" value={form.equipment} onChange={set("equipment")}/></label>
-          <label className="field"><span>Clientes afetados (estimativa)</span><input placeholder="ex.: 340" inputMode="numeric" value={form.affectedCustomers} onChange={set("affectedCustomers")}/></label>
-          <label className="field"><span>Severidade</span><select value={form.severity} onChange={set("severity")}><option value="low">Baixa</option><option value="medium">Média</option><option value="high">Alta</option><option value="critical">Crítica</option></select></label>
-          {error&&<p style={{color:"var(--bad)",fontSize:12}}>{error}</p>}
-          <button className="button" disabled={busy} onClick={()=>void submit()}>{busy?"Registrando…":"Registrar massiva"}</button>
-          <p style={{fontSize:11,color:"var(--muted)",lineHeight:1.6}}>A estimativa de clientes é sua: o sistema não consegue calcular isso sozinho enquanto não houver integração com o monitoramento da rede. Avisar, abaixo, casa a área da massiva com a cidade e bairro reais do cadastro — não com esta estimativa.</p>
-        </div>
-      </section>
-      <section className="data-card"><div className="card-header"><strong>Massivas registradas</strong><span className="badge green">{items.length} registro(s)</span></div>
-        {state==="loading"&&<p style={{padding:14}}>Carregando…</p>}
-        {state==="error"&&<p style={{padding:14}}>Não foi possível consultar as massivas.</p>}
-        {state==="ready"&&!available&&<p style={{padding:14}}>Registro de massivas indisponível.</p>}
-        {state==="ready"&&available&&items.length===0&&<p style={{padding:14,color:"var(--muted)",lineHeight:1.6}}>Nenhuma massiva registrada ainda.</p>}
-        {items.map(i=><div key={i.id}>
-          <IncidentRow incident={i}/>
-          <div style={{padding:"0 16px 14px",display:"flex",gap:8,flexWrap:"wrap"}}>
+  const shown=items.filter(i=>showClosed||i.status!=="resolved");
+  const closed=items.length-items.filter(i=>i.status!=="resolved").length;
+  return <>
+    <Toolbar actions={<button className="button" onClick={()=>{setCreating(true);setError("")}}><Icon name="plus" size={16}/>Registrar massiva</button>}>
+      {closed>0&&<label className="checks-inline"><input type="checkbox" checked={showClosed} onChange={e=>setShowClosed(e.target.checked)}/> Mostrar encerradas ({closed})</label>}
+    </Toolbar>
+    {state==="loading"&&<Loading rows={3}/>}
+    {state==="error"&&<Notice tone="bad">Não foi possível consultar as massivas.</Notice>}
+    {state==="ready"&&!available&&<Notice tone="bad">Registro de massivas indisponível.</Notice>}
+    {state==="ready"&&available&&<Card flush>
+      {shown.length===0
+        ? <Empty icon="network" title={items.length?"Nenhuma massiva aberta":"Nenhuma massiva registrada ainda"} action={<button className="button secondary" onClick={()=>setCreating(true)}>Registrar massiva</button>}/>
+        : shown.map(i=><IncidentRow incident={i} key={i.id}>
             <NotifyButton incidentId={i.id} kind="opened" label="Avisar clientes da área" busy={busy}/>
             {i.status==="resolved"&&<NotifyButton incidentId={i.id} kind="closed" label="Avisar normalização" busy={busy}/>}
-            {i.status!=="resolved"&&<button className="button secondary" disabled={busy} onClick={()=>void close(i.id)}>Encerrar</button>}
-          </div>
-        </div>)}
-      </section>
-    </div>
-  </main>;
+            {i.status!=="resolved"&&<button className="button secondary small" disabled={busy} onClick={()=>void close(i.id)}>Encerrar</button>}
+          </IncidentRow>)}
+    </Card>}
+    <Modal open={creating} title="Registrar massiva" onClose={()=>setCreating(false)}
+      footer={<><button className="button secondary" onClick={()=>setCreating(false)}>Cancelar</button><button className="button" disabled={busy||!form.title.trim()} onClick={()=>void submit()}>{busy?"Registrando…":"Registrar"}</button></>}>
+      <div className="form-grid">
+        <label className="field span-2"><span>O que está acontecendo</span><input data-autofocus placeholder="ex.: rompimento de fibra no anel norte" value={form.title} onChange={set("title")}/></label>
+        <label className="field"><span>Cidade</span><input placeholder="ex.: Itabaiana" value={form.city} onChange={set("city")}/></label>
+        <label className="field"><span>Bairro ou região</span><input placeholder="ex.: Centro" value={form.neighborhood} onChange={set("neighborhood")}/></label>
+        <label className="field"><span>Equipamento (opcional)</span><input placeholder="ex.: OLT-ITA-02 / PON 4" value={form.equipment} onChange={set("equipment")}/></label>
+        <label className="field"><span>Clientes afetados (estimativa)</span><input placeholder="ex.: 340" inputMode="numeric" value={form.affectedCustomers} onChange={set("affectedCustomers")}/></label>
+        <label className="field span-2"><span>Severidade</span><select value={form.severity} onChange={set("severity")}><option value="low">Baixa</option><option value="medium">Média</option><option value="high">Alta</option><option value="critical">Crítica</option></select></label>
+        {error&&<p className="form-error span-2">{error}</p>}
+        <p className="field-hint span-2">A estimativa é sua: o sistema não calcula isso sozinho. “Avisar clientes da área” casa cidade e bairro com o cadastro real — não com esta estimativa.</p>
+      </div>
+    </Modal>
+  </>;
 }
 
 type NoticeResult={kind:"opened"|"closed";matched:number;recorded:number;duplicates:number;enqueued:number;queueEnabled:boolean;capped:boolean};
@@ -213,10 +225,10 @@ function NotifyButton({incidentId,kind,label,busy}:{incidentId:string;kind:"open
     setRunning(false);
   }
 
-  return <div style={{display:"grid",gap:4}}>
-    <button className="button secondary" disabled={busy||running} onClick={()=>void run()}>{running?"Avisando…":label}</button>
-    {error&&<small style={{color:"var(--bad)"}}>{error}</small>}
-    {result&&<small style={{color:"var(--text-3)",maxWidth:260}}>
+  return <div>
+    <button className="button secondary small" disabled={busy||running} onClick={()=>void run()}>{running?"Avisando…":label}</button>
+    {error&&<small className="warn-text">{error}</small>}
+    {result&&<small className="muted">
       {result.matched} na área, {result.recorded} novo(s){result.duplicates>0?`, ${result.duplicates} já avisado(s) antes`:""}.
       {result.queueEnabled?` ${result.enqueued} enfileirado(s).`:" Fila de envio desligada — só registrado."}
     </small>}
@@ -233,19 +245,18 @@ type OsCatalog={available:boolean;detail?:string;subjects:{id:string;name:string
  * um deles é escolher qual fila recebe o chamado e qual técnico vai à casa do
  * cliente. Sem catálogo, o formulário não abre.
  */
-function NewServiceOrder(){
+function NewServiceOrder({open,onClose}:{open:boolean;onClose:()=>void}){
   const [catalog,setCatalog]=useState<OsCatalog|null>(null);
-  const [open,setOpen]=useState(false);
   const [form,setForm]=useState({customerId:"",subjectId:"",sectorId:"",message:""});
   const [busy,setBusy]=useState(false);
   const [result,setResult]=useState<{status:string;detail:string}|null>(null);
   const [error,setError]=useState<string|null>(null);
 
-  useEffect(()=>{let active=true;
+  useEffect(()=>{if(!open||catalog)return;let active=true;
     fetch("/api/support/service-orders").then(r=>r.ok?r.json():Promise.reject(new Error("falhou")))
       .then((payload:OsCatalog)=>{if(active)setCatalog(payload)})
       .catch(()=>{if(active)setCatalog({available:false,detail:"Não foi possível ler o catálogo do IXC",subjects:[],sectors:[]})});
-    return()=>{active=false}},[]);
+    return()=>{active=false}},[open,catalog]);
 
   async function submit(){
     setBusy(true);setError(null);setResult(null);
@@ -261,101 +272,69 @@ function NewServiceOrder(){
     finally{setBusy(false)}
   }
 
-  if(!catalog)return null;
-  if(!catalog.available)return <div className="state-card">Abrir OS pela tela está indisponível: {catalog.detail}. Nenhuma lista de exemplo é mostrada — escolher um assunto inventado abriria chamado na fila errada.</div>;
-
+  function close(){setResult(null);setError(null);onClose()}
   const ready=form.customerId.trim()&&form.subjectId&&form.sectorId&&form.message.trim().length>=10;
-  return <section className="data-card" style={{marginBottom:14}}>
-    <div className="card-header"><strong>Abrir ordem de serviço no IXC</strong>
-      <span className={`badge ${catalog.writeEnabled?"blue":"amber"}`}>{catalog.writeEnabled?"Escrita ligada":"FEATURE_IXC_WRITE desligada"}</span>
-    </div>
-    <div style={{padding:16}}>
-      {!open
-        ? <button className="button" onClick={()=>setOpen(true)}>Abrir chamado</button>
-        : <div style={{display:"grid",gap:10,maxWidth:560}}>
-            <label className="field"><span>Código do cliente no IXC</span><input value={form.customerId} placeholder="ex.: 21857" onChange={e=>setForm(f=>({...f,customerId:e.target.value}))}/></label>
-            <label className="field"><span>Assunto ({catalog.subjects.length} do IXC)</span>
-              <select value={form.subjectId} onChange={e=>setForm(f=>({...f,subjectId:e.target.value}))}>
-                <option value="">Escolha o assunto…</option>
-                {catalog.subjects.map(s=><option key={s.id} value={s.id}>{s.name}</option>)}
-              </select></label>
-            <label className="field"><span>Setor que vai atender</span>
-              <select value={form.sectorId} onChange={e=>setForm(f=>({...f,sectorId:e.target.value}))}>
-                <option value="">Escolha o setor…</option>
-                {catalog.sectors.map(s=><option key={s.id} value={s.id}>{s.name}</option>)}
-              </select></label>
-            <label className="field"><span>O que o cliente relatou</span><textarea rows={3} value={form.message} placeholder="O técnico chega sabendo só o que estiver escrito aqui." onChange={e=>setForm(f=>({...f,message:e.target.value}))}/></label>
-            {error&&<p className="form-error">{error}</p>}
-            {result&&<div className={`state-card ${result.status==="success"?"":"error"}`}>
-              <strong>{result.status==="success"?"OS aberta no IXC.":result.status==="blocked"?"Bloqueado.":"Falhou."}</strong>
-              <p style={{marginTop:6,lineHeight:1.6,wordBreak:"break-word"}}>{result.detail}</p>
-            </div>}
-            <div style={{display:"flex",gap:8}}>
-              <button className="button" disabled={busy||!ready} onClick={()=>void submit()}>{busy?"Enviando…":"Abrir OS"}</button>
-              <button className="button secondary" disabled={busy} onClick={()=>{setOpen(false);setResult(null);setError(null)}}>Cancelar</button>
-            </div>
-            <small style={{color:"var(--muted)",lineHeight:1.55}}>A filial vai do cadastro do cliente no IXC, não daqui — o grupo tem 21 e o chamado precisa nascer na certa.</small>
-          </div>}
-    </div>
-  </section>;
+  return <Modal open={open} title="Abrir ordem de serviço no IXC" onClose={close} wide
+    footer={catalog?.available&&<><button className="button secondary" disabled={busy} onClick={close}>{result?.status==="success"?"Fechar":"Cancelar"}</button>{result?.status!=="success"&&<button className="button" disabled={busy||!ready} onClick={()=>void submit()}>{busy?"Enviando…":"Abrir OS"}</button>}</>}>
+    {!catalog&&<Loading rows={2}/>}
+    {catalog&&!catalog.available&&<Notice tone="bad" more="Nenhuma lista de exemplo é mostrada: escolher um assunto inventado abriria chamado na fila errada.">Abrir OS pela tela está indisponível: {catalog.detail}.</Notice>}
+    {catalog?.available&&<div className="form-grid">
+      {!catalog.writeEnabled&&<div className="span-2"><Notice tone="warn">A escrita no IXC está desligada neste ambiente (FEATURE_IXC_WRITE): o pedido será recusado.</Notice></div>}
+      <label className="field"><span>Código do cliente no IXC</span><input data-autofocus value={form.customerId} placeholder="ex.: 21857" onChange={e=>setForm(f=>({...f,customerId:e.target.value}))}/></label>
+      <label className="field"><span>Setor que vai atender</span>
+        <select value={form.sectorId} onChange={e=>setForm(f=>({...f,sectorId:e.target.value}))}><option value="">Escolha o setor…</option>{catalog.sectors.map(s=><option key={s.id} value={s.id}>{s.name}</option>)}</select></label>
+      <label className="field span-2"><span>Assunto ({catalog.subjects.length} do IXC)</span>
+        <select value={form.subjectId} onChange={e=>setForm(f=>({...f,subjectId:e.target.value}))}><option value="">Escolha o assunto…</option>{catalog.subjects.map(s=><option key={s.id} value={s.id}>{s.name}</option>)}</select></label>
+      <label className="field span-2"><span>O que o cliente relatou</span><textarea rows={4} value={form.message} placeholder="O técnico chega sabendo só o que estiver escrito aqui." onChange={e=>setForm(f=>({...f,message:e.target.value}))}/></label>
+      <p className="field-hint span-2">A filial vem do cadastro do cliente no IXC, não daqui — o grupo tem 21 e o chamado precisa nascer na certa.</p>
+      {error&&<p className="form-error span-2">{error}</p>}
+      {result&&<div className={`result-box span-2 ${result.status==="success"?"ok":"bad"}`}><strong>{result.status==="success"?"OS aberta no IXC.":result.status==="blocked"?"Bloqueado.":"Falhou."}</strong><p>{result.detail}</p></div>}
+    </div>}
+  </Modal>;
 }
 
 function Tickets(){
   const [page,setPage]=useState(1);
   const {data,state}=useTickets(page);
   const [onlyOpen,setOnlyOpen]=useState(true);
+  const [creating,setCreating]=useState(false);
   const fullBase=data?.scope==="full-base";
   // Na base inteira o próprio IXC já devolve só as não fechadas; filtrar de novo
   // aqui esconderia parte da página sem reduzir o total, o que confunde.
   const items=fullBase?(data?.items??[]):(data?.items??[]).filter(t=>!onlyOpen||isOpenTicket(t.status));
-  return <main className="content">
-    <Heading title="Chamados" text="Ordens de serviço reais do IXC."/>
-    <NewServiceOrder/>
-    {state==="loading"&&<div className="state-card">Consultando o IXC…</div>}
-    {state==="error"&&<div className="state-card error">Não foi possível consultar os chamados.</div>}
-    {state==="ready"&&!data?.available&&<div className="state-card error">{data?.detail??"Fonte de chamados indisponível"}.</div>}
+  const pageSize=data?.pageSize??25;
+  const first=((data?.page??1)-1)*pageSize;
+  return <>
+    <Toolbar actions={<button className="button" onClick={()=>setCreating(true)}><Icon name="plus" size={16}/>Abrir OS</button>}>
+      {state==="ready"&&data?.available&&(fullBase
+        ? <span className="muted"><strong className="text-ink">{count(data.total??0)}</strong> OS ainda não fechadas no IXC <InfoTip label="Por que não aparece o nome do cliente">O IXC não devolve o nome do cliente na OS — buscar linha a linha seria uma consulta por item. Por isso a fila mostra o código do cadastro e o endereço do atendimento.</InfoTip></span>
+        : <select className="select" value={onlyOpen?"open":"all"} onChange={e=>setOnlyOpen(e.target.value==="open")}><option value="open">Só em aberto</option><option value="all">Todas as OS</option></select>)}
+    </Toolbar>
+    <NewServiceOrder open={creating} onClose={()=>setCreating(false)}/>
+    {state==="loading"&&<Loading rows={6}/>}
+    {state==="error"&&<Notice tone="bad">Não foi possível consultar os chamados.</Notice>}
+    {state==="ready"&&!data?.available&&<Notice tone="bad">{data?.detail??"Fonte de chamados indisponível"}.</Notice>}
     {state==="ready"&&data?.available&&<>
-      {fullBase
-        ? <div className="state-card">Fila real do provedor: <strong>{(data.total??0).toLocaleString("pt-BR")}</strong> OS ainda não fechadas. O IXC não devolve o nome do cliente na OS — buscar linha a linha seria uma consulta por item, então a fila mostra o código do cadastro e o endereço do atendimento.</div>
-        : <div className="state-card">Mostrando as OS dos <strong>{data.allowlistSize} cadastro(s)</strong> liberados na allowlist do IXC — trava nossa, de homologação, não é a fila inteira do provedor.{data.unavailableCustomers?` ${data.unavailableCustomers} cadastro(s) não responderam.`:""}</div>}
-      {!fullBase&&<section className="filter-bar"><select value={onlyOpen?"open":"all"} onChange={e=>setOnlyOpen(e.target.value==="open")}><option value="open">Só em aberto</option><option value="all">Todas as OS</option></select></section>}
-      {items.length===0
-        ? <div className="state-card">Nenhuma OS {onlyOpen&&!fullBase?"em aberto":"encontrada"} nos cadastros consultados.</div>
-        : <section className="data-card tickets">
-            <div className="data-row header"><span>OS / {fullBase?"local":"cliente"}</span><span>Assunto</span><span>Status</span><span>Aberta em</span><span></span></div>
-            {items.map(t=><div className="data-row" key={t.id}><span><strong>{t.id}</strong><small>{fullBase?`Cadastro ${t.customerId}${t.address?` • ${t.address}`:""}`:`${t.customerName} • ${t.city}`}</small></span>{/* O assunto do IXC vem com o processo inteiro descrito e quebrava a linha em
-    seis; truncar na exibição mantém a fila legível e o texto completo no title. */}
-<span className="cell-clip" title={t.subject}>{t.subject}</span><span><i className={`severity ${isOpenTicket(t.status)?"high":"low"}`}>{isOpenTicket(t.status)?"Em aberto":"Encerrada"}</i></span><span>{dateLabel(t.openedAt)}</span><span>›</span></div>)}
-            {fullBase&&<div className="pagination"><span>{((data.page??1)-1)*(data.pageSize??25)+1}–{((data.page??1)-1)*(data.pageSize??25)+items.length} de {(data.total??0).toLocaleString("pt-BR")}</span><button disabled={page<=1} onClick={()=>setPage(page-1)}>‹</button><button disabled={((data.page??1)-1)*(data.pageSize??25)+items.length>=(data.total??0)} onClick={()=>setPage(page+1)}>›</button></div>}
-          </section>}
+      {!fullBase&&<Notice tone="warn" more="É trava nossa, de homologação: liberar a base inteira depende de FEATURE_IXC_FULL_BASE.">Mostrando só as OS dos {data.allowlistSize} cadastro(s) liberados na allowlist.{data.unavailableCustomers?` ${data.unavailableCustomers} não responderam.`:""}</Notice>}
+      <Card flush>
+        {items.length===0
+          ? <Empty icon="ticket" title={`Nenhuma OS ${onlyOpen&&!fullBase?"em aberto":"encontrada"}`}/>
+          : <div className="table" style={{["--cols" as string]:"minmax(150px,1fr) minmax(0,2.4fr) 110px 100px"}}>
+              <div className="tr head hide-sm"><span>OS / {fullBase?"local":"cliente"}</span><span>Assunto</span><span>Situação</span><span>Aberta em</span></div>
+              {items.map(t=><div className="tr stack-sm" key={t.id}>
+                <span className="cell"><strong>OS {t.id}</strong><small className="clip" title={fullBase?t.address??"":undefined}>{fullBase?`Cadastro ${t.customerId}${t.address?` · ${t.address}`:""}`:`${t.customerName} · ${t.city}`}</small></span>
+                {/* O assunto do IXC vem com o processo inteiro descrito e quebrava a linha em
+                    seis; truncar na exibição mantém a fila legível e o texto completo no title. */}
+                <span className="clip" title={t.subject}>{t.subject}</span>
+                <span className={`status ${isOpenTicket(t.status)?"warn":"ok"}`}>{isOpenTicket(t.status)?"Em aberto":"Encerrada"}</span>
+                <span className="muted">{dateOnly(t.openedAt)}</span>
+              </div>)}
+            </div>}
+        {fullBase&&items.length>0&&<div className="pagination"><span>{count(first+1)}–{count(first+items.length)} de {count(data.total??0)}</span>
+          <button className="icon-button" aria-label="Página anterior" disabled={page<=1} onClick={()=>setPage(page-1)}><Icon name="chevron-left" size={16}/></button>
+          <button className="icon-button" aria-label="Próxima página" disabled={first+items.length>=(data.total??0)} onClick={()=>setPage(page+1)}><Icon name="chevron-right" size={16}/></button></div>}
+      </Card>
     </>}
-  </main>;
+  </>;
 }
 
-type SupportMetricsPayload={period:string;available:boolean;conversations?:number;resolvedWithoutHuman?:number;resolutionRate?:number|null;handoffs?:number;suggestionsOnly?:number;csatAverage?:number|null;csatCount?:number;detail?:string};
-const PERIOD_LABELS:Record<string,string>={"24h":"24 horas","7d":"7 dias","30d":"30 dias"};
-function AiMetrics(){
-  const [period,setPeriod]=useState("7d");const [data,setData]=useState<SupportMetricsPayload|null>(null);
-  useEffect(()=>{let active=true;
-    fetch(`/api/support/metrics?period=${period}`).then(r=>r.json()).then(payload=>{if(active)setData(payload)}).catch(()=>{if(active)setData({period,available:false,detail:"Falha ao consultar métricas"})});
-    return()=>{active=false}},[period]);
-  const loading=data?.period!==period;
-  const percent=(value:number|null|undefined)=>value===null||value===undefined?"—":`${Math.round(value*100)}%`;
-  const average=(value:number|null|undefined)=>value===null||value===undefined?"—":value.toFixed(2);
-  return <section className="data-card"><div className="card-header"><strong>IA de Atendimento N1</strong><span className="badge blue">{PERIOD_LABELS[period]}</span></div>
-    <div className="wizard-progress" style={{display:"flex",gap:8,marginBottom:12}}>{Object.keys(PERIOD_LABELS).map(key=><button key={key} className={`button ${key===period?"":"secondary"}`} onClick={()=>setPeriod(key)}>{PERIOD_LABELS[key]}</button>)}</div>
-    {loading?<p>Carregando métricas…</p>:!data?.available?<p>Métricas indisponíveis: {data?.detail??"fonte não configurada"}. Conecte o banco de dados para começar a medir.</p>:
-      <section className="metrics">
-        <Metric label="Resolvido sem humano" value={percent(data.resolutionRate)} detail={`${data.resolvedWithoutHuman??0} de ${data.conversations??0} conversas`}/>
-        <Metric label="CSAT médio" value={average(data.csatAverage)} detail={`${data.csatCount??0} avaliação(ões)`}/>
-        <Metric label={data.suggestionsOnly?"Sugestões sem envio":"Transbordos"} value={String(data.suggestionsOnly||data.handoffs||0)} detail={data.suggestionsOnly?"Canal em modo observação":"Passaram para atendente"}/>
-        <Metric label="Custo por atendimento" value="—" detail="Requer Langfuse (issue #6)"/>
-      </section>}
-  </section>;
-}
-
-const SEVERITY_LABELS:Record<string,string>={low:"baixa",medium:"média",high:"alta",critical:"crítica"};
-const STATUS_LABELS:Record<string,string>={investigating:"Investigando",monitoring:"Monitorando",resolved:"Encerrada"};
-function IncidentRow({incident:i}:{incident:Incident}){return <div className="incident-row"><i className={`severity-dot ${i.severity}`}/><div><strong>{i.title}</strong><span>{i.city} • {i.neighborhood}{i.equipment?` • ${i.equipment}`:""}</span><small>{STATUS_LABELS[i.status]??i.status} • aberta em {dateLabel(i.startedAt)}{i.endedAt?` • encerrada em ${dateLabel(i.endedAt)}`:""}</small></div><div><b>{i.affectedCustomers}</b><small>clientes</small><i className={`severity ${i.severity}`}>{SEVERITY_LABELS[i.severity]??i.severity}</i></div></div>}
-function Heading({title,text}:{title:string;text:string}){return <div className="page-heading"><div><h1>{title}</h1><p>{text}</p></div></div>}
-function Metric({label,value,detail}:{label:string;value:string;detail:string}){return <article className="metric"><div className="metric-top"><span>{label}</span><span className="metric-icon">⌁</span></div><strong>{value}</strong><small>{detail}</small></article>}

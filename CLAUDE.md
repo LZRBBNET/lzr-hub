@@ -142,7 +142,7 @@ Fail-closed em três camadas: sem `GROQ_API_KEY` não há chamada; erro ou demor
 
 O canal **não usa o texto do pipeline**. O pipeline continua decidindo intenção, transbordo e desfecho, mas o texto que vira sugestão (e, quando o envio automático for ligado, resposta) é a **resposta aprovada da intenção** — `resolveReply` em `lib/platform/reply-templates-shared.ts`. O texto do pipeline é de homologação e segue servindo ao simulador de `/api/agent`.
 
-Os padrões moram no código e descrevem **o que vai acontecer** ("vou encaminhar", "um atendente retorna"), nunca algo já feito. A BBNET edita em **Base de Conhecimento → Respostas aprovadas da IA** (permissão `knowledge.publish`); a edição fica em `agent_reply_templates`, com versão, e o texto anterior vai para a auditoria. A validação recusa texto vazio, acima de 1000 caracteres, com e-mail/CPF/telefone (a resposta vale para todo cliente) ou com "fictício", "homologação" ou "simulado". Edição inválida que chegue ao canal cai no padrão; banco fora do ar também — os padrões são seguros.
+Os padrões moram no código e descrevem **o que vai acontecer** ("vou encaminhar", "um atendente retorna"), nunca algo já feito. A BBNET edita em **Base de conhecimento → Respostas aprovadas** (permissão `knowledge.publish`); a edição fica em `agent_reply_templates`, com versão, e o texto anterior vai para a auditoria. A validação recusa texto vazio, acima de 1000 caracteres, com e-mail/CPF/telefone (a resposta vale para todo cliente) ou com "fictício", "homologação" ou "simulado". Edição inválida que chegue ao canal cai no padrão; banco fora do ar também — os padrões são seguros.
 
 ### O copiloto do atendente é outra coisa
 
@@ -215,7 +215,7 @@ A ficha aparece **ao lado da conversa** em Atendimentos (`ConversationAuditPanel
 
 ## Auditoria de contratos
 
-**Administração → Auditoria de contratos** confere, em cada contrato novo do IXC, o cadastro do cliente (`lib/platform/contract-audit-service.ts`, regras em `contract-audit-shared.ts`):
+**Gestão → Auditoria de contratos** confere, em cada contrato novo do IXC, o cadastro do cliente (`lib/platform/contract-audit-service.ts`, regras em `contract-audit-shared.ts`):
 
 - **Celular ou WhatsApp** preenchido com DDD (10 ou 11 algarismos) — um dos dois basta
 - **E-mail** preenchido e com formato de e-mail
@@ -249,6 +249,12 @@ Antes de virar código, `scripts/ixc-probe-contract-audit.mjs` mediu a base (sem
 
 **Cliente não importa de servidor.** Componente com `"use client"` que importa um serviço de `lib/platform/` arrasta as dependências dele para o pacote do navegador. Já aconteceu: `billing.tsx` importava uma constante de `collection-rules-service.ts` e levou junto `node:crypto` e o schema do Drizzle — quebrava o `npm run dev` inteiro e mandava 40 KB de ORM para o navegador em produção. Quando a tela precisa de um tipo ou constante, ele mora num arquivo `*-shared.ts` sem dependência de servidor.
 
+**Telas: menu, abas e peças compartilhadas.** O mapa de telas mora em `lib/platform/navigation.ts`: **seções** no menu (14) e **abas** dentro delas. O menu tinha 26 itens, e vários eram a mesma tela com outro nome — "Cobrança › Relatórios" e "Comercial › Relatórios" repetiam a visão geral, "Configurações" relia o estado de "Integrações", e Monitoramento, Mapa de Alertas e Massivas eram três portas para o mesmo registro. Endereços antigos continuam abrindo algo (`viewAliases`). A tela aberta vai no endereço (`#/funil`), então recarregar, voltar e mandar link funcionam; `Ctrl+K` abre a busca de telas. Aba com `permission` some do menu para quem daria 403 ao abrir; sem sessão (demonstração), tudo aparece.
+
+As peças de tela estão em `components/ui/kit.tsx` (`Stat`, `Card`, `Notice`, `Limits`, `InfoTip`, `Modal`, `Segmented`, `Loading`, toasts) e os ícones em `components/ui/icons.tsx` (SVG de traço, nada de glifo Unicode). **Não crie `Heading` nem `Metric` dentro do módulo** — cada módulo tinha a sua cópia. A regra de leitura: **o dado vem primeiro, a ressalva fica a um clique.** "Não medido" continua escrito como "—" com o motivo, mas a explicação longa vai em `InfoTip` (ao lado do número) ou em `Limits` (recolhido no fim), não num cartão inteiro antes do dado. Confirmação passageira ("Versão 3 salva") é toast; resultado que a pessoa precisa ler com calma — senha gerada, resposta crua do IXC — fica na tela. Formulário que não é o assunto da tela abre em `Modal`, não empilhado acima da lista.
+
+Tabela é `.table` com `.tr` em grade e as colunas em `--cols`. ⚠️ Cada `.tr` é uma grade independente: coluna `auto` dá larguras diferentes por linha e o cabeçalho desalinha — use só larguras fixas ou `minmax`/`fr`.
+
 **Estilo.** Parte do código usa formatação bem compacta (várias instruções por linha). Ao editar um arquivo, siga o estilo dele em vez de reformatar.
 
 **Comentários explicam o porquê, não o quê.** Especialmente decisões de segurança e escolhas não óbvias.
@@ -281,7 +287,7 @@ Ver [`docs/security/authentication.md`](docs/security/authentication.md).
 - Tempo médio de atendimento também não é medido — a Visão geral escreve isso em vez de estimar
 - Responder pela tela de Atendimentos existe atrás de `FEATURE_ATTENDANT_REPLY`, e só com **texto livre dentro de 24 horas** da última mensagem do cliente — fora disso a Meta exige modelo aprovado, que ainda não é suportado. O campo fica desabilitado enquanto a flag, o token ou o login faltarem. A sugestão da IA e a resposta redigida do copiloto podem virar **rascunho** no campo; o atendente edita e envia. `copilot.suggestion.used` continua registrando *cópia*: o que vai para a auditoria como envio é `whatsapp.reply.sent`
 - Recibo de entrega e leitura (`statuses` do webhook) é gravado na resposta enviada (`channel_messages.delivery_status`): a tela mostra *Aceita pela Meta → Enviada → Entregue → Lida*, ou *Falhou* com o motivo. O recibo **nunca rebaixa** — "entregue" que chega depois de "lida" é ignorado — e só vale para resposta nossa (`role = agent`), casada pelo `wamid`
-- **Atendimentos se atualiza por consulta, não por push**: a cada 5 s com a aba visível (lista e conversa aberta); com a aba escondida, só a lista, a cada 30 s — é o que mantém o "(3)" do título avisando de cliente esperando. O navegador pode espaçar mais as consultas de aba em segundo plano. Se a escala pedir, o próximo passo é SSE, não encurtar o intervalo
+- **Atendimentos se atualiza por consulta, não por push**: a cada 5 s com a aba visível (lista e conversa aberta); com a aba escondida, só a lista, a cada 30 s. Fora da caixa de entrada, a casca do app consulta a lista a cada 30 s — é o que mantém o "(3)" do título e o número ao lado de Atendimentos no menu em qualquer tela. O navegador pode espaçar mais as consultas de aba em segundo plano. Se a escala pedir, o próximo passo é SSE, não encurtar o intervalo
 - **Fila "Aguardando resposta"** é calculada, não marcada à mão: espera desde a primeira fala do cliente depois da última resposta **enviada** — sugestão da IA não conta como resposta. Não existe atribuir conversa a atendente nem encerrar atendimento
 - Áudio, foto, documento e figurinha **não somem mais**: viram uma fala do cliente entre colchetes ("[Áudio recebido — …]"), sem acionar a IA e sem desfecho. A mídia em si **não é baixada nem exibida**; a legenda de foto aparece ao atendente, mas nunca é tratada como pedido. Reação a mensagem e aviso de sistema continuam ignorados
 - O webhook da Meta pode trazer **várias mensagens no mesmo POST**; a rota processa todas (`parseMetaMessages`). Antes só a primeira era lida

@@ -2,133 +2,102 @@
 import { useEffect, useState } from "react";
 import { BarChart } from "./bar-chart";
 import { LEAD_SOURCES, LEAD_STAGES, type FunnelMetrics, type Lead, type LeadActivity } from "@/lib/platform/crm-shared";
+import { Icon } from "@/components/ui/icons";
+import { Badge, Bar, Card, Empty, Limits, Loading, Modal, Notice, Row, Segmented, Stat, Stats, Toolbar, count, money, useToast } from "@/components/ui/kit";
 
-export function SalesModule({view}:{view:"comercial"|"funil"|"metas"|"relatorios-comercial"}){
+/**
+ * Comercial. "Dashboard" e "Relatórios" liam o mesmo `/api/sales/overview` —
+ * viraram uma visão geral só, com o gráfico por dia que só existia no
+ * relatório. O cartão "O que não temos como responder" saiu: ele dizia que
+ * não existia CRM, e o funil existe desde a issue #17.
+ */
+export function SalesModule({view}:{view:"comercial"|"funil"|"metas"}){
   if(view==="funil")return <Funnel/>;
   if(view==="metas")return <Goals/>;
-  if(view==="relatorios-comercial")return <SalesReports/>;
-  return <SalesDashboard/>;
+  return <SalesOverview/>;
 }
 
 type PlanMix={plan:string;contracts:number;value:number};
 type SalesSummary={activations:number;scanned:number;truncated:boolean;activeContracts:number;monthlyRecurringAdded:number;averageTicket:number|null;planMix:PlanMix[];withoutValue:number;byDay:Array<{day:string;contracts:number}>;alreadyCancelled:number};
 type SalesPayload={available:boolean;detail?:string;period:string;summary:SalesSummary|null};
+const PERIODS=[["7d","7 dias"],["30d","30 dias"],["90d","90 dias"]] as const;
+type Period=typeof PERIODS[number][0];
+const periodName=(period:string)=>PERIODS.find(([v])=>v===period)?.[1]??period;
 
-const money=(value:number)=>`R$ ${value.toLocaleString("pt-BR",{minimumFractionDigits:2,maximumFractionDigits:2})}`;
-const PERIODS:[string,string][]=[["7d","7 dias"],["30d","30 dias"],["90d","90 dias"]];
-
-function useSales(period:string){
+function SalesOverview(){
+  const [period,setPeriod]=useState<Period>("30d");
   const [data,setData]=useState<SalesPayload|null>(null);
-  const [state,setState]=useState<"loading"|"ready"|"error">("loading");
+  const [loadedFor,setLoadedFor]=useState<string|null>(null);
+  const [failed,setFailed]=useState(false);
   useEffect(()=>{let active=true;
     fetch(`/api/sales/overview?period=${period}`).then(r=>r.ok?r.json():Promise.reject(new Error("falhou")))
-      .then((payload:SalesPayload)=>{if(active){setData(payload);setState("ready")}})
-      .catch(()=>{if(active)setState("error")});
+      .then((payload:SalesPayload)=>{if(active){setData(payload);setFailed(false);setLoadedFor(period)}})
+      .catch(()=>{if(active){setFailed(true);setLoadedFor(period)}});
     return()=>{active=false}},[period]);
-  return {data,state,setState};
-}
-
-function PeriodPicker({period,onChange}:{period:string;onChange:(value:string)=>void}){
-  return <section className="filter-bar"><select value={period} onChange={e=>onChange(e.target.value)}>{PERIODS.map(([v,l])=><option key={v} value={v}>Últimos {l}</option>)}</select></section>;
-}
-
-function ScanNote({summary}:{summary:SalesSummary}){
-  return <div className="state-card">Vendas fechadas no período, lidas do IXC: <strong>{summary.activations.toLocaleString("pt-BR")}</strong> contrato(s) ativado(s).{summary.alreadyCancelled>0&&<> Dessas, <strong>{summary.alreadyCancelled}</strong> já cancelaram — continuam contando como venda do período, e a perda é medida em Churn.</>}{summary.truncated&&<> <strong>A leitura parou antes do fim</strong> — ticket médio e mix cobrem {summary.scanned.toLocaleString("pt-BR")} delas.</>}{summary.withoutValue>0&&` ${summary.withoutValue} contrato(s) sem valor de plano legível ficaram fora do ticket médio, em vez de entrarem como zero.`}</div>;
-}
-
-function SalesDashboard(){
-  const [period,setPeriod]=useState("30d");
-  const {data,state,setState}=useSales(period);
   const summary=data?.summary;
-  return <main className="content">
-    <Heading title="Comercial" text="Venda fechada, contada nos contratos ativados no IXC."/>
-    <PeriodPicker period={period} onChange={(value)=>{setState("loading");setPeriod(value)}}/>
-    {state==="loading"&&<div className="state-card">Consultando o IXC…</div>}
-    {state==="error"&&<div className="state-card error">Não foi possível consultar as vendas.</div>}
-    {state==="ready"&&data&&!data.available&&<div className="state-card error">{data.detail}.</div>}
-    {state==="ready"&&summary&&<>
-      <ScanNote summary={summary}/>
-      <section className="metrics">
-        <Metric label={`Vendas (${PERIODS.find(([v])=>v===period)?.[1]})`} value={summary.activations.toLocaleString("pt-BR")} detail="Contratos ativados"/>
-        <Metric label="Ticket médio" value={summary.averageTicket===null?"—":money(summary.averageTicket)} detail={summary.averageTicket===null?"Nenhum contrato com valor legível":`Sobre ${summary.scanned-summary.withoutValue} contrato(s)`}/>
-        <Metric label="Receita recorrente somada" value={money(summary.monthlyRecurringAdded)} detail="Mensalidade das novas vendas"/>
-        <Metric label="Base ativa" value={summary.activeContracts.toLocaleString("pt-BR")} detail="Contratos ativos hoje"/>
-      </section>
-      <div className="dashboard-grid">
-        <section className="data-card"><div className="card-header"><strong>Planos mais vendidos</strong><span className="badge blue">Últimos {PERIODS.find(([v])=>v===period)?.[1]}</span></div>
+  const loading=loadedFor!==period;
+  return <>
+    <Toolbar><Segmented label="Período" value={period} options={PERIODS} onChange={setPeriod}/></Toolbar>
+    {loading&&<Loading stats={4} rows={4}/>}
+    {!loading&&failed&&<Notice tone="bad">Não foi possível consultar as vendas.</Notice>}
+    {!loading&&!failed&&data&&!data.available&&<Notice tone="bad">{data.detail}.</Notice>}
+    {!loading&&!failed&&summary&&<>
+      {summary.truncated&&<Notice tone="warn">A leitura do IXC parou antes do fim: ticket médio e mix cobrem {count(summary.scanned)} das vendas.</Notice>}
+      <Stats>
+        <Stat label={`Vendas em ${periodName(period)}`} icon="trending" tone="ok" value={count(summary.activations)} hint={summary.alreadyCancelled?`${summary.alreadyCancelled} já cancelaram (medido em Churn)`:"Contratos ativados"}/>
+        <Stat label="Ticket médio" icon="wallet" value={summary.averageTicket===null?"—":money(summary.averageTicket)} hint={summary.averageTicket===null?"Nenhum contrato com valor legível":`Sobre ${summary.scanned-summary.withoutValue} contrato(s)`}
+          info={summary.withoutValue?`${summary.withoutValue} contrato(s) sem valor de plano legível ficaram de fora, em vez de entrarem como zero.`:undefined}/>
+        <Stat label="Receita recorrente somada" icon="sparkles" value={money(summary.monthlyRecurringAdded)} hint="Mensalidade das novas vendas"/>
+        <Stat label="Base ativa" icon="users" value={count(summary.activeContracts)} hint="Contratos ativos hoje"/>
+      </Stats>
+      <div className="grid-2">
+        <Card title="Vendas por dia" badge={<Badge>{summary.byDay.length} dia(s) com venda</Badge>} flush>
+          <BarChart data={summary.byDay} noun="venda(s)"/>
+        </Card>
+        <Card title="Planos mais vendidos">
           {summary.planMix.length===0
-            ? <p style={{fontSize:12,color:"var(--muted)",padding:"12px 0"}}>Nenhuma ativação no período.</p>
-            : summary.planMix.slice(0,8).map(item=><div className="aging-row" key={item.plan}><div><strong>{item.plan}</strong><span>{item.contracts} venda(s) • {Math.round(item.contracts/summary.scanned*100)}% do período</span></div><b>{money(item.value)}</b></div>)}
-        </section>
-        <section className="data-card"><div className="card-header"><strong>O que não temos como responder</strong></div>
-          <div style={{padding:"4px 0"}}>
-            {[
-              ["Taxa de conversão","Exige registrar o contato antes da venda. Não existe CRM: a tabela de leads nunca recebeu uma linha."],
-              ["Ciclo médio de venda","Mesma razão — sabemos quando o contrato foi ativado, não quando a conversa começou."],
-              ["Origem do lead","Ninguém registra de onde veio o cliente."],
-              ["Previsão de churn","Quem já saiu está medido em Inteligência › Churn. Prever quem vai sair é outra coisa, e exige sinal que ninguém coleta."],
-            ].map(([title,why])=><div className="aging-row" key={title}><div><strong>{title}</strong><span>{why}</span></div></div>)}
-          </div>
-        </section>
+            ? <Empty icon="trending" title="Nenhuma ativação no período"/>
+            : <div className="bars">{summary.planMix.slice(0,8).map(item=><Bar key={item.plan} label={item.plan} detail={`${item.contracts} venda(s) · ${money(item.value)}`} value={item.contracts} max={summary.planMix[0].contracts} display={`${Math.round(item.contracts/Math.max(summary.scanned,1)*100)}%`}/>)}</div>}
+        </Card>
       </div>
+      <Limits items={[
+        ["Conversão e ciclo de venda","Estão no Funil, calculados dos leads registrados — não dos contratos do IXC, que não sabem quando a conversa começou."],
+        ["Previsão de churn","Quem já saiu está em Churn. Prever quem vai sair exige sinais que ninguém coleta."],
+      ]}/>
     </>}
-  </main>;
+  </>;
 }
-
-function SalesReports(){
-  const [period,setPeriod]=useState("30d");
-  const {data,state,setState}=useSales(period);
-  const summary=data?.summary;
-  return <main className="content">
-    <Heading title="Relatórios comerciais" text="Volume e mix das vendas fechadas. Conversão e origem dependem de CRM, que não existe."/>
-    <PeriodPicker period={period} onChange={(value)=>{setState("loading");setPeriod(value)}}/>
-    {state==="loading"&&<div className="state-card">Consultando o IXC…</div>}
-    {state==="error"&&<div className="state-card error">Não foi possível gerar o relatório.</div>}
-    {state==="ready"&&data&&!data.available&&<div className="state-card error">{data.detail}.</div>}
-    {state==="ready"&&summary&&<>
-      <ScanNote summary={summary}/>
-      <section className="metrics">
-        <Metric label="Vendas no período" value={summary.activations.toLocaleString("pt-BR")} detail="Contratos ativados"/>
-        <Metric label="Planos distintos" value={String(summary.planMix.length)} detail="Vendidos no período"/>
-        <Metric label="Plano líder" value={summary.planMix[0]?String(summary.planMix[0].contracts):"—"} detail={summary.planMix[0]?.plan??"Nenhuma venda"}/>
-        <Metric label="Receita recorrente" value={money(summary.monthlyRecurringAdded)} detail="Somada das novas vendas"/>
-      </section>
-      <section className="data-card" style={{marginTop:14}}><div className="card-header"><strong>Vendas por dia</strong><span className="badge blue">{summary.byDay.length} dia(s) com venda</span></div>
-        <BarChart data={summary.byDay} noun="venda(s)"/>
-      </section>
-    </>}
-  </main>;
-}
-
 
 /* ------------------------------------------------------------------ funil --- */
 
 type FunnelPayload={available:boolean;detail?:string;period:string;leads:Lead[];activities:LeadActivity[];metrics:FunnelMetrics|null};
 
-const sourceLabel=(value:string)=>value.charAt(0).toUpperCase()+value.slice(1);
+const SOURCE_LABELS:Record<string,string>={whatsapp:"WhatsApp",indicacao:"Indicação","porta-a-porta":"Porta a porta"};
+const sourceLabel=(value:string)=>SOURCE_LABELS[value]??value.charAt(0).toUpperCase()+value.slice(1);
 const dayLabel=(iso:string)=>{const d=new Date(iso);return Number.isNaN(d.getTime())?"—":d.toLocaleDateString("pt-BR",{day:"2-digit",month:"2-digit"})};
+const EMPTY_LEAD={name:"",phone:"",city:"",neighborhood:"",source:"whatsapp",note:""};
 
 /**
  * Funil comercial real (issue #17).
- *
- * O que existia aqui antes era um `useState` com dados de demonstração: dava
- * para criar lead e mover cartão, e tudo sumia ao recarregar. Agora grava.
  *
  * O arrastar-e-soltar usa a API nativa do navegador — sem biblioteca. Quem não
  * consegue arrastar (teclado, toque) tem o mesmo caminho pelo seletor dentro do
  * cartão: arrastar é atalho, não a única porta.
  */
 function Funnel(){
-  const [period,setPeriod]=useState("30d");
+  const [period,setPeriod]=useState<Period>("30d");
   const [data,setData]=useState<FunnelPayload|null>(null);
   const [state,setState]=useState<"loading"|"ready"|"error">("loading");
   const [nonce,setNonce]=useState(0);
   const [creating,setCreating]=useState(false);
-  const [form,setForm]=useState({name:"",phone:"",city:"",neighborhood:"",source:"whatsapp",note:""});
+  const [form,setForm]=useState(EMPTY_LEAD);
   const [openId,setOpenId]=useState<string|null>(null);
   const [busy,setBusy]=useState(false);
   const [error,setError]=useState("");
   const [dragging,setDragging]=useState<string|null>(null);
+  const [over,setOver]=useState<string|null>(null);
+  const [losing,setLosing]=useState<{leadId:string;reason:string}|null>(null);
+  const toast=useToast();
 
   useEffect(()=>{let active=true;
     fetch(`/api/sales/leads?period=${period}`).then(r=>r.ok?r.json():Promise.reject(new Error("falhou")))
@@ -143,19 +112,15 @@ function Funnel(){
       if(response.ok){setNonce(n=>n+1);return true}
       const payload=await response.json().catch(()=>({}));
       setError(payload.error??"Não foi possível salvar.");
+      toast(payload.error??"Não foi possível salvar.","bad");
       return false;
     }catch{setError("Não foi possível salvar.");return false}
     finally{setBusy(false)}
   }
 
   async function move(leadId:string,toStage:string){
-    if(toStage==="perdido"){
-      // Perder sem motivo deixa um número que ninguém sabe explicar depois.
-      const reason=window.prompt("Por que o lead foi perdido?");
-      if(!reason||reason.trim().length<3)return;
-      await post({action:"move",leadId,toStage,detail:reason.trim()});
-      return;
-    }
+    // Perder sem motivo deixa um número que ninguém sabe explicar depois.
+    if(toStage==="perdido"){setLosing({leadId,reason:""});return}
     await post({action:"move",leadId,toStage,detail:`Movido para ${toStage}`});
   }
 
@@ -165,64 +130,45 @@ function Funnel(){
   const history=(data?.activities??[]).filter(item=>item.leadId===openId);
   const percent=(value:number|null)=>value===null?"—":`${Math.round(value*100)}%`;
 
-  return <main className="content">
-    <div className="page-heading">
-      <div><h1>Funil comercial</h1><p>Leads gravados de verdade. Contato desconhecido no WhatsApp entra sozinho aqui.</p></div>
-      {state==="ready"&&data?.available&&<button className="button" onClick={()=>{setCreating(true);setError("")}}>Novo lead</button>}
-    </div>
-    <PeriodPicker period={period} onChange={(value)=>{setState("loading");setPeriod(value)}}/>
+  return <>
+    <Toolbar actions={state==="ready"&&data?.available&&<button className="button" onClick={()=>{setCreating(true);setError("")}}><Icon name="plus" size={16}/>Novo lead</button>}>
+      <Segmented label="Período" value={period} options={PERIODS} onChange={(value)=>{setState("loading");setPeriod(value)}}/>
+    </Toolbar>
 
-    {state==="loading"&&<div className="state-card">Carregando o funil…</div>}
-    {state==="error"&&<div className="state-card error">Não foi possível carregar o funil.</div>}
-    {state==="ready"&&data&&!data.available&&<div className="state-card error">{data.detail}.</div>}
+    {state==="loading"&&<Loading stats={4} rows={3}/>}
+    {state==="error"&&<Notice tone="bad">Não foi possível carregar o funil.</Notice>}
+    {state==="ready"&&data&&!data.available&&<Notice tone="bad">{data.detail}.</Notice>}
 
     {state==="ready"&&data?.available&&<>
-      {metrics&&<section className="metrics">
-        <Metric label={`Leads (${PERIODS.find(([v])=>v===period)?.[1]})`} value={metrics.created.toLocaleString("pt-BR")} detail={`${metrics.open} em andamento agora`}/>
-        <Metric label="Conversão" value={percent(metrics.conversionRate)} detail={metrics.conversionRate===null?"Nenhum lead encerrado ainda":`${metrics.won} ganho(s) de ${metrics.won+metrics.lost} encerrado(s)`}/>
-        {/* "0,0 dias" se lê como defeito; venda fechada no mesmo dia é venda
-            rápida, e é isso que a tela deve dizer. */}
-        <Metric label="Ciclo médio" value={metrics.averageCycleDays===null?"—":metrics.averageCycleDays<0.5?"menos de 1 dia":`${metrics.averageCycleDays.toFixed(1)} dias`} detail={metrics.averageCycleDays===null?"Nenhum lead ganho no período":"Do primeiro contato ao ganho"}/>
-        <Metric label="Origem principal" value={metrics.bySource[0]?String(metrics.bySource[0].leads):"—"} detail={metrics.bySource[0]?sourceLabel(metrics.bySource[0].source):"Nenhum lead no período"}/>
-      </section>}
+      {metrics&&<Stats>
+        <Stat label={`Leads em ${periodName(period)}`} icon="users" value={count(metrics.created)} hint={`${metrics.open} em andamento agora`}/>
+        <Stat label="Conversão" icon="trending" value={percent(metrics.conversionRate)} hint={metrics.conversionRate===null?"Nenhum lead encerrado ainda":`${metrics.won} ganho(s) de ${metrics.won+metrics.lost} encerrado(s)`}
+          info="Ganhos ÷ encerrados. Leads em andamento ficam de fora, senão a taxa cairia toda vez que a operação captasse contato novo."/>
+        {/* "0,0 dias" se lê como defeito; venda fechada no mesmo dia é venda rápida. */}
+        <Stat label="Ciclo médio" icon="clock" value={metrics.averageCycleDays===null?"—":metrics.averageCycleDays<0.5?"< 1 dia":`${metrics.averageCycleDays.toFixed(1).replace(".",",")} dias`} hint={metrics.averageCycleDays===null?"Nenhum lead ganho no período":"Do primeiro contato ao ganho"}/>
+        <Stat label="Origem principal" icon="chat" value={metrics.bySource[0]?sourceLabel(metrics.bySource[0].source):"—"} hint={metrics.bySource[0]?`${metrics.bySource[0].leads} lead(s)`:"Nenhum lead no período"}/>
+      </Stats>}
 
-      {creating&&<section className="data-card" style={{marginTop:14}}>
-        <div className="card-header"><strong>Novo lead</strong><span className="badge blue">Entra em “Novo contato”</span></div>
-        <div style={{padding:16,display:"grid",gap:10,maxWidth:520}}>
-          <label className="field"><span>Nome</span><input value={form.name} placeholder="quem entrou em contato" onChange={e=>setForm(f=>({...f,name:e.target.value}))}/></label>
-          <label className="field"><span>Telefone</span><input value={form.phone} placeholder="(79) 99999-9999" onChange={e=>setForm(f=>({...f,phone:e.target.value}))}/></label>
-          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10}}>
-            <label className="field"><span>Cidade</span><input value={form.city} onChange={e=>setForm(f=>({...f,city:e.target.value}))}/></label>
-            <label className="field"><span>Bairro</span><input value={form.neighborhood} onChange={e=>setForm(f=>({...f,neighborhood:e.target.value}))}/></label>
-          </div>
-          <label className="field"><span>Origem</span>
-            <select value={form.source} onChange={e=>setForm(f=>({...f,source:e.target.value}))}>{LEAD_SOURCES.map(s=><option key={s} value={s}>{sourceLabel(s)}</option>)}</select></label>
-          <label className="field"><span>Observação (opcional)</span><input value={form.note} onChange={e=>setForm(f=>({...f,note:e.target.value}))}/></label>
-          {error&&<p className="form-error">{error}</p>}
-          <div style={{display:"flex",gap:8}}>
-            <button className="button" disabled={busy||form.name.trim().length<2} onClick={()=>{void post({action:"create",...form}).then(ok=>{if(ok){setCreating(false);setForm({name:"",phone:"",city:"",neighborhood:"",source:"whatsapp",note:""})}})}}>{busy?"Salvando…":"Registrar lead"}</button>
-            <button className="button secondary" disabled={busy} onClick={()=>{setCreating(false);setError("")}}>Cancelar</button>
-          </div>
-        </div>
-      </section>}
+      {error&&!creating&&!losing&&<Notice tone="bad">{error}</Notice>}
 
       {leads.length===0
-        ? <div className="state-card" style={{marginTop:14}}><strong>Nenhum lead ainda.</strong><p style={{marginTop:6,lineHeight:1.6}}>Registre o primeiro acima, ou espere alguém sem cadastro escrever no WhatsApp — esse contato entra aqui sozinho.</p></div>
-        : <section className="kanban">
+        ? <Card><Empty icon="users" title="Nenhum lead ainda" action={<button className="button" onClick={()=>setCreating(true)}>Registrar o primeiro</button>}>Ou espere alguém sem cadastro escrever no WhatsApp — esse contato entra aqui sozinho.</Empty></Card>
+        : <section className="kanban" style={{["--stages" as string]:LEAD_STAGES.length}}>
             {LEAD_STAGES.map(stage=>{
               const cards=leads.filter(lead=>lead.stage===stage.id);
-              return <div className="kanban-column" key={stage.id}
-                onDragOver={e=>{e.preventDefault()}}
-                onDrop={e=>{e.preventDefault();const id=e.dataTransfer.getData("text/plain")||dragging;setDragging(null);if(id)void move(id,stage.id)}}>
+              return <div className={`kanban-column ${over===stage.id?"drop":""}`} key={stage.id}
+                onDragOver={e=>{e.preventDefault();if(over!==stage.id)setOver(stage.id)}}
+                onDragLeave={()=>setOver(null)}
+                onDrop={e=>{e.preventDefault();setOver(null);const id=e.dataTransfer.getData("text/plain")||dragging;setDragging(null);if(id&&leads.find(l=>l.id===id)?.stage!==stage.id)void move(id,stage.id)}}>
                 <header><strong>{stage.label}</strong><span>{cards.length}</span></header>
                 <p className="kanban-hint">{stage.hint}</p>
                 {cards.map(lead=><article className="kanban-card" key={lead.id} draggable
                   onDragStart={e=>{e.dataTransfer.setData("text/plain",lead.id);setDragging(lead.id)}}
-                  onDragEnd={()=>setDragging(null)}>
-                  <button className="kanban-card-open" onClick={()=>setOpenId(lead.id===openId?null:lead.id)}>
+                  onDragEnd={()=>{setDragging(null);setOver(null)}}>
+                  <button className="kanban-card-open" onClick={()=>setOpenId(lead.id)}>
                     <strong>{lead.name}</strong>
-                    <span>{lead.maskedPhone} • {sourceLabel(lead.source)}</span>
-                    <small>{lead.city}{lead.neighborhood!=="não informado"?` • ${lead.neighborhood}`:""} • desde {dayLabel(lead.createdAt)}</small>
+                    <span>{lead.maskedPhone} · {sourceLabel(lead.source)}</span>
+                    <small>{lead.city}{lead.neighborhood!=="não informado"?` · ${lead.neighborhood}`:""} · desde {dayLabel(lead.createdAt)}</small>
                   </button>
                   <select value={lead.stage} disabled={busy} onChange={e=>void move(lead.id,e.target.value)} aria-label={`Mover ${lead.name} de etapa`}>
                     {LEAD_STAGES.map(s=><option key={s.id} value={s.id}>{s.label}</option>)}
@@ -232,34 +178,55 @@ function Funnel(){
             })}
           </section>}
 
-      {error&&!creating&&<p className="form-error" style={{marginTop:10}}>{error}</p>}
-
-      {open&&<section className="data-card" style={{marginTop:14}}>
-        <div className="card-header"><strong>{open.name}</strong><button className="link-button" onClick={()=>setOpenId(null)}>fechar</button></div>
-        <div style={{padding:16,display:"grid",gap:12,maxWidth:640}}>
-          <div className="aging-row"><div><strong>{open.maskedPhone}</strong><span>{sourceLabel(open.source)} • {open.city} • {open.neighborhood}</span></div></div>
-          {open.note&&<div className="aging-row"><div><strong>Observação</strong><span>{open.note}</span></div></div>}
-          {open.lostReason&&<div className="aging-row"><div><strong>Motivo da perda</strong><span>{open.lostReason}</span></div></div>}
-          <div>
-            <h4 style={{margin:"0 0 8px",fontSize:11,textTransform:"uppercase",letterSpacing:".1em",color:"var(--text-3)"}}>Histórico</h4>
-            {history.length===0
-              ? <p style={{fontSize:12,color:"var(--muted)"}}>Sem registro ainda.</p>
-              : history.map(item=><div className="aging-row" key={item.id}>
-                  <div><strong>{item.kind==="stage_change"?`${item.fromStage??"criado"} → ${item.toStage}`:item.kind==="contact"?"Contato":"Nota"}</strong><span>{item.detail}</span></div>
-                  <b style={{fontSize:11,color:"var(--muted)"}}>{dayLabel(item.createdAt)} • {item.actorId}</b>
-                </div>)}
-          </div>
-          <LeadActivityForm leadId={open.id} busy={busy} onSubmit={(kind,detail)=>void post({action:"activity",leadId:open.id,kind,detail})}/>
-          {open.stage==="ganho"&&<CreateCustomerForm key={open.id} lead={open} onDone={()=>setNonce(n=>n+1)}/>}
-        </div>
-      </section>}
-
-      <div className="insight" style={{marginTop:14}}>
-        <strong>O que estes números medem, e o que não.</strong>
-        Conversão é ganhos ÷ encerrados — leads em andamento ficam de fora do cálculo, senão a taxa cairia toda vez que a operação captasse contato novo. Ciclo médio conta do primeiro registro ao ganho, e só existe depois que algum lead foi ganho. Valor de pipeline **não é mostrado**: exigiria um valor estimado por lead, que ninguém preenche hoje — e somar plano suposto daria um número bonito e falso.
-      </div>
+      <Limits items={[["Valor de pipeline","Exigiria um valor estimado por lead, que ninguém preenche hoje — e somar plano suposto daria um número bonito e falso."]]}/>
     </>}
-  </main>;
+
+    <Modal open={creating} title="Novo lead" onClose={()=>{setCreating(false);setError("")}}
+      footer={<><button className="button secondary" disabled={busy} onClick={()=>{setCreating(false);setError("")}}>Cancelar</button>
+        <button className="button" disabled={busy||form.name.trim().length<2} onClick={()=>{void post({action:"create",...form}).then(ok=>{if(ok){setCreating(false);setForm(EMPTY_LEAD);toast("Lead registrado em “Novo contato”.")}})}}>{busy?"Salvando…":"Registrar lead"}</button></>}>
+      <div className="form-grid">
+        <label className="field span-2"><span>Nome</span><input data-autofocus value={form.name} placeholder="quem entrou em contato" onChange={e=>setForm(f=>({...f,name:e.target.value}))}/></label>
+        <label className="field"><span>Telefone</span><input value={form.phone} placeholder="(79) 99999-9999" onChange={e=>setForm(f=>({...f,phone:e.target.value}))}/></label>
+        <label className="field"><span>Origem</span><select value={form.source} onChange={e=>setForm(f=>({...f,source:e.target.value}))}>{LEAD_SOURCES.map(s=><option key={s} value={s}>{sourceLabel(s)}</option>)}</select></label>
+        <label className="field"><span>Cidade</span><input value={form.city} onChange={e=>setForm(f=>({...f,city:e.target.value}))}/></label>
+        <label className="field"><span>Bairro</span><input value={form.neighborhood} onChange={e=>setForm(f=>({...f,neighborhood:e.target.value}))}/></label>
+        <label className="field span-2"><span>Observação (opcional)</span><input value={form.note} onChange={e=>setForm(f=>({...f,note:e.target.value}))}/></label>
+        {error&&<p className="form-error span-2">{error}</p>}
+      </div>
+    </Modal>
+
+    <Modal open={!!losing} title="Por que o lead foi perdido?" onClose={()=>setLosing(null)}
+      footer={<><button className="button secondary" onClick={()=>setLosing(null)}>Cancelar</button>
+        <button className="button danger" disabled={busy||(losing?.reason.trim().length??0)<3} onClick={()=>{if(!losing)return;void post({action:"move",leadId:losing.leadId,toStage:"perdido",detail:losing.reason.trim()}).then(ok=>{if(ok)setLosing(null)})}}>Marcar como perdido</button></>}>
+      <label className="field"><span>Motivo</span><input data-autofocus value={losing?.reason??""} placeholder="ex.: achou mais barato no concorrente" onChange={e=>setLosing(current=>current&&{...current,reason:e.target.value})}/></label>
+      <p className="field-hint" style={{marginTop:8}}>Perder sem motivo deixa um número que ninguém sabe explicar depois.</p>
+    </Modal>
+
+    <Modal side open={!!open} title={open?.name??""} onClose={()=>setOpenId(null)}>
+      {open&&<div className="stack">
+        <div className="chips"><Badge tone="info">{LEAD_STAGES.find(s=>s.id===open.stage)?.label??open.stage}</Badge><Badge>{sourceLabel(open.source)}</Badge></div>
+        <dl className="facts">
+          <div><dt>Telefone</dt><dd>{open.maskedPhone}</dd></div>
+          <div><dt>Local</dt><dd>{open.city} · {open.neighborhood}</dd></div>
+          <div><dt>Desde</dt><dd>{dayLabel(open.createdAt)}</dd></div>
+          {open.note&&<div className="stacked"><dt>Observação</dt><dd>{open.note}</dd></div>}
+          {open.lostReason&&<div className="stacked"><dt>Motivo da perda</dt><dd>{open.lostReason}</dd></div>}
+        </dl>
+        <LeadActivityForm leadId={open.id} busy={busy} onSubmit={(kind,detail)=>void post({action:"activity",leadId:open.id,kind,detail})}/>
+        <div>
+          <h4 className="section-title" style={{marginTop:4}}>Histórico</h4>
+          {history.length===0
+            ? <p className="muted small">Sem registro ainda.</p>
+            : <ol className="timeline" style={{padding:0}}>{history.map(item=><li key={item.id}>
+                <i className={item.kind==="stage_change"?"ok":""}/>
+                <div><strong>{item.kind==="stage_change"?`${item.fromStage??"criado"} → ${item.toStage}`:item.kind==="contact"?"Contato":"Nota"}</strong><span>{item.detail} · {item.actorId}</span></div>
+                <time>{dayLabel(item.createdAt)}</time>
+              </li>)}</ol>}
+        </div>
+        {open.stage==="ganho"&&<CreateCustomerForm key={open.id} lead={open} onDone={()=>setNonce(n=>n+1)}/>}
+      </div>}
+    </Modal>
+  </>;
 }
 
 /**
@@ -284,9 +251,9 @@ function CreateCustomerForm({lead,onDone}:{lead:Lead;onDone:()=>void}){
       .catch(()=>{if(active)setCatalog({available:false,detail:"Não foi possível ler o catálogo de cidades",ufs:[],cities:[]})});
     return()=>{active=false}},[ufId]);
 
-  if(lead.ixcCustomerId)return <div className="state-card"><strong>Já é cliente no IXC.</strong> Cadastro <strong>{lead.ixcCustomerId}</strong>, criado a partir deste lead.</div>;
+  if(lead.ixcCustomerId)return <Notice tone="ok" title="Já é cliente no IXC.">Cadastro <strong>{lead.ixcCustomerId}</strong>, criado a partir deste lead.</Notice>;
   if(!catalog)return null;
-  if(!catalog.available)return <div className="state-card">Cadastrar no IXC está indisponível: {catalog.detail}.</div>;
+  if(!catalog.available)return <Notice tone="bad">Cadastrar no IXC está indisponível: {catalog.detail}.</Notice>;
 
   const ready=form.document.trim()&&ufId&&form.cityId&&form.street.trim().length>2&&form.number.trim()&&form.cep.replace(/\D/g,"").length===8;
 
@@ -303,42 +270,26 @@ function CreateCustomerForm({lead,onDone}:{lead:Lead;onDone:()=>void}){
     finally{setBusy(false)}
   }
 
-  return <div style={{display:"grid",gap:10,borderTop:"1px solid var(--line)",paddingTop:12}}>
-    <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:8}}>
-      <strong style={{fontSize:12}}>Cadastrar no IXC</strong>
-      <span className={`badge ${catalog.writeEnabled?"green":"amber"}`}>{catalog.writeEnabled?"● escrita ligada":"FEATURE_IXC_WRITE desligada"}</span>
-    </div>
-    <p style={{margin:0,fontSize:11,color:"var(--muted)",lineHeight:1.55}}>Cria o cadastro real no ERP. O documento é conferido pelos dígitos e o IXC é consultado antes, para não duplicar cliente que já existe.</p>
-    <label className="field"><span>CPF ou CNPJ</span><input value={form.document} placeholder="000.000.000-00" onChange={e=>setForm(f=>({...f,document:e.target.value}))}/></label>
-    <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10}}>
+  return <section className="stack" style={{borderTop:"1px solid var(--line)",paddingTop:16}}>
+    <div className="template-head"><strong>Cadastrar no IXC</strong>{catalog.writeEnabled?<Badge tone="ok" dot>escrita ligada</Badge>:<Badge tone="warn">escrita desligada</Badge>}</div>
+    <p className="hint">Cria o cadastro real no ERP. O documento é conferido pelos dígitos e o IXC é consultado antes, para não duplicar cliente que já existe.</p>
+    <div className="form-grid">
+      <label className="field span-2"><span>CPF ou CNPJ</span><input value={form.document} placeholder="000.000.000-00" onChange={e=>setForm(f=>({...f,document:e.target.value}))}/></label>
       <label className="field"><span>Estado</span>
-        <select value={ufId} onChange={e=>{setUfId(e.target.value);setForm(f=>({...f,cityId:""}))}}>
-          <option value="">Escolha…</option>{catalog.ufs.map(u=><option key={u.id} value={u.id}>{u.initials} — {u.name}</option>)}
-        </select></label>
+        <select value={ufId} onChange={e=>{setUfId(e.target.value);setForm(f=>({...f,cityId:""}))}}><option value="">Escolha…</option>{catalog.ufs.map(u=><option key={u.id} value={u.id}>{u.initials} — {u.name}</option>)}</select></label>
       <label className="field"><span>Cidade{catalog.cities.length?` (${catalog.cities.length})`:""}</span>
-        <select value={form.cityId} disabled={!ufId} onChange={e=>setForm(f=>({...f,cityId:e.target.value}))}>
-          <option value="">{ufId?"Escolha…":"Escolha o estado antes"}</option>{catalog.cities.map(c=><option key={c.id} value={c.id}>{c.name}</option>)}
-        </select></label>
-    </div>
-    <div style={{display:"grid",gridTemplateColumns:"2fr 1fr",gap:10}}>
+        <select value={form.cityId} disabled={!ufId} onChange={e=>setForm(f=>({...f,cityId:e.target.value}))}><option value="">{ufId?"Escolha…":"Escolha o estado antes"}</option>{catalog.cities.map(c=><option key={c.id} value={c.id}>{c.name}</option>)}</select></label>
       <label className="field"><span>Rua</span><input value={form.street} onChange={e=>setForm(f=>({...f,street:e.target.value}))}/></label>
-      <label className="field"><span>Número</span><input value={form.number} onChange={e=>setForm(f=>({...f,number:e.target.value}))}/></label>
-    </div>
-    <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10}}>
+      <label className="field"><span>Número</span><input value={form.number} placeholder="ou SN" onChange={e=>setForm(f=>({...f,number:e.target.value}))}/></label>
       <label className="field"><span>Bairro</span><input value={form.neighborhood} onChange={e=>setForm(f=>({...f,neighborhood:e.target.value}))}/></label>
       <label className="field"><span>CEP</span><input value={form.cep} placeholder="49000-000" onChange={e=>setForm(f=>({...f,cep:e.target.value}))}/></label>
-    </div>
-    <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10}}>
       <label className="field"><span>Telefone</span><input value={form.phone} onChange={e=>setForm(f=>({...f,phone:e.target.value}))}/></label>
       <label className="field"><span>E-mail</span><input value={form.email} onChange={e=>setForm(f=>({...f,email:e.target.value}))}/></label>
     </div>
     {error&&<p className="form-error">{error}</p>}
-    {result&&<div className={`state-card ${result.status==="success"?"":"error"}`}>
-      <strong>{result.status==="success"?"Cadastro criado no IXC":result.status==="blocked"?"Bloqueado":"Falhou"}</strong>
-      <p style={{margin:"6px 0 0",lineHeight:1.6,wordBreak:"break-word"}}>{result.detail}</p>
-    </div>}
+    {result&&<div className={`result-box ${result.status==="success"?"ok":"bad"}`}><strong>{result.status==="success"?"Cadastro criado no IXC":result.status==="blocked"?"Bloqueado":"Falhou"}</strong><p>{result.detail}</p></div>}
     <button className="button" disabled={busy||!ready} onClick={()=>void submit()}>{busy?"Cadastrando…":"Cadastrar cliente no IXC"}</button>
-  </div>;
+  </section>;
 }
 
 /** Fora do componente: `Date.now()` no corpo é tratado como impureza em render. */
@@ -347,14 +298,14 @@ const customerKey=(leadId:string)=>`cadastro-${leadId}-${Date.now()}`;
 function LeadActivityForm({leadId,busy,onSubmit}:{leadId:string;busy:boolean;onSubmit:(kind:string,detail:string)=>void}){
   const [detail,setDetail]=useState("");
   const [kind,setKind]=useState("contact");
-  return <div style={{display:"grid",gap:8}} key={leadId}>
+  return <form className="stack" key={leadId} onSubmit={e=>{e.preventDefault();if(detail.trim().length>=3){onSubmit(kind,detail.trim());setDetail("")}}}>
     <label className="field"><span>Registrar no cartão</span>
       <input value={detail} placeholder="ex.: liguei, pediu para retornar quinta" onChange={e=>setDetail(e.target.value)}/></label>
-    <div style={{display:"flex",gap:8}}>
-      <select value={kind} onChange={e=>setKind(e.target.value)}><option value="contact">Contato feito</option><option value="note">Nota</option></select>
-      <button className="button secondary" disabled={busy||detail.trim().length<3} onClick={()=>{onSubmit(kind,detail.trim());setDetail("")}}>Registrar</button>
+    <div className="form-actions">
+      <Segmented label="Tipo de registro" value={kind} options={[["contact","Contato feito"],["note","Nota"]]} onChange={setKind}/>
+      <button type="submit" className="button secondary small" disabled={busy||detail.trim().length<3}>Registrar</button>
     </div>
-  </div>;
+  </form>;
 }
 
 /* ------------------------------------------------------------------ metas --- */
@@ -373,11 +324,8 @@ function periodOptions(current:string){
 }
 
 /**
- * Meta contra realizado.
- *
- * A meta é registrada aqui e fica auditada; o realizado vem do IXC na hora.
- * Antes esta tela mostrava "meta 380, realizado 241, projeção 104%" — três
- * números fixos no código que nunca mudavam.
+ * Meta contra realizado. A meta é registrada aqui e fica auditada; o realizado
+ * vem do IXC na hora.
  */
 function Goals(){
   const [period,setPeriod]=useState("");
@@ -388,6 +336,7 @@ function Goals(){
   const [busy,setBusy]=useState(false);
   const [error,setError]=useState("");
   const [editing,setEditing]=useState(false);
+  const toast=useToast();
 
   useEffect(()=>{let active=true;
     fetch(`/api/sales/goals${period?`?period=${period}`:""}`).then(r=>r.ok?r.json():Promise.reject(new Error("falhou")))
@@ -403,97 +352,88 @@ function Goals(){
     setBusy(true);setError("");
     const response=await fetch("/api/sales/goals",{method:"POST",headers:{"content-type":"application/json"},
       body:JSON.stringify({period:data?.period,targetContracts:Number(form.targetContracts),targetRevenue:form.targetRevenue,note:form.note})});
-    if(response.ok){setForm({targetContracts:"",targetRevenue:"",note:""});setNonce(n=>n+1)}
+    if(response.ok){setForm({targetContracts:"",targetRevenue:"",note:""});setNonce(n=>n+1);toast("Meta salva.")}
     else{const payload=await response.json().catch(()=>({}));setError(payload.error??"Não foi possível salvar a meta")}
     setBusy(false);
   }
   async function remove(){
     setBusy(true);setError("");
     const response=await fetch(`/api/sales/goals?period=${data?.period}`,{method:"DELETE"});
-    if(response.ok)setNonce(n=>n+1);
+    if(response.ok){setNonce(n=>n+1);toast("Meta removida.")}
     else setError("Não foi possível remover a meta");
     setBusy(false);
   }
 
+  if(state==="loading")return <Loading stats={4} rows={3}/>;
+  if(state==="error")return <Notice tone="bad">Não foi possível consultar as metas.</Notice>;
+  if(!data?.available)return <Notice tone="bad">{data?.detail}.</Notice>;
   const showForm=editing||!goal;
-  return <main className="content">
-    <Heading title="Metas comerciais" text="Meta registrada por uma pessoa, realizado lido do IXC. Nada aqui é estimado."/>
-    {state==="loading"&&<div className="state-card">Carregando…</div>}
-    {state==="error"&&<div className="state-card error">Não foi possível consultar as metas.</div>}
-    {state==="ready"&&data&&!data.available&&<div className="state-card error">{data.detail}.</div>}
-    {state==="ready"&&data?.available&&<>
-      <section className="filter-bar">
-        <select value={data.period} onChange={e=>{setState("loading");setPeriod(e.target.value)}}>
-          {periodOptions(data.currentPeriod).map(value=><option key={value} value={value}>{monthLabel(value)}{value===data.currentPeriod?" (mês corrente)":""}</option>)}
-        </select>
-      </section>
+  const progressValue=Math.min(100,Math.round((progress?.contractsPercent??0)*100));
+  return <>
+    <Toolbar>
+      <select className="select" value={data.period} aria-label="Competência" onChange={e=>{setState("loading");setPeriod(e.target.value)}}>
+        {periodOptions(data.currentPeriod).map(value=><option key={value} value={value}>{monthLabel(value)}{value===data.currentPeriod?" (mês corrente)":""}</option>)}
+      </select>
+    </Toolbar>
 
-      {goal&&<section className="metrics">
-        <Metric label="Meta do mês" value={goal.targetContracts.toLocaleString("pt-BR")} detail={goal.targetRevenue===null?"Sem meta de receita":`e ${money(goal.targetRevenue)} de receita`}/>
-        <Metric label="Realizado" value={realized?realized.contracts.toLocaleString("pt-BR"):"—"} detail={realized?`${percent(progress?.contractsPercent??0)} da meta`:"IXC indisponível"}/>
-        <Metric label="Receita somada" value={realized?money(realized.revenue):"—"} detail={realized&&progress?.revenuePercent!=null?`${percent(progress.revenuePercent)} da meta de receita`:realized?"Sem meta de receita definida":"IXC indisponível"}/>
-        {/* Sem realizado a projeção não existe por falta de dado, não por ser
-            mês fechado — dizer "só para o mês corrente" em pleno mês corrente
-            manda a pessoa procurar o erro no lugar errado. */}
-        <Metric label="Projeção pelo ritmo" value={progress?.projectedContracts==null?"—":progress.projectedContracts.toLocaleString("pt-BR")} detail={!realized?"Depende do realizado, que está indisponível":progress?.projectedContracts==null?"Mês fechado não é projetado":`${percent(progress.elapsed)} do mês decorrido`}/>
-      </section>}
+    {goal&&<Stats>
+      <Stat label="Meta do mês" icon="trending" value={count(goal.targetContracts)} hint={goal.targetRevenue===null?"Sem meta de receita":`e ${money(goal.targetRevenue)} de receita`}/>
+      <Stat label="Realizado" icon="check" tone={progress&&!progress.behind?"ok":"neutral"} value={realized?count(realized.contracts):"—"} hint={realized?`${percent(progress?.contractsPercent??0)} da meta`:"IXC indisponível"}/>
+      <Stat label="Receita somada" icon="wallet" value={realized?money(realized.revenue):"—"} hint={realized&&progress?.revenuePercent!=null?`${percent(progress.revenuePercent)} da meta de receita`:realized?"Sem meta de receita":"IXC indisponível"}/>
+      {/* Sem realizado a projeção não existe por falta de dado, não por ser mês fechado. */}
+      <Stat label="Projeção pelo ritmo" icon="sparkles" tone={progress?.behind?"warn":"neutral"} value={progress?.projectedContracts==null?"—":count(progress.projectedContracts)} hint={!realized?"Depende do realizado":progress?.projectedContracts==null?"Mês fechado não é projetado":`${percent(progress.elapsed)} do mês decorrido`}
+        info="Regra de três sobre dias corridos — não pondera dia útil nem sazonalidade."/>
+    </Stats>}
 
-      {goal&&realized&&progress&&<div className="state-card">
-        <strong>{progress.behind?"Abaixo do ritmo necessário.":"No ritmo ou acima da meta."}</strong>
-        {progress.projectedContracts!=null&&<> Mantido o ritmo atual, o mês fecha em <strong>{progress.projectedContracts.toLocaleString("pt-BR")}</strong> contra a meta de {goal.targetContracts.toLocaleString("pt-BR")}. A projeção é regra de três sobre dias corridos — não pondera dia útil nem sazonalidade.</>}
-        {realized.alreadyCancelled>0&&<> {realized.alreadyCancelled} dessas venda(s) já cancelaram; elas continuam contando como venda do mês, e a perda aparece em Churn.</>}
-        {realized.truncated&&<> <strong>A leitura do IXC parou antes do fim</strong> — a receita somada cobre parte das vendas.</>}
-      </div>}
-
-      {!goal&&<div className="state-card">Nenhuma meta registrada para {monthLabel(data.period)}. Registre abaixo para começar a comparar.{realized&&<> O realizado desta competência já é <strong>{realized.contracts.toLocaleString("pt-BR")}</strong> contrato(s).</>}</div>}
-
-      <div className="dashboard-grid">
-        <section className="data-card">
-          <div className="card-header"><strong>{showForm?(goal?"Alterar meta":"Registrar meta"):"Meta registrada"}</strong><span className="badge blue">Fica auditado</span></div>
-          {showForm
-            ? <div style={{padding:16,display:"grid",gap:10}}>
-                <label className="field"><span>Contratos a vender em {monthLabel(data.period)}</span>
-                  <input inputMode="numeric" placeholder="ex.: 260" value={form.targetContracts} onChange={e=>setForm(f=>({...f,targetContracts:e.target.value}))}/></label>
-                <label className="field"><span>Meta de receita recorrente (opcional)</span>
-                  <input inputMode="decimal" placeholder="ex.: 32000,00" value={form.targetRevenue} onChange={e=>setForm(f=>({...f,targetRevenue:e.target.value}))}/></label>
-                <label className="field"><span>Observação (opcional)</span>
-                  <input placeholder="ex.: inclui a campanha de fibra no anel norte" value={form.note} onChange={e=>setForm(f=>({...f,note:e.target.value}))}/></label>
-                {error&&<p className="form-error">{error}</p>}
-                <div style={{display:"flex",gap:8}}>
-                  <button className="button" disabled={busy} onClick={()=>void save()}>{busy?"Salvando…":goal?"Salvar alteração":"Registrar meta"}</button>
-                  {goal&&<button className="button secondary" disabled={busy} onClick={()=>{setEditing(false);setError("")}}>Cancelar</button>}
-                </div>
-                <p className="field-hint">Deixar a receita em branco significa <strong>sem meta de receita</strong> — não zero.</p>
-              </div>
-            : goal&&<div style={{padding:16,display:"grid",gap:10}}>
-                <div className="aging-row"><div><strong>{goal.targetContracts.toLocaleString("pt-BR")} contratos</strong><span>{goal.targetRevenue===null?"Sem meta de receita":`e ${money(goal.targetRevenue)} de receita recorrente`}</span></div></div>
-                {goal.note&&<div className="aging-row"><div><strong>Observação</strong><span>{goal.note}</span></div></div>}
-                <div className="aging-row"><div><strong>Registrada por</strong><span>{goal.createdBy} • atualizada em {new Date(goal.updatedAt).toLocaleString("pt-BR")}</span></div></div>
-                {error&&<p className="form-error">{error}</p>}
-                <div style={{display:"flex",gap:8}}>
-                  <button className="button secondary" disabled={busy} onClick={()=>{setForm({targetContracts:String(goal.targetContracts),targetRevenue:goal.targetRevenue===null?"":String(goal.targetRevenue),note:goal.note??""});setEditing(true)}}>Alterar</button>
-                  <button className="button secondary" disabled={busy} onClick={()=>void remove()}>Remover</button>
-                </div>
-              </div>}
-        </section>
-
-        <section className="data-card">
-          <div className="card-header"><strong>Histórico de metas</strong><span className="badge blue">{data.goals.length} competência(s)</span></div>
-          {data.goals.length===0
-            ? <p className="card-empty">Nenhuma meta registrada ainda.</p>
-            : <div style={{padding:"4px 0"}}>{data.goals.map(item=><div className="aging-row" key={item.id}>
-                <div><strong>{monthLabel(item.period)}</strong><span>{item.targetContracts.toLocaleString("pt-BR")} contratos{item.targetRevenue===null?"":` • ${money(item.targetRevenue)}`}</span></div>
-                <button className="link-button" onClick={()=>{setState("loading");setPeriod(item.period)}}>ver</button>
-              </div>)}</div>}
-          <div className="insight">
-            <strong>Meta é da empresa, não por equipe.</strong>
-            Atribuir contrato a vendedor exigiria um campo do IXC que ainda não foi confirmado. Meta por equipe calculada em cima de atribuição inventada não mede nada — quando o campo existir, esta tela ganha o recorte.
-          </div>
-        </section>
+    {goal&&realized&&progress&&<Card>
+      <div className="stack">
+        <div className="template-head"><strong>{progress.behind?"Abaixo do ritmo necessário":"No ritmo ou acima da meta"}</strong><span className="muted small">{count(realized.contracts)} de {count(goal.targetContracts)}</span></div>
+        <div className="bar-track" style={{height:10}}><span style={{width:`${progressValue}%`}}/></div>
+        <p className="hint">
+          {progress.projectedContracts!=null&&<>Mantido o ritmo, o mês fecha em <strong>{count(progress.projectedContracts)}</strong>. </>}
+          {realized.alreadyCancelled>0&&<>{realized.alreadyCancelled} venda(s) já cancelaram; continuam contando como venda do mês, e a perda aparece em Churn. </>}
+          {realized.truncated&&<strong>A leitura do IXC parou antes do fim — a receita cobre parte das vendas.</strong>}
+        </p>
       </div>
-    </>}
-  </main>;
-}
+    </Card>}
 
-function Heading({title,text}:{title:string;text:string}){return <div className="page-heading"><div><h1>{title}</h1><p>{text}</p></div></div>}
-function Metric({label,value,detail}:{label:string;value:string;detail:string}){return <article className="metric"><div className="metric-top"><span>{label}</span><span className="metric-icon">↗</span></div><strong>{value}</strong><small>{detail}</small></article>}
+    {!goal&&<Notice tone="neutral">Nenhuma meta para {monthLabel(data.period)}.{realized&&<> O realizado já é <strong>{count(realized.contracts)}</strong> contrato(s).</>}</Notice>}
+
+    <div className="grid-2 even">
+      <Card title={showForm?(goal?"Alterar meta":"Registrar meta"):"Meta registrada"} badge={<Badge>fica na auditoria</Badge>}>
+        {showForm
+          ? <div className="form-grid">
+              <label className="field"><span>Contratos a vender</span><input inputMode="numeric" placeholder="ex.: 260" value={form.targetContracts} onChange={e=>setForm(f=>({...f,targetContracts:e.target.value}))}/></label>
+              <label className="field"><span>Receita recorrente (opcional)</span><input inputMode="decimal" placeholder="ex.: 32000,00" value={form.targetRevenue} onChange={e=>setForm(f=>({...f,targetRevenue:e.target.value}))}/></label>
+              <label className="field span-2"><span>Observação (opcional)</span><input placeholder="ex.: inclui a campanha de fibra no anel norte" value={form.note} onChange={e=>setForm(f=>({...f,note:e.target.value}))}/></label>
+              {error&&<p className="form-error span-2">{error}</p>}
+              <div className="form-actions span-2">
+                <button className="button" disabled={busy} onClick={()=>void save()}>{busy?"Salvando…":goal?"Salvar alteração":"Registrar meta"}</button>
+                {goal&&<button className="button secondary" disabled={busy} onClick={()=>{setEditing(false);setError("")}}>Cancelar</button>}
+              </div>
+              <p className="field-hint span-2">Receita em branco significa <strong>sem meta de receita</strong> — não zero.</p>
+            </div>
+          : goal&&<div className="stack">
+              <dl className="facts">
+                <div><dt>Contratos</dt><dd>{count(goal.targetContracts)}</dd></div>
+                <div><dt>Receita</dt><dd>{goal.targetRevenue===null?"sem meta":money(goal.targetRevenue)}</dd></div>
+                {goal.note&&<div className="stacked"><dt>Observação</dt><dd>{goal.note}</dd></div>}
+                <div><dt>Registrada por</dt><dd>{goal.createdBy} · {new Date(goal.updatedAt).toLocaleDateString("pt-BR")}</dd></div>
+              </dl>
+              {error&&<p className="form-error">{error}</p>}
+              <div className="form-actions">
+                <button className="button secondary" disabled={busy} onClick={()=>{setForm({targetContracts:String(goal.targetContracts),targetRevenue:goal.targetRevenue===null?"":String(goal.targetRevenue),note:goal.note??""});setEditing(true)}}>Alterar</button>
+                <button className="button danger" disabled={busy} onClick={()=>void remove()}>Remover</button>
+              </div>
+            </div>}
+      </Card>
+      <Card title="Histórico de metas" badge={<Badge>{data.goals.length}</Badge>} flush>
+        {data.goals.length===0
+          ? <Empty icon="trending" title="Nenhuma meta registrada ainda"/>
+          : <div className="list">{data.goals.map(item=><Row key={item.id} active={item.period===data.period} onClick={()=>{setState("loading");setPeriod(item.period)}}
+              title={monthLabel(item.period)} detail={`${count(item.targetContracts)} contratos${item.targetRevenue===null?"":` · ${money(item.targetRevenue)}`}`} value={<Icon name="chevron-right" size={16}/>}/>)}</div>}
+      </Card>
+    </div>
+    <Limits items={[["Meta por equipe ou vendedor","Atribuir contrato a vendedor exigiria um campo do IXC que ainda não foi confirmado. Meta calculada em cima de atribuição inventada não mede nada."]]}/>
+  </>;
+}

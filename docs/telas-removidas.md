@@ -62,3 +62,20 @@ real: salvar régua não dispara mensagem nenhuma.
 - **Vendas fechadas** — contratos ativados, lidos do IXC
 - **Posição financeira** — faturas em aberto e vencidas, lidas do IXC
 - **Atendimento da IA** — desfechos e avaliações das conversas gravadas
+
+## Telas fundidas em 08/10/2026 — não removidas
+
+Diferente das de cima, estas tinham dado real: eram a **mesma** tela com outro
+nome. Viraram uma entrada no menu, com abas, e o endereço antigo continua
+abrindo o lugar novo (`viewAliases` em `lib/platform/navigation.ts`).
+
+| Antes | Agora |
+|---|---|
+| Cobrança › Relatórios | Cobrança › Visão geral (os mesmos números de `/api/billing/overview`) |
+| Comercial › Relatórios | Comercial › Visão geral, que ganhou o gráfico de vendas por dia |
+| Configurações | Administração › Integrações, com as políticas recolhidas no fim |
+| Centro de Monitoramento, Massivas, Mapa de Alertas | Rede e massivas, com três abas |
+| Equipes e Filas | Administração › Equipes e Administração › Filas técnicas, separadas |
+
+O cartão "O que não temos como responder" da visão comercial saiu de vez: dizia
+que não existia CRM, e o funil existe desde a issue #17.

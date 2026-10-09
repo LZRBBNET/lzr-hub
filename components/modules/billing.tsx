@@ -1,8 +1,21 @@
 "use client";
 import { useEffect, useState } from "react";
 import { RULE_CHANNELS, type RuleStepInput } from "@/lib/platform/collection-rules-shared";
+import { Icon, type IconKey } from "@/components/ui/icons";
+import { Badge, Bar, Card, Empty, Limits, Loading, Notice, PERIODS_SHORT, Segmented, Stat, Stats, Toolbar, count, money, useToast } from "@/components/ui/kit";
 
-export function BillingModule({view}:{view:"cobranca"|"regua"|"campanhas"|"relatorios-cobranca"}){if(view==="regua")return <RuleBuilder/>;if(view==="campanhas")return <Campaigns/>;if(view==="relatorios-cobranca")return <BillingReports/>;return <BillingDashboard/>}
+/**
+ * Cobrança. "Visão geral" e "Relatórios" eram duas telas lendo o mesmo
+ * `/api/billing/overview` com os cartões em outra ordem — viraram uma só. As
+ * três operações de escrita (segunda via, renegociação, promessa) saíram de
+ * baixo dos gráficos e ganharam aba própria: quem vai renegociar não precisa
+ * rolar por indicador, e quem lê indicador não tropeça em formulário de ERP.
+ */
+export function BillingModule({view}:{view:"cobranca"|"acoes-cobranca"|"regua"}){
+  if(view==="regua")return <RuleBuilder/>;
+  if(view==="acoes-cobranca")return <BillingActions/>;
+  return <BillingOverview/>;
+}
 
 type AgingBucket={label:string;minDays:number;maxDays:number|null;invoices:number;value:number};
 type BillingSummary={scope:string;customersConsulted:number;customersUnavailable:number;openInvoices:number;openValue:number;overdueInvoices:number;overdueValue:number;upcomingInvoices:number;upcomingValue:number;aging:AgingBucket[];paymentsInPeriod:number;paidInPeriod:number;paymentMethods:Record<string,number>;invoicesWithoutDueDate:number};
@@ -10,96 +23,102 @@ type FullBaseSummary={scope:"full-base";openInvoices:number;openValue:null;overd
 type BillingPayload={available:boolean;detail?:string;period:string;scope?:"allowlist"|"full-base";allowlistSize?:number;summary:BillingSummary|FullBaseSummary|null};
 const isFullBase=(summary:BillingSummary|FullBaseSummary|null):summary is FullBaseSummary=>summary?.scope==="full-base";
 
-const money=(value:number)=>`R$ ${value.toLocaleString("pt-BR",{minimumFractionDigits:2,maximumFractionDigits:2})}`;
 /** A régua escrevia "1 dias depois do vencimento". Um dia é um dia. */
 const offsetLabel=(days:number)=>{
   if(days===0)return "No vencimento";
   const n=Math.abs(days), palavra=n===1?"dia":"dias";
   return days<0?`${n} ${palavra} antes do vencimento`:`${n} ${palavra} depois do vencimento`;
 };
-const PERIODS:[string,string][]=[["24h","24 horas"],["7d","7 dias"],["30d","30 dias"]];
+const PERIOD_NAMES:Record<string,string>={"24h":"24 horas","7d":"7 dias","30d":"30 dias"};
 
-function useBilling(period:string){
+function BillingOverview(){
+  const [period,setPeriod]=useState<"24h"|"7d"|"30d">("30d");
   const [data,setData]=useState<BillingPayload|null>(null);
-  const [state,setState]=useState<"loading"|"ready"|"error">("loading");
+  const [loadedFor,setLoadedFor]=useState<string|null>(null);
+  const [failed,setFailed]=useState(false);
   useEffect(()=>{let active=true;
     fetch(`/api/billing/overview?period=${period}`).then(r=>r.ok?r.json():Promise.reject(new Error("falhou")))
-      .then((payload:BillingPayload)=>{if(active){setData(payload);setState("ready")}})
-      .catch(()=>{if(active)setState("error")});
+      .then((payload:BillingPayload)=>{if(active){setData(payload);setFailed(false);setLoadedFor(period)}})
+      .catch(()=>{if(active){setFailed(true);setLoadedFor(period)}});
     return()=>{active=false}},[period]);
-  return {data,state,setState};
-}
-
-/** O leitor precisa saber de qual recorte o número saiu — senão lê tudo como carteira inteira. */
-function ScopeNote({summary,allowlistSize}:{summary:BillingSummary|FullBaseSummary;allowlistSize?:number}){
-  if(isFullBase(summary))return <div className="state-card">Base inteira do IXC. As vencidas foram somadas uma a uma ({summary.overdueScanned.toLocaleString("pt-BR")} fatura(s) lidas).{summary.truncated&&<> <strong>A varredura parou antes do fim</strong> — o valor abaixo é parcial e está identificado como tal.</>}</div>;
-  return <div className="state-card">Recorte: <strong>{summary.customersConsulted} cadastro(s)</strong> da allowlist do IXC{allowlistSize&&allowlistSize!==summary.customersConsulted?` (de ${allowlistSize})`:""} — trava nossa, de homologação. <strong>Isto não é a carteira inteira da BBNET.</strong>{summary.customersUnavailable>0&&` ${summary.customersUnavailable} cadastro(s) não responderam e ficaram de fora da conta.`}</div>;
-}
-
-function BillingDashboard(){
-  const [period,setPeriod]=useState("30d");
-  const {data,state,setState}=useBilling(period);
   const summary=data?.summary;
-  return <main className="content">
-    <Heading title="Cobrança" text="Posição financeira lida direto do IXC. Nenhum valor é estimado."/>
-    <section className="filter-bar"><select value={period} onChange={e=>{setState("loading");setPeriod(e.target.value)}}>{PERIODS.map(([v,l])=><option key={v} value={v}>Pagamentos: últimos {l}</option>)}</select></section>
-    {state==="loading"&&<div className="state-card">Consultando o IXC…</div>}
-    {state==="error"&&<div className="state-card error">Não foi possível consultar a posição financeira.</div>}
-    {state==="ready"&&data&&!data.available&&<div className="state-card error">{data.detail}. Nenhum número é exibido — zero aqui seria lido como &quot;ninguém deve nada&quot;.</div>}
-    {state==="ready"&&summary&&<>
-      <ScopeNote summary={summary} allowlistSize={data?.allowlistSize}/>
-      <section className="metrics">
-        <Metric label="Vencido" value={money(summary.overdueValue)} detail={isFullBase(summary)&&summary.truncated?`Parcial: ${summary.overdueScanned.toLocaleString("pt-BR")} de ${summary.overdueInvoices.toLocaleString("pt-BR")} faturas`:`${summary.overdueInvoices.toLocaleString("pt-BR")} fatura(s) em atraso`}/>
+  const loading=loadedFor!==period;
+
+  return <>
+    {/* Na base inteira não há pagamentos por período (ver Limits): o seletor não mudaria nada na tela. */}
+    {!(summary&&isFullBase(summary))&&<Toolbar><span className="muted small">Pagamentos recebidos nos últimos</span><Segmented label="Período" value={period} options={PERIODS_SHORT} onChange={setPeriod}/></Toolbar>}
+    {loading&&<Loading stats={4} rows={4}/>}
+    {!loading&&failed&&<Notice tone="bad">Não foi possível consultar a posição financeira.</Notice>}
+    {!loading&&!failed&&data&&!data.available&&<Notice tone="bad" more="Zero aqui seria lido como “ninguém deve nada”.">{data.detail}. Nenhum número é exibido.</Notice>}
+    {!loading&&!failed&&summary&&<>
+      {isFullBase(summary)
+        ? summary.truncated && <Notice tone="warn">A varredura das vencidas parou antes do fim ({count(summary.overdueScanned)} lidas): o valor vencido é parcial.</Notice>
+        : <Notice tone="warn" more={`É trava nossa, de homologação.${summary.customersUnavailable>0?` ${summary.customersUnavailable} cadastro(s) não responderam e ficaram de fora da conta.`:""}`}>Recorte da allowlist: {summary.customersConsulted} cadastro(s){data?.allowlistSize&&data.allowlistSize!==summary.customersConsulted?` de ${data.allowlistSize}`:""}. <strong>Não é a carteira inteira.</strong></Notice>}
+      <Stats>
+        <Stat label="Vencido" icon="alert" tone={summary.overdueInvoices?"warn":"neutral"} value={money(summary.overdueValue)} hint={isFullBase(summary)&&summary.truncated?`Parcial: ${count(summary.overdueScanned)} de ${count(summary.overdueInvoices)} faturas`:`${count(summary.overdueInvoices)} fatura(s) em atraso`}/>
         {isFullBase(summary)
-          ? <Metric label="Faturas em aberto" value={summary.openInvoices.toLocaleString("pt-BR")} detail="Contagem exata do IXC"/>
-          : <Metric label="A vencer" value={money(summary.upcomingValue)} detail={`${summary.upcomingInvoices} fatura(s) em aberto no prazo`}/>}
+          ? <Stat label="Faturas em aberto" icon="wallet" value={count(summary.openInvoices)} hint="Contagem exata do IXC"/>
+          : <Stat label="A vencer" icon="clock" value={money(summary.upcomingValue)} hint={`${summary.upcomingInvoices} fatura(s) no prazo`}/>}
         {isFullBase(summary)
-          ? <Metric label="Valor total em aberto" value="—" detail="Somar exigiria varrer 74 mil faturas por acesso"/>
-          : <Metric label={`Recebido (${PERIODS.find(([v])=>v===period)?.[1]})`} value={money(summary.paidInPeriod)} detail={`${summary.paymentsInPeriod} pagamento(s)`}/>}
-        {isFullBase(summary)
-          ? <Metric label="Ticket médio das vencidas" value={summary.overdueScanned?money(summary.overdueValue/summary.overdueScanned):"—"} detail="Sobre as faturas efetivamente lidas"/>
-          : <Metric label="Total em aberto" value={money(summary.openValue)} detail={`${summary.openInvoices} fatura(s)`}/>}
-      </section>
-      <div className="dashboard-grid">
-        <section className="data-card"><div className="card-header"><strong>Faixa de atraso</strong><span className="badge blue">Calculado da data real de vencimento</span></div>
+          ? <Stat label="Ticket médio das vencidas" icon="wallet" value={summary.overdueScanned?money(summary.overdueValue/summary.overdueScanned):"—"} hint="Sobre as faturas lidas"/>
+          : <Stat label={`Recebido em ${PERIOD_NAMES[period]}`} icon="check" tone="ok" value={money(summary.paidInPeriod)} hint={`${summary.paymentsInPeriod} pagamento(s)`}/>}
+        {!isFullBase(summary)&&<Stat label="Total em aberto" icon="wallet" value={money(summary.openValue)} hint={`${summary.openInvoices} fatura(s)`}/>}
+      </Stats>
+      <div className={isFullBase(summary)?"":"grid-2 even"}>
+        <Card title="Faixa de atraso" badge={<Badge>pela data de vencimento</Badge>}>
           {summary.overdueInvoices===0
-            ? <p style={{fontSize:12,color:"var(--muted)",padding:"12px 0"}}>Nenhuma fatura vencida entre os cadastros consultados.</p>
-            : summary.aging.map(bucket=><div className="aging-row" key={bucket.label}><div><strong>{bucket.label}</strong><span>{bucket.invoices} fatura(s) • {Math.round(bucket.invoices/summary.overdueInvoices*100)}% das vencidas</span></div><b>{money(bucket.value)}</b></div>)}
-          {summary.invoicesWithoutDueDate>0&&<div className="state-card" style={{marginTop:12}}>{summary.invoicesWithoutDueDate} fatura(s) em aberto sem data de vencimento legível ficaram fora das faixas, em vez de serem chutadas para uma.</div>}
-        </section>
-        {isFullBase(summary)
-          ? <section className="data-card"><div className="card-header"><strong>O que ainda não dá para responder</strong></div>
-              <div style={{padding:"4px 0"}}>
-                {[
-                  ["Valor total em aberto","São 73.870 faturas. O IXC devolve a contagem numa consulta, mas não soma valores — só varrendo tudo, o que não cabe numa abertura de tela. Cabe num job noturno."],
-                  ["Pagamentos do período","A tabela de pagamentos se liga à fatura, não ao cliente. Cruzar isso na base inteira tem o mesmo problema de varredura."],
-                  ["Recuperação por campanha","Nenhuma campanha foi executada; não há o que atribuir."],
-                ].map(([title,why])=><div className="aging-row" key={title}><div><strong>{title}</strong><span>{why}</span></div></div>)}
-              </div>
-            </section>
-          : <section className="data-card"><div className="card-header"><strong>Como pagaram</strong><span className="badge blue">Últimos {PERIODS.find(([v])=>v===period)?.[1]}</span></div>
+            ? <Empty icon="check" title="Nenhuma fatura vencida">entre os cadastros consultados.</Empty>
+            : <div className="bars">{summary.aging.map(bucket=><Bar key={bucket.label} label={bucket.label} detail={`${count(bucket.invoices)} fatura(s)`} value={bucket.invoices} max={Math.max(...summary.aging.map(b=>b.invoices))} display={money(bucket.value)}/>)}</div>}
+          {summary.invoicesWithoutDueDate>0&&<p className="hint" style={{marginTop:12}}>{summary.invoicesWithoutDueDate} fatura(s) sem data de vencimento legível ficaram fora das faixas, em vez de serem chutadas para uma.</p>}
+        </Card>
+        {!isFullBase(summary)&&<Card title="Como pagaram" badge={<Badge>últimos {PERIOD_NAMES[period]}</Badge>}>
           {summary.paymentsInPeriod===0
-            ? <p style={{fontSize:12,color:"var(--muted)",padding:"12px 0"}}>Nenhum pagamento registrado no período.</p>
-            : Object.entries(summary.paymentMethods).sort((a,b)=>b[1]-a[1]).map(([method,count])=><div className="aging-row" key={method}><div><strong>{method}</strong><span>{count} pagamento(s)</span></div><b>{Math.round(count/summary.paymentsInPeriod*100)}%</b></div>)}
-          <div style={{marginTop:18,padding:14,background:"var(--blue-soft)",borderRadius:10,fontSize:11,color:"var(--text-2)",lineHeight:1.6}}><strong style={{display:"block",fontSize:12,color:"var(--blue)",marginBottom:4}}>Ainda não medimos</strong>Recuperação atribuída a campanha, conversão e ROI dependem de campanha executada — e campanha não está ligada. Sem isso, qualquer número seria invenção.</div>
-        </section>}
+            ? <Empty icon="wallet" title="Nenhum pagamento no período"/>
+            : <div className="bars">{Object.entries(summary.paymentMethods).sort((a,b)=>b[1]-a[1]).map(([method,total])=><Bar key={method} label={method} detail={`${total} pagamento(s)`} value={total} max={summary.paymentsInPeriod} display={`${Math.round(total/summary.paymentsInPeriod*100)}%`}/>)}</div>}
+        </Card>}
       </div>
-      <InvoiceReissuePanel/>
-      <RenegotiationPanel/>
-      <PaymentPromisePanel/>
+      <Limits items={isFullBase(summary)?[
+        ["Valor total em aberto","São ~74 mil faturas. O IXC devolve a contagem numa consulta, mas não soma valores — só varrendo tudo, o que não cabe numa abertura de tela. Cabe num job noturno."],
+        ["Pagamentos do período","A tabela de pagamentos se liga à fatura, não ao cliente. Cruzar isso na base inteira tem o mesmo problema de varredura."],
+        ["Recuperação por campanha","Nenhuma campanha foi executada; não há o que atribuir."],
+      ]:[
+        ["Recuperação por campanha","Conversão e ROI dependem de campanha executada — e campanha não está ligada. Sem isso, qualquer número seria invenção."],
+        ["Entregues, lidos e contatos elegíveis","Métricas de disparo de campanha e de opt-out, que ainda não existem."],
+      ]}/>
     </>}
-  </main>;
+  </>;
+}
+
+/* ------------------------------------------------------------- ações no IXC --- */
+
+type Tool="reissue"|"renegotiation"|"promise";
+const TOOLS:Array<[Tool,IconKey,string,string]>=[
+  ["reissue","ticket","Segunda via","Gera o boleto de novo no IXC"],
+  ["renegotiation","refresh","Renegociar dívida","Junta faturas em atraso num acordo"],
+  ["promise","clock","Promessa de pagamento","Registra e confere a data prometida"],
+];
+
+function BillingActions(){
+  const [tool,setTool]=useState<Tool>("reissue");
+  return <>
+    <div className="tool-switch" role="tablist" aria-label="Operação">
+      {TOOLS.map(([id,icon,title,text])=><button key={id} type="button" role="tab" aria-selected={tool===id} className={`tool-card ${tool===id?"active":""}`} onClick={()=>setTool(id)}>
+        <Icon name={icon} size={18}/><span><strong>{title}</strong><span>{text}</span></span>
+      </button>)}
+    </div>
+    {tool==="reissue"&&<InvoiceReissuePanel/>}
+    {tool==="renegotiation"&&<RenegotiationPanel/>}
+    {tool==="promise"&&<PaymentPromisePanel/>}
+  </>;
 }
 
 type PaymentPromiseRow={id:string;invoiceId:string;customerId:string;promisedFor:string;status:"pending"|"fulfilled"|"broken"};
-const PROMISE_STATUS_LABEL:Record<string,string>={pending:"Pendente",fulfilled:"Cumprida",broken:"Quebrada — precisa recontato"};
+const PROMISE_STATUS:Record<string,[string,string]>={pending:["Pendente","warn"],fulfilled:["Cumprida","ok"],broken:["Quebrada — recontatar","bad"]};
 
 /**
- * Promessa de pagamento (issue #16). Registrada só no HUB — negociação
- * dentro do IXC depende do catálogo de escrita cobrir essa operação, o que
- * ainda não aconteceu. "Revisar promessas" checa contra o IXC de verdade;
- * "quebrada" nunca dispara mensagem nenhuma, só sinaliza quem precisa de
- * recontato manual.
+ * Promessa de pagamento (issue #16). Registrada só no HUB. "Revisar" confere
+ * contra o IXC de verdade; "quebrada" nunca dispara mensagem nenhuma, só
+ * sinaliza quem precisa de recontato manual.
  */
 function PaymentPromisePanel(){
   const [pending,setPending]=useState<PaymentPromiseRow[]>([]);
@@ -109,6 +128,7 @@ function PaymentPromisePanel(){
   const [error,setError]=useState<string|null>(null);
   const [reviewResult,setReviewResult]=useState<{fulfilled:string[];broken:string[];stillPending:string[]}|null>(null);
   const [nonce,setNonce]=useState(0);
+  const toast=useToast();
 
   useEffect(()=>{let active=true;
     fetch("/api/billing/promises?period=30d").then(r=>r.ok?r.json():Promise.reject(new Error("falhou")))
@@ -120,7 +140,7 @@ function PaymentPromisePanel(){
     setBusy(true);setError(null);
     const response=await fetch("/api/billing/promises",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({action:"create",...form})});
     const payload=await response.json();
-    if(response.ok){setForm({invoiceId:"",customerId:"",promisedFor:""});setNonce(n=>n+1)}
+    if(response.ok){setForm({invoiceId:"",customerId:"",promisedFor:""});setNonce(n=>n+1);toast("Promessa registrada.")}
     else setError(payload.error??"Não foi possível registrar.");
     setBusy(false);
   }
@@ -134,46 +154,39 @@ function PaymentPromisePanel(){
     setBusy(false);
   }
 
-  return <section className="data-card" style={{marginTop:14}}>
-    <div className="card-header"><strong>Promessas de pagamento</strong><span className="badge blue">Fica auditado</span></div>
-    <div style={{padding:16,display:"grid",gap:12}}>
-      <p style={{margin:0,fontSize:12,color:"var(--muted)",lineHeight:1.6}}>
-        Registrada só no HUB — negociação dentro do IXC depende do catálogo de escrita cobrir isso, o que ainda não aconteceu.
-        &quot;Revisar promessas&quot; confere cada uma contra a fatura real; promessa quebrada não dispara mensagem nenhuma, só sinaliza quem precisa de recontato manual.
-      </p>
-      <div style={{display:"grid",gap:10,maxWidth:420,gridTemplateColumns:"1fr 1fr"}}>
-        <label className="field"><span>ID da fatura</span><input placeholder="ex.: 4821" value={form.invoiceId} onChange={e=>setForm(f=>({...f,invoiceId:e.target.value}))}/></label>
-        <label className="field"><span>ID do cliente</span><input placeholder="ex.: 21857" value={form.customerId} onChange={e=>setForm(f=>({...f,customerId:e.target.value}))}/></label>
-        <label className="field" style={{gridColumn:"1 / -1"}}><span>Promete pagar em</span><input type="date" value={form.promisedFor} onChange={e=>setForm(f=>({...f,promisedFor:e.target.value}))}/></label>
+  return <div className="grid-2">
+    <Card title="Promessas pendentes" badge={state==="ready"&&<Badge>{pending.length}</Badge>}
+      actions={<button className="button secondary small" disabled={busy} onClick={()=>void review()}><Icon name="refresh" size={14}/>Conferir no IXC</button>} flush>
+      {reviewResult&&<div className="card-content"><Notice tone={reviewResult.broken.length?"warn":"ok"}>{reviewResult.fulfilled.length} cumprida(s), <strong>{reviewResult.broken.length} quebrada(s)</strong> — essas precisam de recontato manual —, {reviewResult.stillPending.length} ainda pendente(s).</Notice></div>}
+      {state==="loading"&&<Loading rows={3}/>}
+      {state==="error"&&<div className="card-content"><Notice tone="bad">Promessas indisponíveis.</Notice></div>}
+      {state==="ready"&&pending.length===0&&<Empty icon="check" title="Nenhuma promessa pendente"/>}
+      {state==="ready"&&<div className="list">{pending.map(p=><div className="row" key={p.id}>
+        <div className="row-main"><strong>Fatura {p.invoiceId}</strong><span>Cliente {p.customerId} · promete pagar em {new Date(p.promisedFor+"T00:00:00Z").toLocaleDateString("pt-BR")}</span></div>
+        <div className="row-value"><span className={`status ${PROMISE_STATUS[p.status]?.[1]??""}`}>{PROMISE_STATUS[p.status]?.[0]??p.status}</span></div>
+      </div>)}</div>}
+    </Card>
+    <Card title="Registrar promessa">
+      <div className="form-grid">
+        <label className="field"><span>Fatura (IXC)</span><input placeholder="ex.: 4821" value={form.invoiceId} onChange={e=>setForm(f=>({...f,invoiceId:e.target.value}))}/></label>
+        <label className="field"><span>Cliente (IXC)</span><input placeholder="ex.: 21857" value={form.customerId} onChange={e=>setForm(f=>({...f,customerId:e.target.value}))}/></label>
+        <label className="field span-2"><span>Promete pagar em</span><input type="date" value={form.promisedFor} onChange={e=>setForm(f=>({...f,promisedFor:e.target.value}))}/></label>
+        {error&&<p className="form-error span-2">{error}</p>}
+        <div className="form-actions span-2"><button className="button" disabled={busy||!form.invoiceId||!form.customerId||!form.promisedFor} onClick={()=>void submit()}>{busy?"Enviando…":"Registrar promessa"}</button></div>
+        <p className="field-hint span-2">Fica só no LZR HUB e na auditoria. Promessa quebrada não dispara mensagem: só aparece aqui para recontato.</p>
       </div>
-      <div style={{display:"flex",gap:10,flexWrap:"wrap"}}>
-        <button className="button secondary" disabled={busy||!form.invoiceId||!form.customerId||!form.promisedFor} onClick={()=>void submit()}>{busy?"Enviando…":"Registrar promessa"}</button>
-        <button className="button secondary" disabled={busy} onClick={()=>void review()}>Revisar promessas pendentes</button>
-      </div>
-      {error&&<p className="form-error">{error}</p>}
-      {reviewResult&&<div className="state-card">{reviewResult.fulfilled.length} cumprida(s), <strong>{reviewResult.broken.length} quebrada(s) — precisam de recontato</strong>, {reviewResult.stillPending.length} ainda pendente(s).</div>}
-      <div>
-        {state==="loading"&&<p className="card-empty">Carregando…</p>}
-        {state==="error"&&<p className="card-empty">Promessas indisponíveis.</p>}
-        {state==="ready"&&pending.length===0&&<p className="card-empty">Nenhuma promessa pendente.</p>}
-        {state==="ready"&&pending.map(p=><div className="aging-row" key={p.id}><div><strong>Fatura {p.invoiceId}</strong><span>Cliente {p.customerId} • promete pagar em {new Date(p.promisedFor+"T00:00:00Z").toLocaleDateString("pt-BR")}</span></div><b>{PROMISE_STATUS_LABEL[p.status]}</b></div>)}
-      </div>
-    </div>
-  </section>;
+    </Card>
+  </div>;
 }
 
 type IxcWriteResult={status:"success"|"blocked"|"failed";detail:string;replay?:boolean};
-type IxcWriteCatalogEntry={operation:string;label:string;implemented:boolean};
 
 /**
- * Escrita real no IXC (issue #20). Política, idempotência e auditoria
- * funcionam de ponta a ponta; o formato exato de uma resposta de sucesso
- * ainda não foi confirmado contra uma fatura real (o único cliente da
- * allowlist não tem nenhuma) — por isso o resultado mostra a resposta crua do
- * IXC em vez de um resumo formatado que poderia estar errado.
+ * Segunda via (issue #20). O formato exato de uma resposta de sucesso ainda
+ * não foi confirmado contra uma fatura real — por isso o resultado mostra a
+ * resposta crua do IXC em vez de um resumo que poderia estar errado.
  */
 function InvoiceReissuePanel(){
-  const [catalog,setCatalog]=useState<IxcWriteCatalogEntry[]>([]);
   const [writeEnabled,setWriteEnabled]=useState<boolean|null>(null);
   const [invoiceId,setInvoiceId]=useState("");
   const [customerId,setCustomerId]=useState("");
@@ -183,7 +196,7 @@ function InvoiceReissuePanel(){
 
   useEffect(()=>{let active=true;
     fetch("/api/billing/invoices/reissue?period=30d").then(r=>r.ok?r.json():Promise.reject(new Error("falhou")))
-      .then((payload:{catalog:IxcWriteCatalogEntry[];writeEnabled:boolean})=>{if(active){setCatalog(payload.catalog??[]);setWriteEnabled(payload.writeEnabled)}}).catch(()=>{});
+      .then((payload:{writeEnabled:boolean})=>{if(active)setWriteEnabled(payload.writeEnabled)}).catch(()=>{});
     return()=>{active=false}},[]);
 
   async function submit(){
@@ -194,37 +207,30 @@ function InvoiceReissuePanel(){
     setBusy(false);
   }
 
-  return <section className="data-card" style={{marginTop:14}}>
-    <div className="card-header"><strong>Escrita no IXC</strong><span className={`badge ${writeEnabled?"green":"amber"}`}>{writeEnabled===null?"consultando…":writeEnabled?"● ligada":"desligada"}</span></div>
-    <div style={{padding:16,display:"grid",gap:12}}>
-      <p style={{margin:0,fontSize:12,color:"var(--muted)",lineHeight:1.6}}>
-        Catálogo de operações de escrita no ERP (issue #20). Os endpoints reais foram confirmados na documentação do provedor — o que ainda não foi confirmado é o formato de uma
-        resposta de <strong>sucesso</strong>, porque nenhuma operação chegou a ser executada em produção. Por isso o resultado abaixo mostra a resposta crua do IXC, não um resumo.
-      </p>
-      <div style={{display:"flex",flexWrap:"wrap",gap:8}}>
-        {catalog.map(item=><span key={item.operation} className="badge" style={{background:item.implemented?"var(--blue-soft)":"var(--surface-3)",color:item.implemented?"var(--blue)":"var(--text-3)"}}>{item.label}{item.implemented?"":" (não desenhado)"}</span>)}
-      </div>
-      <div style={{display:"grid",gap:10,maxWidth:420}}>
-        <label className="field"><span>ID da fatura (IXC)</span><input placeholder="ex.: 4821" value={invoiceId} onChange={e=>setInvoiceId(e.target.value)}/></label>
-        <label className="field"><span>ID do cliente (IXC)</span><input placeholder="ex.: 21857" value={customerId} onChange={e=>setCustomerId(e.target.value)}/></label>
-        <button className="button secondary" disabled={busy||!invoiceId||!customerId} onClick={()=>void submit()}>{busy?"Verificando…":"Solicitar segunda via"}</button>
-      </div>
-      {error&&<p className="form-error">{error}</p>}
-      {result&&<div className="state-card">
+  return <Card title="Segunda via de boleto" badge={<WriteBadge enabled={writeEnabled}/>}>
+    <div className="form-grid" style={{maxWidth:560}}>
+      <label className="field"><span>Fatura (IXC)</span><input placeholder="ex.: 4821" value={invoiceId} onChange={e=>setInvoiceId(e.target.value)}/></label>
+      <label className="field"><span>Cliente (IXC)</span><input placeholder="ex.: 21857" value={customerId} onChange={e=>setCustomerId(e.target.value)}/></label>
+      <div className="form-actions span-2"><button className="button" disabled={busy||!invoiceId||!customerId} onClick={()=>void submit()}>{busy?"Verificando…":"Solicitar segunda via"}</button></div>
+      {error&&<p className="form-error span-2">{error}</p>}
+      {result&&<div className={`result-box span-2 ${result.status==="success"?"ok":"bad"}`}>
         <strong>{result.status==="success"?"Gerado":result.status==="blocked"?"Bloqueado":"Falhou"}</strong>{result.replay?" (mesma solicitação de antes, não repetida)":""}
-        <p style={{margin:"6px 0 0",lineHeight:1.6,wordBreak:"break-all"}}>{result.detail}</p>
+        <p className="break">{result.detail}</p>
       </div>}
+      <p className="field-hint span-2">O resultado mostra a resposta crua do IXC: o formato de sucesso ainda não foi confirmado numa fatura real, e um resumo formatado poderia estar errado.</p>
     </div>
-  </section>;
+  </Card>;
+}
+
+function WriteBadge({enabled}:{enabled:boolean|null|undefined}){
+  if(enabled===null||enabled===undefined)return <Badge>consultando…</Badge>;
+  return enabled?<Badge tone="ok" dot>escrita ligada</Badge>:<Badge tone="warn">escrita desligada</Badge>;
 }
 
 type RenegotiationData={available:boolean;detail?:string;invoices:{id:string;dueAt:string|null;value:number}[];wallets:{id:string;name:string}[];paymentTerms:{id:string;name:string;installments?:number}[];customer?:{id:string;name:string;hasAccount:boolean;hasBranch:boolean};contractId?:string|null;writeEnabled?:boolean};
 
 /**
  * Renegociação de dívida (issue #20, operação `negotiation.register`).
- *
- * É a única tela do sistema que consolida faturas reais e recalcula juro e
- * multa. Três coisas aqui não são enfeite:
  *
  * 1. O total exibido é reenviado ao servidor, que o compara com o que o IXC
  *    devolve naquele instante. Tela com dado velho não renegocia.
@@ -259,7 +265,6 @@ function RenegotiationPanel(){
   const loading=loadedQuery!==query;
 
   const total=(data?.invoices??[]).filter(i=>selected.includes(i.id)).reduce((sum,i)=>sum+i.value,0);
-  const brl=(value:number)=>value.toLocaleString("pt-BR",{style:"currency",currency:"BRL"});
   const blocked=data?.customer&&(!data.customer.hasAccount||!data.customer.hasBranch||!data.contractId);
 
   async function submit(){
@@ -274,52 +279,51 @@ function RenegotiationPanel(){
     finally{setBusy(false)}
   }
 
-  return <section className="data-card" style={{marginTop:14}}>
-    <div className="card-header"><strong>Renegociar dívida no IXC</strong>
-      <span className={`badge ${data?.writeEnabled?"green":"amber"}`}>{data?.writeEnabled?"● escrita ligada":"FEATURE_IXC_WRITE desligada"}</span>
-    </div>
-    <div style={{padding:16,display:"grid",gap:12}}>
-      <div className="state-card" style={{margin:0}}>
-        <strong>Isto altera o financeiro do cliente.</strong>
-        <p style={{margin:"6px 0 0",lineHeight:1.6}}>O IXC cria a renegociação já no primeiro passo, antes de calcular juro e multa. Se a sequência falhar no meio, fica um registro pela metade preso às faturas — e o ledger mostra o número dele para conferência manual. Não há campo de desconto: isso não se automatiza.</p>
-      </div>
-      <div style={{display:"flex",gap:8,alignItems:"flex-end",flexWrap:"wrap"}}>
-        <label className="field" style={{maxWidth:220}}><span>Código do cliente no IXC</span><input value={customerId} placeholder="ex.: 21857" onChange={e=>setCustomerId(e.target.value)}/></label>
-        <button className="button secondary" disabled={!customerId.trim()||loading} onClick={()=>{setQuery(customerId.trim());setSelected([]);setResult(null);setError(null)}}>{loading?"Consultando…":"Buscar faturas"}</button>
-      </div>
+  return <Card title="Renegociar dívida no IXC" badge={<WriteBadge enabled={data?.writeEnabled}/>}>
+    <div className="stack" style={{maxWidth:640}}>
+      <Notice tone="warn" title="Isto altera o financeiro do cliente."
+        more="O IXC cria a renegociação já no primeiro passo, antes de calcular juro e multa. Se a sequência falhar no meio, fica um registro pela metade preso às faturas — e o ledger mostra o número dele para conferência manual.">Não há campo de desconto: isso não se automatiza.</Notice>
+      <form className="form-actions" onSubmit={e=>{e.preventDefault();if(customerId.trim()){setQuery(customerId.trim());setSelected([]);setResult(null);setError(null)}}}>
+        <label className="field" style={{width:220}}><span>Código do cliente no IXC</span><input value={customerId} placeholder="ex.: 21857" onChange={e=>setCustomerId(e.target.value)}/></label>
+        <button type="submit" className="button secondary" style={{alignSelf:"flex-end"}} disabled={!customerId.trim()||loading}>{loading?"Consultando…":"Buscar faturas"}</button>
+      </form>
 
       {data&&!data.available&&<p className="form-error">{data.detail}.</p>}
       {data?.available&&query&&<>
         {blocked&&<p className="form-error">Este cadastro não pode ser renegociado: {[!data.customer?.hasBranch&&"não tem filial",!data.customer?.hasAccount&&"não tem conta (id_conta)",!data.contractId&&"não tem contrato"].filter(Boolean).join(", ")}.</p>}
         {data.invoices.length===0
-          ? <p style={{fontSize:12,color:"var(--muted)"}}>Nenhuma fatura em aberto neste cadastro.</p>
+          ? <p className="muted">Nenhuma fatura em aberto neste cadastro.</p>
           : <>
-              <fieldset className="reason-picker">
-                <legend>Faturas em aberto ({data.customer?.name})</legend>
+              <fieldset className="checks">
+                <legend>Faturas em aberto de {data.customer?.name}</legend>
                 {data.invoices.map(invoice=><label key={invoice.id}>
                   <input type="checkbox" checked={selected.includes(invoice.id)} onChange={()=>setSelected(current=>current.includes(invoice.id)?current.filter(id=>id!==invoice.id):[...current,invoice.id])}/>
-                  <span>Fatura {invoice.id} • vence {invoice.dueAt??"—"} • {brl(invoice.value)}</span>
+                  <span>Fatura {invoice.id} · vence {invoice.dueAt??"—"} · <strong>{money(invoice.value)}</strong></span>
                 </label>)}
               </fieldset>
-              <div style={{display:"grid",gap:10,maxWidth:460}}>
-                <label className="field"><span>Carteira de cobrança ({data.wallets.length} do IXC) — define juro e multa</span>
+              <div className="form-grid">
+                <label className="field"><span>Carteira de cobrança <small className="muted">(define juro e multa)</small></span>
                   <select value={walletId} onChange={e=>setWalletId(e.target.value)}><option value="">Escolha…</option>{data.wallets.map(w=><option key={w.id} value={w.id}>{w.name}</option>)}</select></label>
-                <label className="field"><span>Condição de pagamento — define o parcelamento</span>
+                <label className="field"><span>Condição de pagamento <small className="muted">(parcelamento)</small></span>
                   <select value={termId} onChange={e=>setTermId(e.target.value)}><option value="">Escolha…</option>{data.paymentTerms.map(t=><option key={t.id} value={t.id}>{t.name}</option>)}</select></label>
-                <p style={{margin:0,fontSize:12}}>Total das faturas escolhidas: <strong>{brl(total)}</strong> <small style={{color:"var(--muted)"}}>— o juro e a multa quem calcula é o IXC, e o valor final aparece no resultado.</small></p>
-                <button className="button" disabled={busy||blocked||selected.length===0||!walletId||!termId} onClick={()=>void submit()}>{busy?"Renegociando…":`Renegociar ${selected.length} fatura(s)`}</button>
+              </div>
+              <div className="form-actions">
+                <button className="button" disabled={busy||!!blocked||selected.length===0||!walletId||!termId} onClick={()=>void submit()}>{busy?"Renegociando…":`Renegociar ${selected.length} fatura(s)`}</button>
+                <span className="muted small">Total escolhido: <strong className="text-ink">{money(total)}</strong> — juro e multa quem calcula é o IXC.</span>
               </div>
             </>}
       </>}
 
       {error&&<p className="form-error">{error}</p>}
-      {result&&<div className={`state-card ${result.status==="success"?"":"error"}`}>
+      {result&&<div className={`result-box ${result.status==="success"?"ok":"bad"}`}>
         <strong>{result.status==="success"?"Renegociação concluída no IXC":result.status==="blocked"?"Bloqueado":"Falhou"}</strong>{result.replay?" (mesma solicitação de antes, não repetida)":""}
-        <p style={{margin:"6px 0 0",lineHeight:1.6,wordBreak:"break-word"}}>{result.detail}</p>
+        <p>{result.detail}</p>
       </div>}
     </div>
-  </section>;
+  </Card>;
 }
+
+/* -------------------------------------------------------------------- régua --- */
 
 const EMPTY_STEP:RuleStepInput={offsetDays:1,channel:"WhatsApp",templateId:"",attempts:1,active:false};
 
@@ -329,7 +333,9 @@ function RuleBuilder(){
   const [meta,setMeta]=useState<{version:number;updatedAt:string;authorId:string}|null>(null);
   const [state,setState]=useState<"loading"|"ready"|"error">("loading");
   const [saving,setSaving]=useState(false);
-  const [message,setMessage]=useState<string|null>(null);
+  const [dirty,setDirty]=useState(false);
+  const [error,setError]=useState<string|null>(null);
+  const toast=useToast();
 
   useEffect(()=>{let active=true;
     fetch("/api/billing/rules").then(r=>r.ok?r.json():Promise.reject(new Error("falhou")))
@@ -340,49 +346,53 @@ function RuleBuilder(){
       }).catch(()=>{if(active)setState("error")});
     return()=>{active=false}},[]);
 
-  function update(index:number,patch:Partial<RuleStepInput>){setSteps(current=>current.map((step,i)=>i===index?{...step,...patch}:step));setMessage(null)}
-  function remove(index:number){setSteps(current=>current.filter((_,i)=>i!==index));setMessage(null)}
+  function update(index:number,patch:Partial<RuleStepInput>){setSteps(current=>current.map((step,i)=>i===index?{...step,...patch}:step));setDirty(true);setError(null)}
+  function remove(index:number){setSteps(current=>current.filter((_,i)=>i!==index));setDirty(true);setError(null)}
   async function save(){
-    setSaving(true);setMessage(null);
+    setSaving(true);setError(null);
     const response=await fetch("/api/billing/rules",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({name,steps})});
     const payload=await response.json();
-    if(response.ok){setMeta({version:payload.version,updatedAt:payload.updatedAt,authorId:payload.authorId});setSteps(payload.steps);setMessage(`Versão ${payload.version} salva.`)}
-    else setMessage(payload.error??"Não foi possível salvar.");
+    if(response.ok){setMeta({version:payload.version,updatedAt:payload.updatedAt,authorId:payload.authorId});setSteps(payload.steps);setDirty(false);toast(`Versão ${payload.version} salva.`)}
+    else setError(payload.error??"Não foi possível salvar.");
     setSaving(false);
   }
 
-  return <main className="content">
-    <Heading title="Régua de cobrança" text="Define quando e por onde falar com quem está em atraso. Salvar não envia nada."/>
-    {state==="loading"&&<div className="state-card">Carregando régua…</div>}
-    {state==="error"&&<div className="state-card error">Régua indisponível: sem banco não há o que ler nem onde salvar.</div>}
-    {state==="ready"&&<>
-      <div className="rule-toolbar">
-        <div><input value={name} onChange={e=>{setName(e.target.value);setMessage(null)}} style={{fontWeight:600,border:"none",background:"transparent",fontSize:14,width:"100%"}}/><span>{meta?`Versão ${meta.version} • ${meta.authorId} • ${new Date(meta.updatedAt).toLocaleString("pt-BR")}`:"Nenhuma versão salva ainda"}</span></div>
-        <button className="button secondary" onClick={()=>{setSteps(c=>[...c,{...EMPTY_STEP}]);setMessage(null)}}>+ Adicionar etapa</button>
-        <button className="button" disabled={saving||steps.length===0} onClick={()=>void save()}>{saving?"Salvando…":"Salvar nova versão"}</button>
+  if(state==="loading")return <Loading rows={4}/>;
+  if(state==="error")return <Notice tone="bad">Régua indisponível: sem banco não há o que ler nem onde salvar.</Notice>;
+  return <>
+    <Toolbar actions={<>
+      <button className="button secondary" onClick={()=>{setSteps(c=>[...c,{...EMPTY_STEP}]);setDirty(true)}}><Icon name="plus" size={16}/>Adicionar etapa</button>
+      <button className="button" disabled={saving||steps.length===0||!dirty} onClick={()=>void save()}>{saving?"Salvando…":"Salvar nova versão"}</button>
+    </>}>
+      <div className="rule-name">
+        <input value={name} aria-label="Nome da régua" onChange={e=>{setName(e.target.value);setDirty(true)}}/>
+        <span>{meta?`Versão ${meta.version} · ${meta.authorId} · ${new Date(meta.updatedAt).toLocaleString("pt-BR")}`:"Nenhuma versão salva ainda"}{dirty?" · alterações não salvas":""}</span>
       </div>
-      {message&&<div className="state-card">{message}</div>}
+    </Toolbar>
+    {error&&<Notice tone="bad">{error}</Notice>}
+    <Notice tone="neutral">Salvar a régua não envia nada a ninguém: ela define as etapas. O disparo é o passo abaixo.</Notice>
+    <Card flush>
       {steps.length===0
-        ? <div className="state-card">Nenhuma etapa configurada. A régua começa vazia — nada de exemplo é pré-carregado.</div>
-        : <section className="rule-timeline">{steps.map((step,index)=><article className={`rule-step ${step.active?"":"disabled"}`} key={index}>
+        ? <Empty icon="clock" title="Nenhuma etapa configurada" action={<button className="button secondary" onClick={()=>{setSteps([{...EMPTY_STEP}]);setDirty(true)}}>Adicionar a primeira etapa</button>}>A régua começa vazia — nada de exemplo é pré-carregado.</Empty>
+        : <ol className="rule-steps">{steps.map((step,index)=><li className={`rule-step ${step.active?"":"disabled"}`} key={index}>
             <div className="rule-index">{index+1}</div>
-            <div style={{display:"grid",gap:6}}>
-              <div style={{display:"flex",gap:8,flexWrap:"wrap",alignItems:"center"}}>
-                <label style={{fontSize:11}}>Dias<input type="number" value={step.offsetDays} onChange={e=>update(index,{offsetDays:Number(e.target.value)})} style={{width:70,marginLeft:6}}/></label>
-                <select value={step.channel} onChange={e=>update(index,{channel:e.target.value})}>{RULE_CHANNELS.map(channel=><option key={channel} value={channel}>{channel}</option>)}</select>
-                <label style={{fontSize:11}}>Tentativas<input type="number" min={1} max={5} value={step.attempts} onChange={e=>update(index,{attempts:Number(e.target.value)})} style={{width:56,marginLeft:6}}/></label>
+            <div>
+              <div className="rule-fields">
+                <label className="field"><span>Dias</span><input type="number" value={step.offsetDays} onChange={e=>update(index,{offsetDays:Number(e.target.value)})}/></label>
+                <label className="field"><span>Canal</span><select value={step.channel} onChange={e=>update(index,{channel:e.target.value})}>{RULE_CHANNELS.map(channel=><option key={channel} value={channel}>{channel}</option>)}</select></label>
+                <label className="field"><span>Tentativas</span><input type="number" min={1} max={5} value={step.attempts} onChange={e=>update(index,{attempts:Number(e.target.value)})}/></label>
+                <label className="field"><span>Template</span><input placeholder="Identificador do template" value={step.templateId} onChange={e=>update(index,{templateId:e.target.value})}/></label>
               </div>
-              <input placeholder="Identificador do template" value={step.templateId} onChange={e=>update(index,{templateId:e.target.value})}/>
               <small>{offsetLabel(step.offsetDays)}</small>
             </div>
-            <div style={{display:"grid",gap:6}}>
-              <button onClick={()=>update(index,{active:!step.active})}>{step.active?"Ativa":"Inativa"}</button>
-              <button onClick={()=>remove(index)}>Remover</button>
+            <div className="rule-step-actions">
+              <button type="button" role="switch" className="switch" aria-checked={step.active} aria-label={step.active?"Etapa ativa — desativar":"Etapa inativa — ativar"} onClick={()=>update(index,{active:!step.active})}/>
+              <button type="button" className="icon-button" aria-label={`Remover etapa ${index+1}`} onClick={()=>remove(index)}><Icon name="x" size={16}/></button>
             </div>
-          </article>)}</section>}
-      <DispatchPanel hasRule={steps.length>0}/>
-    </>}
-  </main>;
+          </li>)}</ol>}
+    </Card>
+    <DispatchPanel hasRule={steps.length>0}/>
+  </>;
 }
 
 type DispatchPreview={available:boolean;detail?:string;period:string;scope?:"allowlist"|"unavailable";today:{scheduledFor:string;candidates:number}|null;indicators:{total:number;byStep:Record<string,number>}|null};
@@ -391,8 +401,7 @@ type DispatchRun={scheduledFor:string;businessHour:boolean;candidates:number;rec
 /**
  * Disparo real (issue #15), no limite do que existe hoje: calcula quem
  * receberia contato agora, revalidando pagamento, sem duplicar — e registra
- * isso no ledger mesmo que a fila de envio esteja desligada. É o mesmo espírito
- * do modo observação do canal de entrada, só que para a saída.
+ * isso no ledger mesmo que a fila de envio esteja desligada.
  */
 function DispatchPanel({hasRule}:{hasRule:boolean}){
   const [preview,setPreview]=useState<DispatchPreview|null>(null);
@@ -416,93 +425,24 @@ function DispatchPanel({hasRule}:{hasRule:boolean}){
   }
 
   if(!hasRule)return null;
-  return <section className="data-card" style={{marginTop:14}}>
-    <div className="card-header"><strong>Disparo real</strong><span className="badge blue">Fica auditado</span></div>
-    {state==="loading"&&<p className="card-empty">Consultando faturas no IXC…</p>}
-    {state==="error"&&<p className="card-empty">Não foi possível consultar o disparo.</p>}
-    {state==="ready"&&preview&&!preview.available&&<p className="card-empty">{preview.detail}.</p>}
-    {state==="ready"&&preview?.available&&<div style={{padding:"14px 18px",display:"grid",gap:12}}>
-      <p style={{margin:0,color:"var(--muted)",fontSize:12,lineHeight:1.6}}>
-        Hoje ({preview.today?.scheduledFor}), <strong>{preview.today?.candidates??0}</strong> fatura(s) casam com alguma etapa ativa da régua,
-        revalidando pagamento na hora — quem já pagou não entra. Nos últimos {preview.period}, {preview.indicators?.total??0} disparo(s) foram registrados no ledger.
-      </p>
-      <div style={{display:"flex",gap:10,alignItems:"center",flexWrap:"wrap"}}>
-        <button className="button" disabled={running} onClick={()=>void run()}>{running?"Rodando…":"Rodar disparo de hoje"}</button>
-        <a className="button secondary" href="/api/billing/collections/dispatch?format=csv" download>Exportar CSV</a>
-      </div>
+  return <Card title="Disparo de hoje" badge={<Badge>fica na auditoria</Badge>}
+    actions={state==="ready"&&preview?.available&&<><a className="button secondary small" href="/api/billing/collections/dispatch?format=csv" download><Icon name="download" size={14}/>CSV</a><button className="button small" disabled={running} onClick={()=>void run()}>{running?"Rodando…":"Rodar disparo"}</button></>}>
+    {state==="loading"&&<Loading rows={1} stats={0}/>}
+    {state==="error"&&<Notice tone="bad">Não foi possível consultar o disparo.</Notice>}
+    {state==="ready"&&preview&&!preview.available&&<Notice tone="bad">{preview.detail}.</Notice>}
+    {state==="ready"&&preview?.available&&<div className="stack">
+      <Stats>
+        <Stat label={`Faturas para hoje (${preview.today?.scheduledFor??"—"})`} value={count(preview.today?.candidates??0)} hint="Casam com alguma etapa ativa; quem já pagou não entra"/>
+        <Stat label={`Disparos registrados (${preview.period})`} value={count(preview.indicators?.total??0)} hint="No ledger"/>
+      </Stats>
       {runError&&<p className="form-error">{runError}</p>}
-      {result&&<div className="state-card">
+      {result&&<div className="dispatch-result">
         {result.businessHour
           ? <>Rodado: {result.candidates} candidato(s), <strong>{result.recorded}</strong> novo(s) registrado(s){result.duplicates>0?`, ${result.duplicates} já tinha(m) sido registrado(s) hoje`:""}.
               {result.queueEnabled?` ${result.enqueued} enfileirado(s) para envio.`:" A fila de envio está desligada (FEATURE_QUEUES) — ficou registrado, mas nada foi enfileirado."}</>
-          : <>Fora do horário comercial: {result.candidates} candidato(s) seriam contatados, mas nada foi registrado. Rode novamente entre 8h e 20h, dia de semana.</>}
+          : <>Fora do horário comercial: {result.candidates} candidato(s) seriam contatados, mas nada foi registrado. Rode entre 8h e 20h, em dia de semana.</>}
       </div>}
-      <p style={{margin:0,color:"var(--text-3)",fontSize:11}}>
-        Sem ponte de envio ligada ao WhatsApp, o registro aqui prova a decisão — não a entrega. Quando o worker de fila mandar a mensagem de verdade, ele consome do que fica enfileirado aqui.
-      </p>
+      <p className="hint">Sem ponte de envio ligada ao WhatsApp, o registro prova a decisão — não a entrega. Quando o worker de fila mandar a mensagem de verdade, ele consome o que fica enfileirado aqui.</p>
     </div>}
-  </section>;
+  </Card>;
 }
-
-function Campaigns(){
-  return <main className="content">
-    <Heading title="Campanhas de cobrança" text="Disparo em massa para clientes em atraso."/>
-    <div className="state-card error"><strong>Campanhas não estão ligadas — e não há campanha nenhuma para mostrar.</strong>
-      <p style={{marginTop:8,lineHeight:1.7}}>Esta tela simulava criar campanha e enfileirar job, com público inventado. Foi removido: enfileirar uma campanha de verdade manda mensagem para cliente de verdade, e isso não pode ser demonstrado como se fosse real.</p>
-    </div>
-    <section className="data-card" style={{marginTop:14}}>
-      <div className="card-header"><strong>O que falta antes de ligar</strong></div>
-      <div style={{padding:"4px 0"}}>
-        {[
-          ["Login obrigatório (FEATURE_AUTH)","Hoje nenhuma rota sabe quem disparou a campanha."],
-          ["Opt-out respeitado","Não existe registro de quem pediu para não ser contatado."],
-          ["Idempotência no disparo","Sem isso, um retry cobra o mesmo cliente duas vezes."],
-          ["Auditoria por destinatário","Precisa registrar o que foi enviado, para quem e por qual etapa da régua."],
-          ["Janela de envio","Cobrança fora de horário permitido é problema jurídico, não de produto."],
-        ].map(([title,why])=><div className="aging-row" key={title}><div><strong>{title}</strong><span>{why}</span></div></div>)}
-      </div>
-    </section>
-    <div className="state-card" style={{marginTop:14}}>A régua de cobrança já pode ser configurada e versionada — ela define as etapas, sem disparar nada.</div>
-  </main>;
-}
-
-function BillingReports(){
-  const [period,setPeriod]=useState("30d");
-  const {data,state,setState}=useBilling(period);
-  const summary=data?.summary;
-  return <main className="content">
-    <Heading title="Relatórios de cobrança" text="Faturas e pagamentos reais no período. Entrega e leitura dependem de campanha, que não existe."/>
-    <section className="filter-bar"><select value={period} onChange={e=>{setState("loading");setPeriod(e.target.value)}}>{PERIODS.map(([v,l])=><option key={v} value={v}>Últimos {l}</option>)}</select></section>
-    {state==="loading"&&<div className="state-card">Consultando o IXC…</div>}
-    {state==="error"&&<div className="state-card error">Não foi possível gerar o relatório.</div>}
-    {state==="ready"&&data&&!data.available&&<div className="state-card error">{data.detail}.</div>}
-    {state==="ready"&&summary&&<>
-      <ScopeNote summary={summary} allowlistSize={data?.allowlistSize}/>
-      <section className="metrics">
-        {isFullBase(summary)?<>
-          <Metric label="Faturas em aberto" value={summary.openInvoices.toLocaleString("pt-BR")} detail="Contagem exata do IXC"/>
-          <Metric label="Vencidas" value={summary.overdueInvoices.toLocaleString("pt-BR")} detail={money(summary.overdueValue)+(summary.truncated?" (parcial)":"")}/>
-          <Metric label="Faturas lidas" value={summary.overdueScanned.toLocaleString("pt-BR")} detail="Base da soma acima"/>
-          <Metric label="Pagamentos recebidos" value="—" detail="Exigiria varrer a base; ver ressalva abaixo"/>
-        </>:<>
-          <Metric label="Pagamentos recebidos" value={String(summary.paymentsInPeriod)} detail={money(summary.paidInPeriod)}/>
-          <Metric label="Faturas em aberto" value={String(summary.openInvoices)} detail={money(summary.openValue)}/>
-          <Metric label="Vencidas" value={String(summary.overdueInvoices)} detail={money(summary.overdueValue)}/>
-          <Metric label="Cadastros consultados" value={String(summary.customersConsulted)} detail={summary.customersUnavailable?`${summary.customersUnavailable} indisponível(is)`:"Todos responderam"}/>
-        </>}
-      </section>
-      <section className="data-card" style={{marginTop:14}}><div className="card-header"><strong>Não está aqui, e por quê</strong></div>
-        <div style={{padding:"4px 0"}}>
-          {[
-            ["Entregues, lidos e promessas","São métricas de disparo de campanha. Nenhuma campanha foi executada."],
-            ["Receita recuperada por campanha","Sem campanha não há o que atribuir; somar pagamento espontâneo aqui seria mentira."],
-            ["Contatos elegíveis","Depende do registro de opt-out, que ainda não existe."],
-          ].map(([title,why])=><div className="aging-row" key={title}><div><strong>{title}</strong><span>{why}</span></div></div>)}
-        </div>
-      </section>
-    </>}
-  </main>;
-}
-
-function Heading({title,text}:{title:string;text:string}){return <div className="page-heading"><div><h1>{title}</h1><p>{text}</p></div></div>}
-function Metric({label,value,detail}:{label:string;value:string;detail:string}){return <article className="metric"><div className="metric-top"><span>{label}</span><span className="metric-icon">$</span></div><strong>{value}</strong><small>{detail}</small></article>}

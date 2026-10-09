@@ -1,5 +1,7 @@
 "use client";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { Icon } from "@/components/ui/icons";
+import { Avatar, Badge, Empty, Loading, Modal, Notice } from "@/components/ui/kit";
 
 /**
  * Chat interno da equipe (issue #10).
@@ -31,12 +33,12 @@ export function InternalChatModule() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
+  const [pane, setPane] = useState<"list" | "chat">("list");
   const [form, setForm] = useState({ subject: "", participantIds: [] as string[], linkedConversationId: "" });
   const endRef = useRef<HTMLDivElement>(null);
 
-  // `nonce` é o gatilho de recarga, mesmo padrão de useIncidents em support.tsx:
-  // manter o efeito como única origem do fetch evita atualizar estado de forma
-  // síncrona dentro dele.
+  // `nonce` é o gatilho de recarga: manter o efeito como única origem do fetch
+  // evita atualizar estado de forma síncrona dentro dele.
   const [nonce, setNonce] = useState(0);
   const reload = useCallback(() => setNonce((value) => value + 1), []);
 
@@ -50,23 +52,19 @@ export function InternalChatModule() {
   }, [nonce]);
 
   useEffect(() => {
-    // Sem conversa aberta não há o que buscar. Limpar `messages` aqui seria
-    // setState síncrono dentro do efeito; a tela já não as renderiza quando
-    // nenhuma conversa está aberta, e trocar de conversa substitui a lista.
+    // Sem conversa aberta não há o que buscar; a tela já não renderiza mensagens.
     if (!openId) return;
     let active = true;
     fetch(`/api/internal-chat?threadId=${encodeURIComponent(openId)}`)
       .then((response) => response.ok ? response.json() : Promise.reject(new Error("sem acesso")))
       .then((payload: { messages: Message[] }) => { if (active) setMessages(payload.messages); })
       // Não mexe em `openId` aqui: ele é dependência deste efeito, e alterá-lo
-      // de dentro dele criaria o ciclo de renderização. A conversa fica aberta
-      // e vazia, com o erro visível — quem lê escolhe outra.
+      // de dentro dele criaria o ciclo de renderização.
       .catch(() => { if (active) { setMessages([]); setError("Conversa não encontrada ou sem acesso."); } });
     return () => { active = false; };
   }, [openId, nonce]);
 
-  // Consulta periódica: o runtime não mantém conexão persistente, então recarregar
-  // é o que existe. O relógio só dispara o `nonce`; quem busca é o efeito acima.
+  // O relógio só dispara o `nonce`; quem busca é o efeito acima.
   useEffect(() => {
     const timer = setInterval(reload, POLL_MS);
     return () => clearInterval(timer);
@@ -87,83 +85,79 @@ export function InternalChatModule() {
     setBusy(true); setError(null);
     const response = await fetch("/api/internal-chat", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ action: "create", ...form }) });
     const payload = await response.json();
-    if (response.ok) { setCreating(false); setForm({ subject: "", participantIds: [], linkedConversationId: "" }); setOpenId(payload.id); reload(); }
+    if (response.ok) { setCreating(false); setForm({ subject: "", participantIds: [], linkedConversationId: "" }); setOpenId(payload.id); setPane("chat"); reload(); }
     else setError(payload.error ?? "Não foi possível abrir a conversa.");
     setBusy(false);
   }
 
-  const open = data?.threads.find((thread) => thread.id === openId) ?? null;
-  const others = (thread: Thread) => thread.participants.filter((p) => p.userId !== data?.me);
+  if (state === "loading") return <div className="inbox-state"><Loading rows={5} /></div>;
+  if (state === "error") return <div className="inbox-state"><Notice tone="bad">Não foi possível carregar o chat.</Notice></div>;
+  if (!data?.available) return <div className="inbox-state"><Notice tone="bad">{data?.detail}.</Notice></div>;
 
-  return <main className="content">
-    <div className="page-heading"><div><h1>Chat da equipe</h1><p>Conversa interna entre quem trabalha aqui. O cliente nunca vê nada disto.</p></div>
-      {state === "ready" && data?.available && <button className="button" onClick={() => { setCreating(true); setError(null); }}>Nova conversa</button>}
-    </div>
+  const open = data.threads.find((thread) => thread.id === openId) ?? null;
+  const others = (thread: Thread) => thread.participants.filter((p) => p.userId !== data.me);
 
-    {state === "loading" && <div className="state-card">Carregando conversas…</div>}
-    {state === "error" && <div className="state-card error">Não foi possível carregar o chat.</div>}
-    {state === "ready" && data && !data.available && <div className="state-card error">{data.detail}.</div>}
+  return <div className={`team-chat pane-${pane}`}>
+    <aside className="inbox-list" aria-label="Conversas internas">
+      <div className="inbox-list-head">
+        <div className="inbox-title"><h1>Chat da equipe</h1></div>
+        <button className="button" onClick={() => { setCreating(true); setError(null); }}><Icon name="plus" size={16} />Nova conversa</button>
+      </div>
+      <div className="inbox-items">
+        {data.threads.length === 0
+          ? <p className="inbox-empty">Nenhuma conversa ainda. Abra uma para tirar dúvida com um colega sem sair do sistema. O cliente nunca vê nada daqui.</p>
+          : data.threads.map((thread) => <button type="button" className={`inbox-item ${thread.id === openId ? "active" : ""}`} key={thread.id} onClick={() => { setOpenId(thread.id); setPane("chat"); setError(null); }}>
+              <Avatar name={thread.subject} />
+              <span className="inbox-item-text">
+                <span className="inbox-item-top"><strong>{thread.subject}</strong>{thread.unread > 0 ? <Badge tone="bad">{thread.unread}</Badge> : <time>{timeLabel(thread.lastMessageAt)}</time>}</span>
+                <span className="inbox-item-preview">{others(thread).map((p) => p.name).join(", ") || "só você"}</span>
+              </span>
+            </button>)}
+      </div>
+    </aside>
 
-    {creating && data && <section className="data-card" style={{ marginBottom: 14 }}>
-      <div className="card-header"><strong>Nova conversa</strong><span className="badge blue">Só quem você escolher participa</span></div>
-      <div style={{ padding: 16, display: "grid", gap: 10, maxWidth: 520 }}>
-        <label className="field"><span>Assunto</span><input value={form.subject} placeholder="ex.: Cliente 21857 com queda recorrente" onChange={(e) => setForm((f) => ({ ...f, subject: e.target.value }))} /></label>
-        <label className="field"><span>Atendimento relacionado (opcional)</span><input value={form.linkedConversationId} placeholder="ex.: 5579998307232" onChange={(e) => setForm((f) => ({ ...f, linkedConversationId: e.target.value }))} /></label>
-        <fieldset className="reason-picker">
+    <section className="inbox-chat" aria-label="Conversa">
+      {!open
+        ? <Empty icon="team" title="Escolha uma conversa">ou abra uma nova para falar com a equipe.</Empty>
+        : <>
+            <header className="chat-head">
+              <button type="button" className="icon-button chat-back" onClick={() => setPane("list")} aria-label="Voltar para a lista"><Icon name="arrow-left" /></button>
+              <Avatar name={open.subject} />
+              <div className="chat-who"><strong>{open.subject}</strong><span>{others(open).map((p) => `${p.name} (${p.role})`).join(", ") || "só você"}</span></div>
+              {open.linkedConversationId && <div className="chat-badges"><Badge tone="info">Atendimento {open.linkedConversationId}</Badge></div>}
+            </header>
+            <div className="messages">
+              {messages.length === 0
+                ? <p className="messages-note">Nenhuma mensagem ainda.</p>
+                : messages.map((message) => <div className={`bubble ${message.authorId === data.me ? "agent" : "customer"}`} key={message.id}>
+                    {message.authorId !== data.me && <span className="bubble-author">{message.authorName}</span>}
+                    <div className="bubble-text">{message.body}</div>
+                    <footer><time>{timeLabel(message.createdAt)}</time></footer>
+                  </div>)}
+              <div ref={endRef} />
+            </div>
+            {error && <p className="form-error composer-error">{error}</p>}
+            <div className="composer">
+              <textarea value={draft} rows={1} placeholder="Escreva para a equipe… (Enter envia)" aria-label="Mensagem para a equipe" onChange={(e) => setDraft(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); void send(); } }} />
+              <div className="composer-bar"><span className="composer-count" /><button type="button" className="button send" disabled={busy || !draft.trim()} onClick={() => void send()}>Enviar<Icon name="send" size={15} /></button></div>
+            </div>
+          </>}
+    </section>
+
+    <Modal open={creating} title="Nova conversa" onClose={() => { setCreating(false); setError(null); }}
+      footer={<><button className="button secondary" disabled={busy} onClick={() => { setCreating(false); setError(null); }}>Cancelar</button><button className="button" disabled={busy || !form.subject.trim()} onClick={() => void create()}>{busy ? "Abrindo…" : "Abrir conversa"}</button></>}>
+      <div className="stack">
+        <label className="field"><span>Assunto</span><input data-autofocus value={form.subject} placeholder="ex.: Cliente 21857 com queda recorrente" onChange={(e) => setForm((f) => ({ ...f, subject: e.target.value }))} /></label>
+        <label className="field"><span>Atendimento relacionado (opcional)</span><input value={form.linkedConversationId} placeholder="número do WhatsApp do cliente" onChange={(e) => setForm((f) => ({ ...f, linkedConversationId: e.target.value }))} /></label>
+        <fieldset className="checks">
           <legend>Quem participa</legend>
           {data.people.filter((person) => person.id !== data.me).map((person) => <label key={person.id}>
             <input type="checkbox" checked={form.participantIds.includes(person.id)} onChange={() => setForm((f) => ({ ...f, participantIds: f.participantIds.includes(person.id) ? f.participantIds.filter((id) => id !== person.id) : [...f.participantIds, person.id] }))} />
-            <span>{person.name} — {person.role}</span>
+            <span>{person.name} <small className="muted">· {person.role}</small></span>
           </label>)}
         </fieldset>
         {error && <p className="form-error">{error}</p>}
-        <div style={{ display: "flex", gap: 8 }}>
-          <button className="button" disabled={busy} onClick={() => void create()}>{busy ? "Abrindo…" : "Abrir conversa"}</button>
-          <button className="button secondary" disabled={busy} onClick={() => { setCreating(false); setError(null); }}>Cancelar</button>
-        </div>
       </div>
-    </section>}
-
-    {state === "ready" && data?.available && <div className="conversation-layout" style={{ gridTemplateColumns: "300px minmax(420px, 1fr)" }}>
-      <section className="conversation-list">
-        {data.threads.length === 0
-          ? <p style={{ padding: 16, fontSize: 12, color: "var(--muted)", lineHeight: 1.6 }}>Nenhuma conversa ainda. Abra uma para tirar dúvida com um colega sem sair do sistema.</p>
-          : data.threads.map((thread) => <button className={`contact ${thread.id === openId ? "active" : ""}`} key={thread.id} onClick={() => setOpenId(thread.id)} style={{ width: "100%", textAlign: "left", border: 0, background: "none", cursor: "pointer" }}>
-              <div className="avatar">{thread.subject.slice(0, 2).toUpperCase()}</div>
-              <div>
-                <p>{thread.subject}</p>
-                <span>{others(thread).map((p) => p.name).join(", ") || "só você"}</span>
-              </div>
-              {thread.unread > 0 ? <span className="badge amber">{thread.unread}</span> : <time>{timeLabel(thread.lastMessageAt)}</time>}
-            </button>)}
-      </section>
-
-      <section className="conversation-main">
-        {!open
-          ? <p style={{ padding: 20, fontSize: 12, color: "var(--muted)" }}>Escolha uma conversa à esquerda.</p>
-          : <>
-              <div className="chat-header"><div className="person">
-                <div className="avatar">{open.subject.slice(0, 2).toUpperCase()}</div>
-                <div><strong>{open.subject}</strong><span>{others(open).map((p) => `${p.name} (${p.role})`).join(", ")}</span></div></div>
-                {open.linkedConversationId && <span className="badge blue">Atendimento {open.linkedConversationId}</span>}
-              </div>
-              <div className="messages">
-                {messages.length === 0
-                  ? <p style={{ fontSize: 12, color: "var(--muted)", padding: 12 }}>Nenhuma mensagem ainda.</p>
-                  : messages.map((message) => <div className={`message ${message.authorId === data.me ? "agent" : "customer"}`} key={message.id}>
-                      {message.authorId !== data.me && <strong style={{ display: "block", fontSize: 11, marginBottom: 3 }}>{message.authorName}</strong>}
-                      {message.body}
-                      <time>{timeLabel(message.createdAt)}</time>
-                    </div>)}
-                <div ref={endRef} />
-              </div>
-              {error && <p className="form-error" style={{ padding: "0 16px" }}>{error}</p>}
-              <div className="composer">
-                <textarea value={draft} placeholder="Escreva para a equipe…" onChange={(e) => setDraft(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); void send(); } }} />
-                <button disabled={busy || !draft.trim()} onClick={() => void send()} title="Enviar" aria-label="Enviar mensagem">➤</button>
-              </div>
-            </>}
-      </section>
-    </div>}
-  </main>;
+    </Modal>
+  </div>;
 }
