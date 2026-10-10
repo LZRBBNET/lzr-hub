@@ -8,6 +8,7 @@ import type { ChatMessage } from "../agent/types.ts";
 import { appVersion } from "../runtime/app-version.ts";
 import { traceAgentResult } from "../observability/trace-agent-result.ts";
 import { resolveReply, type ReplyOverrides } from "./reply-templates-shared.ts";
+import { AI_SENDER } from "./conversation-state-shared.ts";
 import {
   CSAT_QUESTION,
   CSAT_THANKS,
@@ -37,6 +38,15 @@ export const LLM_CONTEXT_MAX_AGE_MS = 6 * 60 * 60 * 1000;
 export const SUGGESTION_ROLE = "suggestion";
 /** Desfecho de quem só sugeriu: nunca conta como atendimento resolvido. */
 export const SUGGESTED_STATUS = "suggested";
+/**
+ * Desfecho da primeira resposta automática que de fato saiu e não resolveu nada.
+ * O pipeline diria `simulated` ("preparei a segunda via fictícia") ou
+ * `resolved`, e os dois entram na conta de resolvidos sem humano — mas o texto
+ * que saiu é a resposta aprovada, que promete um atendente. Contar isso como
+ * resolução seria creditar à IA um atendimento que ninguém fez.
+ */
+export const AUTO_REPLIED_STATUS = "replied";
+const CLAIMS_RESOLUTION = new Set(["resolved", "simulated"]);
 
 export type ChannelRole = "customer" | "agent" | "suggestion";
 /**
@@ -50,7 +60,7 @@ export interface ChannelMessageRow {
   correlationId?: string;
   /** Preenchido na leitura; quem grava deixa o banco carimbar. Ausente = sem prazo conhecido. */
   createdAt?: string;
-  /** E-mail de quem escreveu a resposta enviada. Ausente = não registrado, nunca "a IA". */
+  /** E-mail de quem escreveu a resposta enviada, ou `ia` quando a resposta automática saiu pelo canal. Ausente = não registrado, nunca "a IA". */
   sentBy?: string;
   /** `wamid` da Meta, quando existe. */
   externalMessageId?: string;
@@ -58,12 +68,72 @@ export interface ChannelMessageRow {
 /**
  * `response` vem `null` quando a resposta automática está desligada — o fluxo do
  * n8n precisa checar `autoReply` antes de enviar qualquer coisa ao cliente.
+ *
+ * `externalMessageId` é o `wamid` da resposta quando o próprio canal a enviou
+ * (rota da Meta): presente = já saiu, e quem chama não reenvia.
  */
-export interface ChannelResponse { response: string | null; autoReply: boolean; suggestion?: string; status: string; handoff: boolean; correlationId: string }
+export interface ChannelResponse { response: string | null; autoReply: boolean; suggestion?: string; status: string; handoff: boolean; correlationId: string; externalMessageId?: string }
+
+/**
+ * O resultado de tentar levar a resposta ao cliente. `unknown` = pode ter saído
+ * (timeout): não é sucesso, e também não convida a reenviar.
+ */
+export type AutoReplyDelivery =
+  | { sent: true; messageId: string; /** O que de fato saiu, quando é reentrega de um envio já feito. */ text?: string }
+  | { sent: false; outcome: "blocked" | "failed" | "unknown"; reason: string };
+/** `inboundMessageId` é a chave de idempotência da fala do cliente — o `wamid`, na Meta. */
+export type AutoReplySender = (input: { conversationId: string; text: string; inboundMessageId: string }) => Promise<AutoReplyDelivery>;
+
 export interface ChannelOptions {
   autoReply: boolean;
   /** Respostas aprovadas editadas por quem administra; o que falta cai no padrão do código. */
   templates?: ReplyOverrides;
+  /**
+   * Quem leva a resposta automática ao cliente. Ausente, quem chama envia — o
+   * fluxo do n8n lê `response`. Presente (rota da Meta), só vira mensagem
+   * entregue o que o envio confirmar; o resto fica como sugestão.
+   *
+   * Com `send`, a resposta é **primeira resposta**: sai sem a pergunta de
+   * avaliação, gravada com autor `ia`, e não conta como resolução — a conversa
+   * continua na fila até um humano responder (ver `awaitingSinceFrom`).
+   */
+  send?: AutoReplySender;
+}
+
+type Delivery = { sent: true; messageId?: string; text?: string } | { sent: false; failure?: Extract<AutoReplyDelivery, { sent: false }> };
+
+/**
+ * Antes, com a resposta automática ligada, a resposta era gravada como enviada
+ * sem que nada saísse quando ninguém do outro lado a enviava — e a tela afirmava
+ * que o cliente tinha recebido. Aqui a gravação passa a seguir o envio.
+ */
+async function deliver(options: ChannelOptions, input: ChannelMessageInput, text: string): Promise<Delivery> {
+  if (!options.autoReply) return { sent: false };
+  if (!options.send) return { sent: true };
+  try {
+    const delivery = await options.send({ conversationId: input.externalConversationId, text, inboundMessageId: input.idempotencyKey });
+    return delivery.sent ? delivery : { sent: false, failure: delivery };
+  } catch {
+    // Quem envia não deveria lançar; se lançou, não dá para afirmar nem que saiu nem que não.
+    return { sent: false, failure: { sent: false, outcome: "unknown", reason: "Erro inesperado no envio automático." } };
+  }
+}
+
+/** O que o canal enviou leva o `wamid` (casa o recibo de entrega) e o autor `ia`; o que o n8n diz ter enviado fica sem autor — não registrado. */
+const sentFields = (delivery: Delivery): Pick<ChannelMessageRow, "externalMessageId" | "sentBy"> =>
+  delivery.sent && delivery.messageId ? { externalMessageId: delivery.messageId, sentBy: AI_SENDER } : {};
+
+/** A falha do envio automático tem linha própria na auditoria: "a IA tentou responder e não conseguiu" precisa ser achável. */
+async function auditFailure(repository: ChannelRepository, input: ChannelMessageInput, delivery: Delivery, text: string): Promise<void> {
+  if (delivery.sent || !delivery.failure) return;
+  const { outcome, reason } = delivery.failure;
+  await repository.audit({
+    correlationId: input.correlationId,
+    entity: `conversation:${input.externalConversationId}`,
+    action: outcome === "blocked" ? "whatsapp.autoreply.blocked" : "whatsapp.autoreply.failed",
+    result: outcome,
+    reason: `Resposta automática NÃO enviada: ${sanitizeHandoffText(reason)} Ficou como sugestão: "${sanitizeHandoffText(text).slice(0, 180)}"`,
+  });
 }
 
 /**
@@ -84,8 +154,11 @@ export interface ChannelRepository {
   getHistory(channel: string, externalConversationId: string): Promise<ChannelMessageRow[]>;
   saveMessages(channel: string, externalConversationId: string, messages: ChannelMessageRow[]): Promise<void>;
   saveIdempotency(idempotencyKey: string, channel: string, externalConversationId: string, response: ChannelResponse): Promise<void>;
-  audit(entry: { correlationId: string; entity: string; result: string; reason: string }): Promise<void>;
+  /** Sem `action`, é o registro do atendimento (`channel.message.processed`). */
+  audit(entry: ChannelAuditEntry): Promise<void>;
 }
+
+export interface ChannelAuditEntry { correlationId: string; entity: string; result: string; reason: string; action?: string }
 
 export interface ChannelMessageInput { externalConversationId: string; text: string; idempotencyKey: string; correlationId: string }
 
@@ -132,17 +205,19 @@ export async function processChannelMessage(
     });
     // Mesmo o agradecimento é mensagem enviada ao cliente: com resposta
     // automática desligada, a nota é registrada e nada sai daqui.
+    const thanks = await deliver(options, input, CSAT_THANKS);
     await repository.saveMessages(CHANNEL_NAME, input.externalConversationId, [
       { role: "customer", content: input.text, correlationId: input.correlationId, externalMessageId: input.idempotencyKey },
-      { role: options.autoReply ? "agent" : SUGGESTION_ROLE, content: CSAT_THANKS, correlationId: input.correlationId },
+      { role: thanks.sent ? "agent" : SUGGESTION_ROLE, content: thanks.sent ? thanks.text ?? CSAT_THANKS : CSAT_THANKS, correlationId: input.correlationId, ...sentFields(thanks) },
     ]);
     const rated: ChannelResponse = {
-      response: options.autoReply ? CSAT_THANKS : null,
-      autoReply: options.autoReply,
-      suggestion: options.autoReply ? undefined : CSAT_THANKS,
+      response: thanks.sent ? CSAT_THANKS : null,
+      autoReply: thanks.sent,
+      suggestion: thanks.sent ? undefined : CSAT_THANKS,
       status: "rated",
       handoff: false,
       correlationId: input.correlationId,
+      ...(thanks.sent && thanks.messageId ? { externalMessageId: thanks.messageId } : {}),
     };
     await repository.saveIdempotency(input.idempotencyKey, CHANNEL_NAME, input.externalConversationId, rated);
     await repository.audit({
@@ -151,6 +226,7 @@ export async function processChannelMessage(
       result: `csat:${csatScore}`,
       reason: "Avaliação de atendimento recebida via canal n8n/WhatsApp",
     });
+    await auditFailure(repository, input, thanks, CSAT_THANKS);
     return rated;
   }
 
@@ -170,22 +246,31 @@ export async function processChannelMessage(
   const approved = resolveReply(result.intent, options.templates);
 
   // Só pede nota quando a resposta é de fato entregue — não dá para avaliar
-  // um atendimento que o cliente não recebeu.
-  const askCsat = options.autoReply && shouldAskCsat(result.finalStatus, result.handoff.required);
+  // um atendimento que o cliente não recebeu. E não na primeira resposta pela
+  // Meta: "um atendente retorna... Antes de encerrar, avalie" se contradiz.
+  const askCsat = options.autoReply && !options.send && shouldAskCsat(result.finalStatus, result.handoff.required);
   const reply = askCsat ? `${approved}\n\n${CSAT_QUESTION}` : approved;
+  const delivery = await deliver(options, input, reply);
+  // Não saiu: fica a resposta aprovada, sem a pergunta de avaliação — igual ao
+  // modo observação. Saiu: fica o que o cliente recebeu.
+  const content = delivery.sent ? delivery.text ?? reply : approved;
 
   await repository.saveMessages(CHANNEL_NAME, input.externalConversationId, [
     { role: "customer", content: input.text, correlationId: input.correlationId, externalMessageId: input.idempotencyKey },
-    { role: options.autoReply ? "agent" : SUGGESTION_ROLE, content: reply, correlationId: input.correlationId },
+    // O `wamid` da resposta é o que casa o recibo de entrega com esta linha.
+    { role: delivery.sent ? "agent" : SUGGESTION_ROLE, content, correlationId: input.correlationId, ...sentFields(delivery) },
   ]);
 
   const response: ChannelResponse = {
-    response: options.autoReply ? reply : null,
-    autoReply: options.autoReply,
-    suggestion: options.autoReply ? undefined : reply,
-    status: options.autoReply ? result.finalStatus : SUGGESTED_STATUS,
+    response: delivery.sent ? content : null,
+    autoReply: delivery.sent,
+    suggestion: delivery.sent ? undefined : content,
+    status: !delivery.sent ? SUGGESTED_STATUS
+      : delivery.messageId && CLAIMS_RESOLUTION.has(result.finalStatus) ? AUTO_REPLIED_STATUS
+      : result.finalStatus,
     handoff: result.handoff.required,
     correlationId: input.correlationId,
+    ...(delivery.sent && delivery.messageId ? { externalMessageId: delivery.messageId } : {}),
   };
 
   await repository.saveIdempotency(input.idempotencyKey, CHANNEL_NAME, input.externalConversationId, response);
@@ -198,10 +283,13 @@ export async function processChannelMessage(
     // Sanitizado mesmo sendo texto nosso: as respostas de hoje são fixas, mas a
     // auditoria é lida por quem não participou do atendimento, e a regra do
     // projeto não abre exceção para "este caso não tem dado pessoal".
-    reason: options.autoReply
-      ? `Resposta ENVIADA ao cliente: "${sanitizeHandoffText(reply ?? "").slice(0, 180)}"`
-      : `Resposta apenas sugerida, não enviada: "${sanitizeHandoffText(reply ?? "").slice(0, 180)}"`,
+    reason: delivery.sent
+      ? `Resposta ENVIADA ao cliente: "${sanitizeHandoffText(content).slice(0, 180)}"`
+      : delivery.failure
+        ? `Resposta automática NÃO enviada (ver registro do envio); fica como sugestão: "${sanitizeHandoffText(content).slice(0, 180)}"`
+        : `Resposta apenas sugerida, não enviada: "${sanitizeHandoffText(content).slice(0, 180)}"`,
   });
+  await auditFailure(repository, input, delivery, content);
   await metrics?.saveOutcome({
     channel: CHANNEL_NAME,
     externalConversationId: input.externalConversationId,
@@ -303,9 +391,9 @@ export class D1ChannelRepository implements ChannelRepository {
       idempotencyKey, channel, externalConversationId, responseJson: response, createdAt: new Date().toISOString(),
     });
   }
-  async audit(entry: { correlationId: string; entity: string; result: string; reason: string }): Promise<void> {
+  async audit(entry: ChannelAuditEntry): Promise<void> {
     await this.db.insert(auditEvents).values({
-      id: randomUUID(), actorId: "n8n-channel", role: "system", action: "channel.message.processed",
+      id: randomUUID(), actorId: "n8n-channel", role: "system", action: entry.action ?? "channel.message.processed",
       entity: entry.entity, beforeMasked: null, afterMasked: null, reason: entry.reason,
       correlationId: entry.correlationId, result: entry.result, origin: "ia", createdAt: new Date().toISOString(),
     });
@@ -315,7 +403,7 @@ export class D1ChannelRepository implements ChannelRepository {
 export class MemoryChannelRepository implements ChannelRepository {
   private readonly idempotencyStore = new Map<string, ChannelResponse>();
   private readonly messageStore: Array<ChannelMessageRow & { channel: string; externalConversationId: string }> = [];
-  readonly audits: Array<{ correlationId: string; entity: string; result: string; reason: string }> = [];
+  readonly audits: ChannelAuditEntry[] = [];
   async findIdempotent(idempotencyKey: string) { return this.idempotencyStore.get(idempotencyKey); }
   async getHistory(channel: string, externalConversationId: string) {
     return this.messageStore
@@ -330,5 +418,5 @@ export class MemoryChannelRepository implements ChannelRepository {
   async saveIdempotency(idempotencyKey: string, _channel: string, _externalConversationId: string, response: ChannelResponse) {
     this.idempotencyStore.set(idempotencyKey, response);
   }
-  async audit(entry: { correlationId: string; entity: string; result: string; reason: string }) { this.audits.push(entry); }
+  async audit(entry: ChannelAuditEntry) { this.audits.push(entry); }
 }

@@ -1,6 +1,7 @@
 import { and, desc, eq, ilike, inArray, like, notLike, sql } from "drizzle-orm";
 import { NON_CUSTOMER_LIKE, isNonCustomerConversation } from "./conversation-scope.ts";
-import { channelContacts, channelMessages, conversationOutcomes } from "../../db/schema.ts";
+import { channelContacts, channelMessages, conversationOutcomes, conversationStates, users } from "../../db/schema.ts";
+import { AI_SENDER, AI_SENDER_NAME, awaitingSinceFrom, effectiveState, type ConversationStateRow, type EffectiveState } from "./conversation-state-shared.ts";
 
 /**
  * Conversas reais recebidas pelos canais (hoje só o n8n/WhatsApp). Nada aqui é
@@ -33,6 +34,18 @@ export interface ConversationSummary {
   awaitingSince?: string;
   /** Autor da última mensagem, quando é resposta de atendente. */
   lastSentBy?: string;
+  /** Nome de quem respondeu por último, quando a conta existe. O e-mail fica em `lastSentBy`. */
+  lastSentByName?: string;
+  /** A última fala do cliente: é ela que abre a janela de 24 horas da Meta. */
+  lastCustomerAt?: string;
+  /**
+   * O texto da última fala do cliente. A lista mostrava a última linha, e a
+   * última linha costuma ser a sugestão da IA — o atendente lia o que a IA
+   * pensou em vez do que o cliente pediu.
+   */
+  lastCustomerMessage?: string;
+  /** Aberta ou resolvida, e com quem. Ver `conversation-state-shared.ts`. */
+  state: EffectiveState;
 }
 
 /**
@@ -44,20 +57,18 @@ export interface ConversationMessage {
   content: string;
   createdAt: string;
   sentBy?: string;
+  /** Nome da conta que enviou. A bolha mostrava o e-mail, que é identificador, não nome. */
+  sentByName?: string;
   deliveryStatus?: string;
   deliveryError?: string;
 }
 
-/** Linhas da mais nova para a mais antiga. */
-export function awaitingSinceFrom(rowsNewestFirst: Array<{ role: string; createdAt: string }>): string | undefined {
-  let since: string | undefined;
-  for (const row of rowsNewestFirst) {
-    if (row.role === "suggestion") continue;
-    if (row.role !== "customer") break;
-    since = row.createdAt;
-  }
-  return since;
-}
+// Mora no módulo compartilhado: o canal e a fila usam a mesma noção de "resposta da IA".
+export { awaitingSinceFrom };
+
+/** O nome que aparece na bolha. A resposta automática não tem conta: é a IA, e a tela diz isso. */
+const senderName = (sentBy: string | null | undefined, names: Map<string, string>) =>
+  !sentBy ? undefined : sentBy === AI_SENDER ? AI_SENDER_NAME : names.get(sentBy);
 
 /**
  * A janela em que a Meta aceita texto livre: 24 horas desde a última fala do
@@ -165,7 +176,7 @@ export class DbConversationsRepository implements ConversationsRepository {
     const ids = grouped.map((row: { externalConversationId: string }) => row.externalConversationId);
     // Mensagens, desfechos e nomes de todas as conversas da página em três
     // consultas só — a redução por conversa acontece aqui, não dentro do laço.
-    const [recent, outcomes, contacts] = await Promise.all([
+    const [recent, outcomes, contacts, states] = await Promise.all([
       this.db.select({
         externalConversationId: channelMessages.externalConversationId,
         role: channelMessages.role,
@@ -190,6 +201,7 @@ export class DbConversationsRepository implements ConversationsRepository {
         displayName: channelContacts.displayName,
       }).from(channelContacts)
         .where(inArray(channelContacts.externalConversationId, ids)),
+      this.db.select().from(conversationStates).where(inArray(conversationStates.externalConversationId, ids)),
     ]);
 
     const byConversation = new Map<string, Array<{ role: string; content: string; createdAt: string; sentBy: string | null }>>();
@@ -201,11 +213,21 @@ export class DbConversationsRepository implements ConversationsRepository {
     const lastOutcome = new Map<string, { intent: string; finalStatus: string; handoff: boolean }>();
     for (const row of outcomes) if (!lastOutcome.has(row.externalConversationId)) lastOutcome.set(row.externalConversationId, row);
     const names = new Map<string, string>(contacts.map((row: { channel: string; externalConversationId: string; displayName: string }) => [`${row.channel}:${row.externalConversationId}`, row.displayName]));
+    const stateRows = new Map<string, ConversationStateRow>(states.map((row: ConversationStateRow & { channel: string; externalConversationId: string }) => [`${row.channel}:${row.externalConversationId}`, {
+      status: row.status === "resolved" ? "resolved" : "open", assigneeId: row.assigneeId, assigneeName: row.assigneeName,
+      assignedAt: row.assignedAt, resolvedAt: row.resolvedAt, resolvedBy: row.resolvedBy,
+    }]));
+    const senders = await this.namesByEmail(grouped.map((row: { externalConversationId: string }) => {
+      const last = byConversation.get(row.externalConversationId)?.[0];
+      return last?.role === "agent" ? last.sentBy : null;
+    }));
 
     return grouped.map((row: { channel: string; externalConversationId: string; lastAt: string; messages: number }) => {
       const rows = byConversation.get(row.externalConversationId) ?? [];
       const last = rows[0];
+      const lastCustomer = rows.find((item) => item.role === "customer");
       const outcome = lastOutcome.get(row.externalConversationId);
+      const sentBy = last?.role === "agent" ? last.sentBy ?? undefined : undefined;
       return {
         channel: row.channel,
         externalConversationId: row.externalConversationId,
@@ -218,9 +240,23 @@ export class DbConversationsRepository implements ConversationsRepository {
         handoff: outcome?.handoff,
         displayName: names.get(`${row.channel}:${row.externalConversationId}`),
         awaitingSince: awaitingSinceFrom(rows),
-        lastSentBy: last?.role === "agent" ? last.sentBy ?? undefined : undefined,
+        lastSentBy: sentBy,
+        lastSentByName: senderName(sentBy, senders),
+        lastCustomerAt: lastCustomer?.createdAt,
+        lastCustomerMessage: lastCustomer?.content,
+        state: effectiveState(stateRows.get(`${row.channel}:${row.externalConversationId}`), lastCustomer?.createdAt),
       };
     });
+  }
+
+  /** E-mail de quem enviou → nome da conta. Conta apagada simplesmente não tem nome. */
+  private async namesByEmail(emails: Array<string | null | undefined>): Promise<Map<string, string>> {
+    const unique = [...new Set(emails.filter((email): email is string => !!email))];
+    if (unique.length === 0) return new Map();
+    try {
+      const rows: Array<{ email: string; name: string }> = await this.db.select({ email: users.email, name: users.name }).from(users).where(inArray(users.email, unique));
+      return new Map(rows.map((row) => [row.email, row.name]));
+    } catch { return new Map(); }
   }
 
   async getMessages(channel: string, externalConversationId: string, limit: number): Promise<ConversationMessage[]> {
@@ -235,8 +271,9 @@ export class DbConversationsRepository implements ConversationsRepository {
       .where(and(eq(channelMessages.channel, channel), eq(channelMessages.externalConversationId, externalConversationId)))
       .orderBy(desc(channelMessages.createdAt), desc(replyAfterCustomer))
       .limit(limit);
+    const senders = await this.namesByEmail(rows.map((row: { sentBy: string | null }) => row.sentBy));
     return rows.map((row: { role: string; content: string; createdAt: string; sentBy: string | null; deliveryStatus: string | null; deliveryError: string | null }) => ({
-      role: role(row.role), content: row.content, createdAt: row.createdAt, sentBy: row.sentBy ?? undefined,
+      role: role(row.role), content: row.content, createdAt: row.createdAt, sentBy: row.sentBy ?? undefined, sentByName: senderName(row.sentBy, senders),
       deliveryStatus: row.deliveryStatus ?? undefined, deliveryError: row.deliveryError ?? undefined,
     })).reverse();
   }
@@ -278,6 +315,10 @@ export class MemoryConversationsRepository implements ConversationsRepository {
   readonly rows: Array<{ channel: string; externalConversationId: string; role: ConversationRole; content: string; createdAt: string; sentBy?: string; deliveryStatus?: string; deliveryError?: string }> = [];
   /** `canal:conversa` → nome do perfil. */
   readonly contacts = new Map<string, string>();
+  /** `canal:conversa` → estado gravado. */
+  readonly states = new Map<string, ConversationStateRow>();
+  /** e-mail → nome da conta. */
+  readonly userNames = new Map<string, string>();
   add(row: { channel: string; externalConversationId: string; role: ConversationRole; content: string; createdAt: string; sentBy?: string; deliveryStatus?: string; deliveryError?: string }) { this.rows.push(row); }
   async listConversations(limit: number, search?: string | null): Promise<ConversationSummary[]> {
     const term = searchTerm(search);
@@ -290,12 +331,18 @@ export class MemoryConversationsRepository implements ConversationsRepository {
     }
     const summaries: ConversationSummary[] = [...byId.entries()].map(([key, rows]) => {
       const last = rows[0];
+      const lastCustomer = rows.find((row) => row.role === "customer");
+      const sentBy = last.role === "agent" ? last.sentBy : undefined;
       return {
         channel: last.channel, externalConversationId: last.externalConversationId,
         lastMessage: last.content, lastRole: last.role, lastAt: last.createdAt, messages: rows.length,
         displayName: this.contacts.get(key),
         awaitingSince: awaitingSinceFrom(rows),
-        lastSentBy: last.role === "agent" ? last.sentBy : undefined,
+        lastSentBy: sentBy,
+        lastSentByName: senderName(sentBy, this.userNames),
+        lastCustomerAt: lastCustomer?.createdAt,
+        lastCustomerMessage: lastCustomer?.content,
+        state: effectiveState(this.states.get(key), lastCustomer?.createdAt),
       };
     });
     return summaries
@@ -310,7 +357,7 @@ export class MemoryConversationsRepository implements ConversationsRepository {
       .filter((row) => row.channel === channel && row.externalConversationId === externalConversationId)
       .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
       .slice(-limit)
-      .map(({ role: value, content, createdAt, sentBy, deliveryStatus, deliveryError }) => ({ role: value, content, createdAt, sentBy, deliveryStatus, deliveryError }));
+      .map(({ role: value, content, createdAt, sentBy, deliveryStatus, deliveryError }) => ({ role: value, content, createdAt, sentBy, sentByName: senderName(sentBy, this.userNames), deliveryStatus, deliveryError }));
   }
   readonly outcomes = new Map<string, ConversationOutcome>();
   async getOutcome(channel: string, externalConversationId: string) { return this.outcomes.get(`${channel}:${externalConversationId}`); }

@@ -5,6 +5,7 @@ import { sanitizeHandoffText } from "../agent/handoff.ts";
 import { MAX_TEXT_LENGTH, markAsRead, sendTextMessage, type MetaSendConfig } from "../integrations/meta/cloud-client.ts";
 import { isNonCustomerConversation } from "./conversation-scope.ts";
 import { containsHomologationText } from "./reply-templates-shared.ts";
+import { REPLY_WINDOW_MS } from "./conversation-state-shared.ts";
 
 /**
  * O atendente responde ao cliente pelo WhatsApp, pela tela de Atendimentos.
@@ -17,7 +18,8 @@ import { containsHomologationText } from "./reply-templates-shared.ts";
  * cliente: fora dela a Meta exige modelo aprovado, que ainda não existe aqui.
  */
 
-export const REPLY_WINDOW_MS = 24 * 60 * 60 * 1000;
+// A janela mora no módulo compartilhado: a tela e a fila contam com a mesma régua do envio.
+export { REPLY_WINDOW_MS };
 const KEY_PATTERN = /^[\w-]{8,100}$/;
 const CLAIM_PREFIX = "reply:";
 
@@ -36,7 +38,8 @@ export type ReplyResult =
   | { ok: true; messageId: string; duplicate: boolean; recorded: boolean }
   | { ok: false; status: 400 | 403 | 409 | 422 | 429 | 502 | 503; reason: string };
 
-export type ClaimState = { status: "pending" } | { status: "sent"; messageId: string } | { status: "unknown" };
+/** `text` é o que saiu, para quem precisa refazer o registro sem reenviar (a resposta automática, na reentrega do webhook). */
+export type ClaimState = { status: "pending" } | { status: "sent"; messageId: string; text?: string } | { status: "unknown" };
 
 export interface ReplyRepository {
   lastCustomerMessage(channel: string, conversationId: string): Promise<{ createdAt: string; externalMessageId?: string } | undefined>;

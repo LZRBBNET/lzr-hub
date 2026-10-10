@@ -380,9 +380,10 @@ export const channelMessages = pgTable("channel_messages", {
    */
   correlationId: text("correlation_id"),
   /**
-   * Quem escreveu a resposta que o cliente recebeu: o e-mail do atendente, ou
-   * nulo. Nulo significa **não registrado** (mensagem do cliente, sugestão da IA
-   * ou anterior a esta coluna) — nunca "foi a IA", que seria inventar autoria.
+   * Quem escreveu a resposta que o cliente recebeu: o e-mail do atendente,
+   * `ia` quando a resposta automática saiu pelo próprio canal (Meta), ou nulo.
+   * Nulo significa **não registrado** (mensagem do cliente, sugestão da IA ou
+   * anterior a esta coluna) — nunca "foi a IA", que seria inventar autoria.
    */
   sentBy: text("sent_by"),
   /**
@@ -416,6 +417,28 @@ export const channelContacts = pgTable("channel_contacts", {
   channel: text("channel").notNull(),
   externalConversationId: text("external_conversation_id").notNull(),
   displayName: text("display_name").notNull(),
+  updatedAt: text("updated_at").notNull(),
+}, (table) => [primaryKey({ columns: [table.channel, table.externalConversationId] })]);
+
+/**
+ * Quem cuida de cada conversa. Só existe linha onde alguém agiu: sem linha, a
+ * conversa está aberta e sem responsável — é a IA quem atende.
+ *
+ * Reabrir não é gravado: resolvida que recebeu fala nova do cliente depois de
+ * `resolved_at` está aberta (ver `effectiveState` em
+ * `lib/platform/conversation-state-shared.ts`). `assignee_name` é cópia do nome
+ * no momento em que assumiu — a tela não precisa juntar com `users`, e conta
+ * desativada continua aparecendo como quem atendeu.
+ */
+export const conversationStates = pgTable("conversation_states", {
+  channel: text("channel").notNull(),
+  externalConversationId: text("external_conversation_id").notNull(),
+  status: text("status").notNull(),
+  assigneeId: text("assignee_id"),
+  assigneeName: text("assignee_name"),
+  assignedAt: text("assigned_at"),
+  resolvedAt: text("resolved_at"),
+  resolvedBy: text("resolved_by"),
   updatedAt: text("updated_at").notNull(),
 }, (table) => [primaryKey({ columns: [table.channel, table.externalConversationId] })]);
 

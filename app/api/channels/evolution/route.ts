@@ -25,7 +25,6 @@ import { parseEvolutionWebhook } from "@/lib/integrations/evolution/webhook-pars
  * é mudança coordenada que derruba o canal se sair fora de ordem.
  */
 const channelEnabled = () => process.env.FEATURE_N8N_CHANNEL === "true";
-const autoReplyEnabled = () => process.env.FEATURE_N8N_AUTOREPLY === "true";
 
 /**
  * Segredos aceitos. **Mais de um de propósito**, e essa é a única razão de a
@@ -73,7 +72,11 @@ export async function POST(request: Request) {
     // mesmo webhook (ela reenvia quando não recebe 200) não processa duas vezes.
     { externalConversationId: phone, text, idempotencyKey: messageId, correlationId },
     new DbSupportMetricsRepository(db),
-    { autoReply: autoReplyEnabled(), templates: await loadOverrides(new DbReplyTemplatesRepository(db)) },
+    // Nunca responde sozinha, com ou sem `FEATURE_N8N_AUTOREPLY`: esta rota não
+    // tem envio — a Evolution não manda o que volta no webhook. Passar
+    // `autoReply` gravaria a resposta como entregue sem ninguém enviá-la. A
+    // resposta automática existe só onde o envio existe (rota da Meta).
+    { autoReply: false, templates: await loadOverrides(new DbReplyTemplatesRepository(db)) },
     (input) => captureLeadFromContact(
       new DbCrmRepository(db),
       input,

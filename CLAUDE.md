@@ -101,14 +101,14 @@ Flags relevantes:
 |---|---|---|
 | `FEATURE_AUTH` | Exige login e aplica RBAC nas rotas | **ligada** |
 | `FEATURE_N8N_CHANNEL` | Canal WhatsApp recebe e registra mensagem (nome histórico: o n8n saiu do caminho, a Evolution chama a API direto) | **ligada** (modo observação — ver abaixo) |
-| `FEATURE_N8N_AUTOREPLY` | A IA **responde ao cliente** pelo canal | desligada |
+| `FEATURE_N8N_AUTOREPLY` | A IA **responde ao cliente** pelo canal — pela Meta, como **primeira resposta**, uma por espera (ver *Auditoria do que a IA faz*) | desligada |
 | `FEATURE_QUEUES` | Filas reais (Redis/BullMQ) | desligada |
 | `FEATURE_IXC_WRITE` | Escrita no ERP — as 4 operações do catálogo (segunda via, OS, renegociação, cadastro de cliente) | **ligada** |
 | `FEATURE_IXC_FULL_BASE` | Leitura da **base inteira** do IXC, não só da allowlist | **ligada** |
 | `FEATURE_LLM_INTENT` | Classificação de intenção por modelo de linguagem (Groq) | **ligada** |
 | `FEATURE_COPILOT_LLM` | O copiloto do atendente **redige** a resposta a partir dos trechos citados | desligada — sem ela o copiloto mostra os trechos como estão |
 | `FEATURE_META_WHATSAPP` | Canal **oficial** da Meta (Cloud API) — `/api/channels/meta` | **ligada** — número `+55 79 6000-4421`, conta "Bbnet Bot" (ver `docs/integrations/whatsapp-meta.md`) |
-| `FEATURE_ATTENDANT_REPLY` | O **atendente responde ao cliente** pela tela de Atendimentos, via Cloud API. Também exige `FEATURE_AUTH`, `META_ACCESS_TOKEN` e `META_PHONE_NUMBER_ID` | desligada — pendente o token permanente do usuário do sistema no Railway |
+| `FEATURE_ATTENDANT_REPLY` | O **atendente responde ao cliente** pela tela de Atendimentos, via Cloud API. Também exige `FEATURE_AUTH`, `META_ACCESS_TOKEN` e `META_PHONE_NUMBER_ID` | **ligada** — em uso em produção (resposta de atendente "Aceita pela Meta" vista na tela em 10/10/2026; não conferido no painel do Railway) |
 | `FEATURE_TELEGRAM_ALERTS` | Ingestão de alerta de rede real via webhook do Telegram | desligada — pendente criar o bot e chamar `setWebhook` (ver `app/api/integrations/telegram/webhook`) |
 | `IXC_MODE` | `disabled` / `staging-readonly` | `staging-readonly` |
 
@@ -209,7 +209,29 @@ O registro do canal passou a dizer **"Resposta ENVIADA ao cliente: «...»"** qu
 
 A ficha aparece **ao lado da conversa** em Atendimentos (`ConversationAuditPanel`), com o `correlationId` para procurar a linha exata em Administração → Auditoria.
 
-⚠️ A ordem era: auditoria → reescrever os textos → ligar o envio. Os dois primeiros estão feitos — o canal usa as respostas aprovadas, não o texto de homologação. O que ainda falta antes de ligar `FEATURE_N8N_AUTOREPLY`: várias respostas prometem ação humana ("um atendente envia a segunda via"), e com envio automático essa promessa precisa virar fila de fato, senão o cliente espera por algo que ninguém sabe que deve fazer.
+⚠️ A ordem era: auditoria → reescrever os textos → ligar o envio. Os dois primeiros estão feitos — o canal usa as respostas aprovadas, não o texto de homologação. A fila de fato passou a existir (ver *Responsável e fila* abaixo): conversa com responsável humano não recebe resposta automática, e a promessa "um atendente retorna" tem onde cair.
+
+**A rota da Meta (`/api/channels/meta`) envia de verdade.** Antes, com `FEATURE_N8N_AUTOREPLY` ligada, a resposta da IA era gravada como `role = agent` sem nenhuma chamada à Cloud API — o cliente não recebia e a tela afirmava que sim. Agora (`lib/platform/meta-auto-reply-service.ts`, reaproveitando `sendTextMessage`), com a flag ligada e ninguém com a conversa, a resposta sai pela Meta e só vira `agent` se a Meta aceitar, com o `wamid` do envio em `external_message_id` para o recibo de entrega casar e `sent_by = 'ia'` (a tela mostra "IA" e o recibo). A régua é a da resposta do atendente: política → idempotência → chamada.
+
+- **Janela de 24 horas** conta da hora da mensagem que vem no webhook, não da chegada: a Meta reentrega por dias. Sem essa hora, não envia.
+- **Idempotência pelo `wamid` do cliente**: a chave `autoreply:<wamid>` é reservada em `channel_idempotency_keys` **antes** de chamar a Meta. Reentrega não reenvia; se o envio saiu e a gravação caiu, a reentrega grava o que saiu em vez de mandar de novo.
+- **Falha degrada, não mente**: recusa da Meta, bloqueio ou timeout viram **sugestão** (sem a pergunta de avaliação), com desfecho `suggested`, e ganham linha própria na auditoria (`whatsapp.autoreply.failed` / `whatsapp.autoreply.blocked`). Em timeout a reserva fica, porque a mensagem pode ter saído.
+
+**A resposta automática é primeira resposta, não atendimento.** As respostas aprovadas são fixas e quase todas prometem um atendente ("Vou pedir para um atendente enviar a segunda via"). Sem as regras abaixo, ligar a flag faria a IA prometer um humano e, no mesmo gesto, tirar a conversa da fila — ninguém seria chamado. Por isso, só na rota da Meta:
+
+- **A conversa continua na fila** até um humano responder: a resposta da IA não conta como resposta em `awaitingSinceFrom` (`conversation-state-shared.ts`), como a sugestão já não contava. A espera é medida desde a fala do cliente, não desde o recebido da IA.
+- **Uma por espera** (`autoReplyUsed`): depois que a IA respondeu, as próximas falas do cliente viram sugestão até um atendente responder ou resolver a conversa. Sem isso o "ok, obrigado" do cliente ganhava "Pode me contar o que você precisa?". Histórico ilegível conta como "já respondeu".
+- **Sem pergunta de avaliação**: "um atendente retorna… antes de encerrar, avalie" se contradiz.
+- **Não conta como resolvido**: o pipeline diz `simulated` (segunda via, PIX, pagamento, chamado) ou `resolved`, e os dois entram em "resolvido sem humano". Resposta que saiu com esses desfechos é gravada como `replied` ("Primeira resposta da IA"). `handoff`, `waiting_customer` e `blocked` ficam como estão.
+
+A rota da **Evolution** nunca responde sozinha, com ou sem a flag — ela não tem envio, e a Evolution não é mais usada. A rota do n8n segue o contrato antigo: devolve `response` para o fluxo enviar, grava sem autor e com as regras antigas (avaliação e desfecho do pipeline).
+
+**Responsável e fila** (`lib/platform/conversation-state-shared.ts` e `conversation-state-service.ts`, tabela `conversation_states`). O modelo é o das caixas de entrada de suporte (Chatwoot, Intercom, Front): a conversa está **aberta** ou **resolvida**, e aberta pode ter um **responsável** humano. Sem linha gravada = aberta e sem responsável, ou seja, com a IA. As ações são assumir, devolver para a IA, resolver e reabrir (`POST /api/conversations/state`, permissão `support.write`), cada uma auditada com quem fez e de quem era a conversa. Tomar a conversa de um colega responde 409 e só acontece com confirmação (`takeOver`). Ação que não muda nada não grava linha.
+
+- **Reabrir é derivado, não gravado**: resolvida que recebe fala do cliente depois de `resolved_at` está aberta e sem responsável (`effectiveState`). Gravar isso exigiria que o canal de entrada escrevesse no estado a cada mensagem — e um canal que falha no meio deixaria cliente esperando numa conversa "resolvida".
+- **A IA não fala por cima de humano**: as rotas da Meta e do n8n só passam `autoReply` se ninguém estiver com a conversa (`botMayReply`; a da Evolution nunca passa). Estado ilegível conta como "tem humano": na dúvida, a IA só sugere. Hoje não muda nada visível, porque a resposta automática está desligada — é a trava que precisava existir antes de ligá-la.
+- **Quem responde vira responsável**: depois de um envio bem-sucedido pela tela, `claimIfUnassigned` assume a conversa para quem respondeu, se ninguém era.
+- **A fila conta só o que dá para responder** (`needsReply`): cliente falou por último, conversa aberta e **dentro da janela de 24 horas**. É a mesma régua no menu, no título da aba, no Início e na aba "Fila" de Atendimentos. Antes o menu mostrava "2 aguardando" por conversas de dez dias, que nem texto livre aceitavam mais.
 
 **Resposta do atendente pela tela** (`FEATURE_ATTENDANT_REPLY`, `lib/platform/attendant-reply-service.ts`). Segue a régua da escrita no ERP: idempotência (chave por clique, reservada em `channel_idempotency_keys` **antes** de chamar a Meta) → política (login obrigatório, texto de homologação recusado, janela de 24 horas) → flag → chamada. Bloqueio e falha também entram na auditoria. Em **timeout a reserva não é solta**: a mensagem pode ter saído, e liberar convidaria um reenvio em dobro. A autoria fica em `channel_messages.sent_by`; nulo é "não registrado", nunca "a IA". Antes de responder, a mensagem do cliente é marcada como lida (melhor esforço, pelo `wamid` em `external_message_id`).
 
@@ -265,7 +287,7 @@ Tabela é `.table` com `.tr` em grade e as colunas em `--cols`. ⚠️ Cada `.tr
 npm run typecheck && npm run lint && npm test
 ```
 
-Os três precisam passar. Hoje a suíte tem **632 testes**.
+Os três precisam passar. Hoje a suíte tem **670 testes**.
 
 ## Segurança — pontos já decididos
 
@@ -288,7 +310,8 @@ Ver [`docs/security/authentication.md`](docs/security/authentication.md).
 - Responder pela tela de Atendimentos existe atrás de `FEATURE_ATTENDANT_REPLY`, e só com **texto livre dentro de 24 horas** da última mensagem do cliente — fora disso a Meta exige modelo aprovado, que ainda não é suportado. O campo fica desabilitado enquanto a flag, o token ou o login faltarem. A sugestão da IA e a resposta redigida do copiloto podem virar **rascunho** no campo; o atendente edita e envia. `copilot.suggestion.used` continua registrando *cópia*: o que vai para a auditoria como envio é `whatsapp.reply.sent`
 - Recibo de entrega e leitura (`statuses` do webhook) é gravado na resposta enviada (`channel_messages.delivery_status`): a tela mostra *Aceita pela Meta → Enviada → Entregue → Lida*, ou *Falhou* com o motivo. O recibo **nunca rebaixa** — "entregue" que chega depois de "lida" é ignorado — e só vale para resposta nossa (`role = agent`), casada pelo `wamid`
 - **Atendimentos se atualiza por consulta, não por push**: a cada 5 s com a aba visível (lista e conversa aberta); com a aba escondida, só a lista, a cada 30 s. Fora da caixa de entrada, a casca do app consulta a lista a cada 30 s — é o que mantém o "(3)" do título e o número ao lado de Atendimentos no menu em qualquer tela. O navegador pode espaçar mais as consultas de aba em segundo plano. Se a escala pedir, o próximo passo é SSE, não encurtar o intervalo
-- **Fila "Aguardando resposta"** é calculada, não marcada à mão: espera desde a primeira fala do cliente depois da última resposta **enviada** — sugestão da IA não conta como resposta. Não existe atribuir conversa a atendente nem encerrar atendimento
+- **A espera é calculada, não marcada à mão**: desde a primeira fala do cliente depois da última resposta **enviada por um humano** — sugestão da IA não conta como resposta, e a primeira resposta automática também não. A cor na lista é o SLA à vista: até 5 min normal, até 30 min atenção, depois atrasado (`waitTone`). Não há roteamento automático: ninguém recebe conversa sem pedir, quem assume é quem clica (ou quem responde)
+- Em Atendimentos: `/` no campo de resposta abre as respostas aprovadas, `Alt+↑`/`Alt+↓` trocam de conversa, e o sino liga aviso do sistema quando alguém entra na fila (só o nome, nunca o texto — ele apareceria na tela de bloqueio). Sugestão da IA que o atendente enviou como estava vira uma linha só, em vez de duas bolhas iguais. Fora da janela de 24 horas o campo dá lugar ao motivo: **envio de modelo aprovado (template) não existe ainda**
 - Áudio, foto, documento e figurinha **não somem mais**: viram uma fala do cliente entre colchetes ("[Áudio recebido — …]"), sem acionar a IA e sem desfecho. A mídia em si **não é baixada nem exibida**; a legenda de foto aparece ao atendente, mas nunca é tratada como pedido. Reação a mensagem e aviso de sistema continuam ignorados
 - O webhook da Meta pode trazer **várias mensagens no mesmo POST**; a rota processa todas (`parseMetaMessages`). Antes só a primeira era lida
 - O **nome do perfil de WhatsApp** (`channel_contacts`) aparece na lista e no cabeçalho, mas é o que a pessoa escolheu para si: não identifica ninguém. É limpo de caractere invisível e de inversão de texto antes de gravar

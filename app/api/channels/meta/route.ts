@@ -9,6 +9,10 @@ import { DbSupportMetricsRepository } from "@/lib/platform/support-metrics";
 import { DbCrmRepository, captureLeadFromContact } from "@/lib/platform/crm-service";
 import { getIxcRuntime } from "@/lib/integrations/ixc/runtime";
 import { parseMetaMessages, parseMetaStatuses, parseMetaWebhook, signatureIsValid } from "@/lib/integrations/meta/webhook-parser";
+import { DbConversationStateRepository } from "@/lib/platform/conversation-state-service";
+import { DbReplyRepository } from "@/lib/platform/attendant-reply-service";
+import { metaAutoReplyOptions } from "@/lib/platform/meta-auto-reply-service";
+import { metaSendConfigFromEnv } from "@/lib/integrations/meta/cloud-client";
 
 /**
  * Webhook oficial do **WhatsApp Business Platform (Cloud API)**.
@@ -78,6 +82,7 @@ export async function POST(request: Request) {
   const channel = new D1ChannelRepository(db);
   const updated = statuses.length > 0 ? await applyStatuses(new DbDeliveryRepository(db), statuses) : 0;
   const templates = messages.some((message) => message.kind === "text") ? await loadOverrides(new DbReplyTemplatesRepository(db)) : undefined;
+  const sendConfig = metaSendConfigFromEnv();
 
   const results = [];
   for (const message of messages) {
@@ -90,7 +95,15 @@ export async function POST(request: Request) {
         channel,
         { externalConversationId: message.phone, text: message.text, idempotencyKey: message.messageId, correlationId },
         new DbSupportMetricsRepository(db),
-        { autoReply: autoReplyEnabled(), templates },
+        // Com um humano à frente da conversa a IA só sugere: não responde por cima dele.
+        // Quando responde, é pela Cloud API, e só fica gravado como enviado o que a Meta aceitou.
+        {
+          ...await metaAutoReplyOptions({
+            enabled: autoReplyEnabled(), states: new DbConversationStateRepository(db), messages: channel, claims: new DbReplyRepository(db),
+            config: sendConfig, channel: CHANNEL_NAME, customerMessageAt: message.sentAt,
+          }, message.phone),
+          templates,
+        },
         (input) => captureLeadFromContact(
           new DbCrmRepository(db),
           input,

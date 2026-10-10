@@ -22,6 +22,7 @@ const ACTION_LABELS: Record<string,string> = {
   "support.incident.create":"Massiva registrada", "support.incident.close":"Massiva encerrada", "support.incident.notify":"Aviso de massiva",
   "sales.goal.save":"Meta salva", "channel.message.processed":"Mensagem do canal", "integrations.telegram.alert":"Alerta de rede",
   "whatsapp.reply.sent":"Resposta enviada ao cliente", "whatsapp.reply.blocked":"Resposta recusada", "whatsapp.reply.failed":"Resposta não enviada",
+  "whatsapp.autoreply.blocked":"Resposta da IA recusada", "whatsapp.autoreply.failed":"Resposta da IA não enviada",
   "users.create":"Conta criada", "user.created":"Conta criada", "user.password.reset":"Senha resetada", "auth.login":"Entrou no sistema", "auth.password.change":"Senha trocada",
   "ixc.write.service_order_open":"OS aberta no IXC", "ixc.write.renegotiation":"Renegociação no IXC", "ixc.write.customer_create":"Cliente cadastrado no IXC",
   "crm.lead.create":"Lead registrado", "crm.lead.move":"Lead mudou de etapa", "sales.goal.delete":"Meta removida",

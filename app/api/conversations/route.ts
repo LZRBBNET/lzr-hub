@@ -45,7 +45,9 @@ export async function GET(request: Request) {
       // antes, em vez de deixar o atendente escrever para receber uma recusa.
       return NextResponse.json({ available: true, channel, id, messages, audit: audit ?? null, channelState, replyWindow: replyWindowFrom(messages, REPLY_WINDOW_MS) });
     }
-    return NextResponse.json({ available: true, items: await repository.listConversations(LIST_LIMIT, url.searchParams.get("q")), channelState });
+    // Quem está olhando: a tela separa "Minhas" das outras e sabe quando a conversa é de um colega.
+    const viewer = guard.user ? { id: guard.user.id, name: guard.user.name } : null;
+    return NextResponse.json({ available: true, items: await repository.listConversations(LIST_LIMIT, url.searchParams.get("q")), channelState, viewer });
   } catch {
     return NextResponse.json({ available: false, detail: "Histórico de conversas indisponível", items: [], messages: [], channelState });
   }

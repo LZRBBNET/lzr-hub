@@ -13,10 +13,22 @@ const HANDOFF_LABELS: Record<string,string> = {
 export const intentLabel = (key:string) => INTENT_LABELS[key] ?? key;
 export const handoffLabel = (key:string) => HANDOFF_LABELS[key] ?? key;
 
-/** Telefone do WhatsApp em formato legível, sem esconder dígito de quem atende. */
+/**
+ * Telefone do WhatsApp em formato legível, sem esconder dígito de quem atende.
+ * Brasileiro sai como "(79) 99999-0000"; os de fora, com o código do país —
+ * "16465894168" cru não dizia nem que era um número dos Estados Unidos.
+ */
 export function conversationLabel(id:string) {
-  const digits = id.replace(/\D/g,"");
-  if (digits.length < 12 || digits.length > 13) return id;
-  const ddd = digits.slice(2,4); const rest = digits.slice(4);
-  return `(${ddd}) ${rest.slice(0,rest.length-4)}-${rest.slice(-4)}`;
+  if (!/^\d+$/.test(id)) return id;
+  if (id.startsWith("55") && (id.length === 12 || id.length === 13)) {
+    const ddd = id.slice(2,4); const rest = id.slice(4);
+    return `(${ddd}) ${rest.slice(0,rest.length-4)}-${rest.slice(-4)}`;
+  }
+  if (id.startsWith("1") && id.length === 11) return `+1 (${id.slice(1,4)}) ${id.slice(4,7)}-${id.slice(7)}`;
+  return id.length >= 8 ? `+${id}` : id;
+}
+
+/** O nome interno do canal ("n8n-whatsapp") é detalhe de implementação; quem atende vê "WhatsApp". */
+export function channelLabel(channel:string) {
+  return /whatsapp|meta|evolution/i.test(channel) ? "WhatsApp" : channel;
 }

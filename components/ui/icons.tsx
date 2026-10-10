@@ -11,7 +11,7 @@ import type { IconName } from "@/lib/platform/navigation";
 type Name = IconName
   | "search" | "menu" | "chevron-left" | "chevron-right" | "chevron-down" | "x" | "plus" | "refresh" | "send"
   | "sun" | "moon" | "monitor" | "logout" | "key" | "info" | "alert" | "check" | "clock" | "phone"
-  | "bot" | "panel" | "filter" | "external" | "download" | "arrow-left" | "copy" | "dots";
+  | "bot" | "panel" | "filter" | "external" | "download" | "arrow-left" | "copy" | "dots" | "bell" | "bell-off" | "hand" | "keyboard";
 
 const PATHS: Record<Name, React.ReactNode> = {
   home: <><path d="M3 10.5 12 3l9 7.5" /><path d="M5 9v11h14V9" /><path d="M10 20v-6h4v6" /></>,
@@ -55,6 +55,10 @@ const PATHS: Record<Name, React.ReactNode> = {
   "arrow-left": <path d="M19 12H5M11 6l-6 6 6 6" />,
   copy: <><rect x="8" y="8" width="12" height="12" rx="1.5" /><path d="M16 8V5a1 1 0 0 0-1-1H5a1 1 0 0 0-1 1v10a1 1 0 0 0 1 1h3" /></>,
   dots: <><circle cx="5" cy="12" r="1" /><circle cx="12" cy="12" r="1" /><circle cx="19" cy="12" r="1" /></>,
+  bell: <><path d="M6 16V11a6 6 0 0 1 12 0v5l1.5 2h-15z" /><path d="M10 20.5a2 2 0 0 0 4 0" /></>,
+  "bell-off": <><path d="M6 16V11a6 6 0 0 1 9.5-4.9M18 11v5l1.5 2H8" /><path d="M10 20.5a2 2 0 0 0 4 0" /><path d="M3 3l18 18" /></>,
+  hand: <><path d="M8 12V5.5a1.5 1.5 0 0 1 3 0V11" /><path d="M11 10V4.5a1.5 1.5 0 0 1 3 0V11" /><path d="M14 10.5V6a1.5 1.5 0 0 1 3 0v7c0 4-2.5 7.5-6.5 7.5-2.5 0-4-1.2-5.3-3.2L3.5 14a1.6 1.6 0 0 1 2.6-1.8L8 14" /></>,
+  keyboard: <><rect x="2.5" y="6" width="19" height="12" rx="1.5" /><path d="M6 10h.01M9.5 10h.01M13 10h.01M16.5 10h.01M7 14h10" /></>,
 };
 
 export type { Name as IconKey };

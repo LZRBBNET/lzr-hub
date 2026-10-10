@@ -151,9 +151,11 @@ transbordo contado. É por isso que a recusa é explícita e tem teste.
 A resposta traz `autoReply`. Com `FEATURE_N8N_AUTOREPLY` desligada — o estado
 atual — ela vem `false` e **`response` vem `null`**.
 
-Hoje **ninguém envia nada ao cliente**: o HUB registra e sugere. Quando o envio
-for ligado, quem envia passa a ser o próprio HUB chamando a Evolution
-(`/message/sendText/{instance}`) — antes era o n8n. Isso ainda não existe.
+Esta rota **nunca envia nada ao cliente**, nem com `FEATURE_N8N_AUTOREPLY`
+ligada: o HUB registra e sugere, e `autoReply` volta sempre `false`. A
+resposta automática existe só na rota da Meta, que tem envio de verdade. Para
+a Evolution enviar, o HUB teria de chamar `/message/sendText/{instance}` — e a
+Evolution não é mais usada.
 
 ⚠️ E não deve ser ligado enquanto as respostas do pipeline forem de homologação
 ("preparei a segunda via *fictícia*"). Ver a seção da IA no CLAUDE.md.

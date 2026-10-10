@@ -136,6 +136,11 @@ export interface MetaInbound {
   caption?: string;
   profileName?: string;
   phoneNumberId?: string;
+  /**
+   * Quando o cliente escreveu, pelo relógio da Meta. É daí que conta a janela de
+   * 24 horas: a Meta reentrega webhook por dias, e a hora de chegada mentiria.
+   */
+  sentAt?: string;
 }
 
 /** Reação a uma mensagem e aviso de sistema (troca de número) não são fala do cliente. */
@@ -190,10 +195,12 @@ export function parseMetaMessages(payload: unknown): MetaInbound[] {
       const text = textFrom(message);
       const kind: InboundKind = text ? "text" : MEDIA_KINDS[type] ?? "other";
       const caption = kind === "text" ? undefined : String(bag(message[type]).caption ?? "").trim() || undefined;
+      const seconds = Number(message.timestamp);
       result.push({
         phone, messageId, kind, text, caption,
         profileName: typeof name === "string" && name.trim() ? name.trim() : undefined,
         phoneNumberId: typeof metadata.phone_number_id === "string" ? metadata.phone_number_id : undefined,
+        sentAt: Number.isFinite(seconds) && seconds > 0 ? new Date(seconds * 1000).toISOString() : undefined,
       });
     }
   }

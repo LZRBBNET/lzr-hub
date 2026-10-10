@@ -3,6 +3,7 @@ import { getDb } from "@/db";
 import { metaSendConfigFromEnv } from "@/lib/integrations/meta/cloud-client";
 import { DbReplyRepository, attendantReplyEnabled, sendAttendantReply } from "@/lib/platform/attendant-reply-service";
 import { CHANNEL_NAME } from "@/lib/platform/n8n-channel-service";
+import { DbConversationStateRepository, claimIfUnassigned } from "@/lib/platform/conversation-state-service";
 import { authorize } from "@/lib/platform/session-guard";
 
 /**
@@ -31,6 +32,9 @@ export async function POST(request: Request) {
       },
     );
     if (!result.ok) return NextResponse.json({ error: result.reason }, { status: result.status });
+    // Quem respondeu vira o responsável, se ninguém era — e com isso a IA para de
+    // falar por cima nesta conversa quando a resposta automática for ligada.
+    if (!result.duplicate) await claimIfUnassigned(new DbConversationStateRepository(await getDb()), CHANNEL_NAME, String(body.conversationId ?? ""), guard.user);
     return NextResponse.json({ ok: true, messageId: result.messageId, duplicate: result.duplicate, recorded: result.recorded });
   } catch {
     return NextResponse.json({ error: "Não consegui concluir o envio agora. Nada foi enviado." }, { status: 503 });
