@@ -36,6 +36,16 @@ export interface IxcPlanDto { id:string; name:string; speed?:string; value?:numb
 export interface IxcInvoiceDto { id:string; customerId:string; contractId?:string; status:string; dueAt?:string; value?:number; paymentCode?:string }
 export interface IxcPaymentDto { id:string; customerId:string; invoiceId?:string; paidAt?:string; value?:number; method:string }
 export interface IxcServiceOrderDto { id:string; customerId:string; status:string; subject:string; openedAt?:string; closedAt?:string; address?:string }
+/**
+ * O que o diagnóstico de conexão lê do IXC, já reduzido ao que importa: nada de
+ * senha, IP ou MAC do login — só se está online, desde quando e por quê caiu.
+ * `online` nulo = o IXC não disse.
+ */
+export interface IxcServiceDiagnosisData {
+  logins: Array<{ id:string; contractId?:string; online:boolean|null; lastConnectedAt?:string; lastDisconnectedAt?:string; disconnectReason?:string; neighborhood?:string }>;
+  contracts: Array<{ id:string; status:string; internetStatus:string; trustUnlockActive:boolean }>;
+  openServiceOrders: Array<{ id:string; status:string; subjectId?:string; openedAt?:string }>;
+}
 export interface IxcConnectionDto { id:string; customerId:string; login:string; status:string; lastAccessAt?:string; address?:string; equipmentDescriptor?:string; connectionType?:string }
 /** Página da listagem de clientes. `total` é o tamanho do resultado no IXC, não o da página. */
 export interface IxcCustomerPage { items:IxcCustomerDto[]; total:number; page:number; pageSize:number }

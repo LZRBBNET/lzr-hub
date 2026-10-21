@@ -15,6 +15,7 @@ export type Intent =
   | "human_handoff"
   | "unauthorized_request"
   | "out_of_scope"
+  | "sales_inquiry"
   | "general_information";
 
 export type ConversationState =

@@ -88,9 +88,13 @@ export function metaAutoReplySender(deps: MetaAutoReplyDeps): AutoReplySender {
  * ligada, sem humano à frente da conversa (`botMayReply`) e se ainda não
  * respondeu nesta espera (`autoReplyUsed`): é primeira resposta, não conversa.
  * Estado ou histórico ilegível contam como "não pode": na dúvida, sugere.
+ *
+ * A exceção é a pergunta do assunto (`afterClarification`): quando a IA
+ * perguntou "qual o assunto?", a resposta do cliente merece a resposta da IA —
+ * senão a pergunta seria um beco. A triagem só pergunta uma vez por atendimento.
  */
 export async function metaAutoReplyOptions(
-  deps: MetaAutoReplyDeps & { enabled: boolean; states: ConversationStateRepository; messages: Pick<ChannelRepository, "getHistory"> },
+  deps: MetaAutoReplyDeps & { enabled: boolean; states: ConversationStateRepository; messages: Pick<ChannelRepository, "getHistory">; afterClarification?: boolean },
   conversationId: string,
 ): Promise<Pick<ChannelOptions, "autoReply" | "send">> {
   if (!deps.enabled) return { autoReply: false };
@@ -98,7 +102,7 @@ export async function metaAutoReplyOptions(
     const row = await deps.states.get(deps.channel, conversationId);
     if (!botMayReply(row)) return { autoReply: false };
     const history = await deps.messages.getHistory(deps.channel, conversationId);
-    if (autoReplyUsed(history, row?.status === "resolved" ? row.resolvedAt : null)) return { autoReply: false };
+    if (!deps.afterClarification && autoReplyUsed(history, row?.status === "resolved" ? row.resolvedAt : null)) return { autoReply: false };
   } catch {
     return { autoReply: false };
   }

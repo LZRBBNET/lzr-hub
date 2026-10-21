@@ -287,6 +287,7 @@ export function executeAgentTools(
         errorCode: "DISCOUNT_REQUIRES_HUMAN_APPROVAL",
         simulated: false,
       })];
+    case "sales_inquiry":
     case "out_of_scope":
     case "general_information":
       return [receipt("knowledge.search", "Base interna consultada; faltam dados para concluir", {

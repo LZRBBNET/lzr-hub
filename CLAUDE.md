@@ -233,6 +233,26 @@ A rota da **Evolution** nunca responde sozinha, com ou sem a flag — ela não t
 - **Quem responde vira responsável**: depois de um envio bem-sucedido pela tela, `claimIfUnassigned` assume a conversa para quem respondeu, se ninguém era.
 - **A fila conta só o que dá para responder** (`needsReply`): cliente falou por último, conversa aberta e **dentro da janela de 24 horas**. É a mesma régua no menu, no título da aba, no Início e na aba "Fila" de Atendimentos. Antes o menu mostrava "2 aguardando" por conversas de dez dias, que nem texto livre aceitavam mais.
 
+**Triagem e atendimento com protocolo** (`lib/platform/triage-service.ts`, regras em `triage-shared.ts`, tabela `support_tickets`). É a fase 1 do plano de atendimento por IA (triagem → autoatendimento → dúvidas pela base), copiada do que os bots de provedor fazem — o Opa! Suite da própria IXC, SimplesDesk, Talqui: a IA entende o assunto, pergunta quando não tem certeza e entrega ao setor certo com a ficha pronta. Corresponde aos passos 1 e 2 do fluxo de manutenção da BBNET ("registro do chamado"). Só na rota da Meta.
+
+- **Atendimento ≠ conversa.** A conversa com um número dura para sempre; o atendimento começa na primeira fala depois do último fechamento e termina quando alguém **resolve** a conversa ou o cliente fica **24 horas calado** (`closed_reason` `resolved` / `inactivity`). Um aberto por conversa, garantido por índice único parcial — duas mensagens juntas não abrem dois.
+- **Protocolo** `AAAAMMDD` (Brasília) + sequencial de 6 dígitos (`seq`, serial do banco). Vai no fim da **primeira** resposta do atendimento; `protocol_sent_at` registra quando chegou de fato ao cliente. No modo observação ele vai no rascunho sugerido ao atendente. Se não gravar, o atendimento segue e a tela diz "não gerado". O IXC tem atendimentos com protocolo próprio (`su_ticket`), mas **o protocolo que vale é o do LZR HUB** (decisão do Vinícius, 14/10/2026).
+- **Identificação uma vez por atendimento**: `findCustomerByPhone` (exatamente um cadastro ou nada) roda ao abrir e só repete se o IXC não respondeu. A captação de lead usa esse resultado (`knownCustomer`) em vez de consultar de novo — antes ela consultava o IXC **a cada mensagem** de quem já era cliente. Do IXC só fica o código do cliente.
+- **Pergunta do assunto**: com resposta automática ligada, confiança abaixo de 0,6 ou "informação geral" → a IA manda o menu numerado (`TRIAGE_MENU`, texto puro como o da IXC, não lista interativa). A resposta "3" vira o assunto com `intentSource = menu`, sem passar pelo classificador. Pergunta **uma vez** por atendimento; resposta vaga a ela segue para o setor. A resposta à pergunta é a exceção da regra "uma por espera" (`afterClarification`) — senão a pergunta seria um beco. No modo observação nada é perguntado.
+- **Setor** (`queueForIntent`): `tecnico`, `financeiro`, `comercial` (planos e cancelamento — retenção) ou `atendimento`. É o mesmo rótulo de fila (`queue`) que Equipes usa. Só classificação confiante ou escolha no menu troca o setor: o "ok, obrigado" do fim não muda nada.
+- **Assunto novo `sales_inquiry`** (Planos e contratação): o fluxo de instalação começa num lead pelo WhatsApp e não havia assunto para isso. Vem depois de lentidão na regex — "meu plano de 100 mega está lento" continua sendo lentidão.
+- **Na tela**: ficha "Atendimento" na aba Cliente (protocolo, setor, assunto, etapa, identificação), chip de setor na lista e filtro por setor.
+- Tabela fora do ar não derruba o canal: `startTriage` devolve `undefined` e a mensagem segue sem protocolo nem menu.
+
+**Autoatendimento (fase 2), começando pelo diagnóstico de conexão** (`connection-diagnosis-shared.ts`, leitura em `getServiceDiagnosis` do provider do IXC). Em atendimento técnico (sem internet, lenta, Wi-Fi, reinício) de cliente **identificado**, depois da resposta, o LZR lê do IXC o login (`radusuarios.online`, última conexão, motivo da queda), o contrato (`status_internet`, `desbloqueio_confianca_ativo`) e as OS não finalizadas — **três consultas**, contra as ~15 do `getSnapshot` — e cruza com as massivas registradas na tela pelo bairro do login. Sai um veredito (bloqueado / sem conexão / conexão ativa / inconclusivo) com o próximo passo: bloqueio por atraso → financeiro e desbloqueio de confiança possível; massiva no bairro → avisar, sem OS individual; OS já aberta → acompanhar, não abrir outra; offline → reinício guiado e depois OS; online → Wi-Fi e aparelhos. Grava em `support_tickets.diagnosis` **uma vez por atendimento** (limite por minuto do IXC) e aparece na ficha "Atendimento". Teto de 6 s (`DIAGNOSIS_BUDGET_MS`): IXC lento deixa sem diagnóstico, não prende o webhook. **Ainda é observação: a IA não diz nada disso ao cliente.** `status_internet` traduzido só para os códigos conhecidos (`A`, `D`, `CM`, `CA`, `FA`, `AA`); o resto aparece como "código X". Provado contra o IXC real em `scripts/ixc-probe-diagnosis.mjs` (695 ms, cadastro de teste offline → "reinício guiado e depois OS").
+
+O que as sondagens (`scripts/ixc-probe-self-service.mjs`) e a coleção Postman oficial confirmaram para os próximos autoatendimentos:
+
+- **Cadastro de teste para escrita**: Wendel Mendonça, código **21857**, login **`copadomundo2026`** (contrato 48882) — autorizado pelo Vinícius. Escrita de teste só nele; o script confere o nome antes de agir.
+- **Desbloqueio de confiança**: `POST /webservice/v1/desbloqueio_confianca` com `{ "id": <contrato> }`. Com o contrato ativo o IXC recusa com HTTP 200, `type: "error"` e "Não é possível utilizar o botão 'Desbloqueio de confiança' quando o contrato estiver ativo." — e nada muda no contrato. A regra é do IXC; o formato de **sucesso** só se prova com o contrato de teste bloqueado.
+- **PIX**: `POST /webservice/v1/get_pix` com `{ "id_areceber": <fatura> }`. O cadastro de teste não tem fatura nenhuma, então o formato da resposta segue sem prova.
+- **2ª via pede CPF** antes de mostrar qualquer dado financeiro (decisão do Vinícius): o telefone sozinho não basta.
+
 **Resposta do atendente pela tela** (`FEATURE_ATTENDANT_REPLY`, `lib/platform/attendant-reply-service.ts`). Segue a régua da escrita no ERP: idempotência (chave por clique, reservada em `channel_idempotency_keys` **antes** de chamar a Meta) → política (login obrigatório, texto de homologação recusado, janela de 24 horas) → flag → chamada. Bloqueio e falha também entram na auditoria. Em **timeout a reserva não é solta**: a mensagem pode ter saído, e liberar convidaria um reenvio em dobro. A autoria fica em `channel_messages.sent_by`; nulo é "não registrado", nunca "a IA". Antes de responder, a mensagem do cliente é marcada como lida (melhor esforço, pelo `wamid` em `external_message_id`).
 
 ## Auditoria de contratos
@@ -287,7 +307,7 @@ Tabela é `.table` com `.tr` em grade e as colunas em `--cols`. ⚠️ Cada `.tr
 npm run typecheck && npm run lint && npm test
 ```
 
-Os três precisam passar. Hoje a suíte tem **670 testes**.
+Os três precisam passar. Hoje a suíte tem **700 testes**.
 
 ## Segurança — pontos já decididos
 

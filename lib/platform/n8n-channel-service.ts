@@ -2,9 +2,9 @@ import { randomUUID } from "node:crypto";
 import { and, asc, eq, sql } from "drizzle-orm";
 import { auditEvents, channelIdempotencyKeys, channelMessages } from "../../db/schema.ts";
 import { runAgentPipeline } from "../agent/pipeline.ts";
-import { classifyIntent, llmConfigFromEnv } from "../agent/llm-classifier.ts";
+import { classifyIntent, llmConfigFromEnv, type Classification } from "../agent/llm-classifier.ts";
 import { sanitizeHandoffText } from "../agent/handoff.ts";
-import type { ChatMessage } from "../agent/types.ts";
+import type { ChatMessage, Intent } from "../agent/types.ts";
 import { appVersion } from "../runtime/app-version.ts";
 import { traceAgentResult } from "../observability/trace-agent-result.ts";
 import { resolveReply, type ReplyOverrides } from "./reply-templates-shared.ts";
@@ -47,6 +47,8 @@ export const SUGGESTED_STATUS = "suggested";
  */
 export const AUTO_REPLIED_STATUS = "replied";
 const CLAIMS_RESOLUTION = new Set(["resolved", "simulated"]);
+/** Desfecho do turno em que a IA perguntou o assunto, em vez de responder. */
+export const CLARIFYING_STATUS = "clarifying";
 
 export type ChannelRole = "customer" | "agent" | "suggestion";
 /**
@@ -98,6 +100,22 @@ export interface ChannelOptions {
    * continua na fila até um humano responder (ver `awaitingSinceFrom`).
    */
   send?: AutoReplySender;
+  /** Triagem do atendimento (rota da Meta): menu de assunto, protocolo e setor. Ver `triage-service.ts`. */
+  triage?: TriageHooks;
+}
+
+/**
+ * O que a triagem acrescenta ao turno. O canal não conhece atendimento nem
+ * protocolo — recebe estas funções prontas, e os testes do canal rodam sem elas.
+ */
+export interface TriageHooks {
+  /** O assunto escolhido no menu, quando a fala é a resposta a ele. */
+  menuChoice(text: string): Intent | undefined;
+  /** A pergunta do assunto, quando a IA não tem certeza e ainda não perguntou neste atendimento. */
+  clarification(classified: Classification): { text: string } | undefined;
+  /** O que vai no fim da primeira resposta do atendimento (o protocolo). */
+  footer(): string | undefined;
+  record(entry: { intent: string; source: string; confidence: number; clarifying: boolean; delivered: boolean; protocolIncluded: boolean }): Promise<void>;
 }
 
 type Delivery = { sent: true; messageId?: string; text?: string } | { sent: false; failure?: Extract<AutoReplyDelivery, { sent: false }> };
@@ -230,10 +248,30 @@ export async function processChannelMessage(
     return rated;
   }
 
+  // O assunto escolhido no menu da triagem dispensa o classificador: o cliente disse.
+  const menuIntent = options.triage?.menuChoice(input.text);
   // Classifica antes de rodar o pipeline: sem chave configurada isto cai na
   // regex e o comportamento é idêntico ao de antes. O contexto é o que o
   // modelo precisa para entender "sim" e "continua igual".
-  const classified = await classifyIntent(input.text, llmConfigFromEnv(), undefined, contextForClassifier(historyRows));
+  const classified: Classification = menuIntent
+    ? { intent: menuIntent, confidence: 1, source: "menu" }
+    : await classifyIntent(input.text, llmConfigFromEnv(), undefined, contextForClassifier(historyRows));
+
+  // Sem certeza do assunto, a IA pergunta — mas só quando é ela quem fala. No
+  // modo observação o atendente lê a conversa e não precisa de menu.
+  const clarification = !menuIntent && options.autoReply ? options.triage?.clarification(classified) : undefined;
+  if (clarification) {
+    const footer = options.triage?.footer();
+    const question = footer ? `${clarification.text}\n\n${footer}` : clarification.text;
+    const delivery = await deliver(options, input, question);
+    const response = await recordTurn(repository, input, metrics, {
+      content: delivery.sent ? delivery.text ?? question : question, delivery, status: delivery.sent ? CLARIFYING_STATUS : SUGGESTED_STATUS,
+      intent: classified.intent, handoff: false, handoffReason: null, classified, label: "Pergunta do assunto",
+    });
+    await options.triage?.record({ intent: classified.intent, source: classified.source, confidence: classified.confidence, clarifying: true, delivered: delivery.sent, protocolIncluded: !!footer });
+    return response;
+  }
+
   const result = runAgentPipeline(input.text, history, {
     channel: "whatsapp",
     intentOverride: { intent: classified.intent, confidence: classified.confidence },
@@ -243,7 +281,9 @@ export async function processChannelMessage(
   // O pipeline decide intenção, transbordo e desfecho; o **texto** que sai pelo
   // canal é a resposta aprovada da intenção. O do pipeline é de homologação
   // ("preparei a segunda via fictícia") e não pode chegar a um cliente real.
-  const approved = resolveReply(result.intent, options.templates);
+  // A primeira resposta do atendimento leva o protocolo no fim.
+  const footer = options.triage?.footer();
+  const approved = footer ? `${resolveReply(result.intent, options.templates)}\n\n${footer}` : resolveReply(result.intent, options.templates);
 
   // Só pede nota quando a resposta é de fato entregue — não dá para avaliar
   // um atendimento que o cliente não recebeu. E não na primeira resposta pela
@@ -254,7 +294,29 @@ export async function processChannelMessage(
   // Não saiu: fica a resposta aprovada, sem a pergunta de avaliação — igual ao
   // modo observação. Saiu: fica o que o cliente recebeu.
   const content = delivery.sent ? delivery.text ?? reply : approved;
+  const response = await recordTurn(repository, input, metrics, {
+    content, delivery,
+    status: !delivery.sent ? SUGGESTED_STATUS
+      : delivery.messageId && CLAIMS_RESOLUTION.has(result.finalStatus) ? AUTO_REPLIED_STATUS
+      : result.finalStatus,
+    intent: result.intent, handoff: result.handoff.required, handoffReason: result.handoff.reason, classified, label: "Resposta",
+  });
+  await options.triage?.record({ intent: result.intent, source: classified.source, confidence: classified.confidence, clarifying: false, delivered: delivery.sent, protocolIncluded: !!footer });
+  return response;
+}
 
+/**
+ * Grava o turno: a fala do cliente e o que a IA disse (ou só sugeriu), a
+ * idempotência, a auditoria e o desfecho. A resposta e a pergunta do assunto
+ * passam pelo mesmo registro — o que sai para o cliente tem um rastro só.
+ */
+async function recordTurn(
+  repository: ChannelRepository,
+  input: ChannelMessageInput,
+  metrics: SupportMetricsRepository | undefined,
+  turn: { content: string; delivery: Delivery; status: string; intent: string; handoff: boolean; handoffReason: string | null; classified: Classification; label: string },
+): Promise<ChannelResponse> {
+  const { content, delivery } = turn;
   await repository.saveMessages(CHANNEL_NAME, input.externalConversationId, [
     { role: "customer", content: input.text, correlationId: input.correlationId, externalMessageId: input.idempotencyKey },
     // O `wamid` da resposta é o que casa o recibo de entrega com esta linha.
@@ -265,15 +327,14 @@ export async function processChannelMessage(
     response: delivery.sent ? content : null,
     autoReply: delivery.sent,
     suggestion: delivery.sent ? undefined : content,
-    status: !delivery.sent ? SUGGESTED_STATUS
-      : delivery.messageId && CLAIMS_RESOLUTION.has(result.finalStatus) ? AUTO_REPLIED_STATUS
-      : result.finalStatus,
-    handoff: result.handoff.required,
+    status: turn.status,
+    handoff: turn.handoff,
     correlationId: input.correlationId,
     ...(delivery.sent && delivery.messageId ? { externalMessageId: delivery.messageId } : {}),
   };
 
   await repository.saveIdempotency(input.idempotencyKey, CHANNEL_NAME, input.externalConversationId, response);
+  const quoted = `"${sanitizeHandoffText(content).slice(0, 180)}"`;
   await repository.audit({
     correlationId: input.correlationId,
     entity: `conversation:${input.externalConversationId}`,
@@ -284,28 +345,27 @@ export async function processChannelMessage(
     // auditoria é lida por quem não participou do atendimento, e a regra do
     // projeto não abre exceção para "este caso não tem dado pessoal".
     reason: delivery.sent
-      ? `Resposta ENVIADA ao cliente: "${sanitizeHandoffText(content).slice(0, 180)}"`
+      ? `${turn.label} ENVIADA ao cliente: ${quoted}`
       : delivery.failure
-        ? `Resposta automática NÃO enviada (ver registro do envio); fica como sugestão: "${sanitizeHandoffText(content).slice(0, 180)}"`
-        : `Resposta apenas sugerida, não enviada: "${sanitizeHandoffText(content).slice(0, 180)}"`,
+        ? `${turn.label} automática NÃO enviada (ver registro do envio); fica como sugestão: ${quoted}`
+        : `${turn.label} apenas sugerida, não enviada: ${quoted}`,
   });
   await auditFailure(repository, input, delivery, content);
   await metrics?.saveOutcome({
     channel: CHANNEL_NAME,
     externalConversationId: input.externalConversationId,
-    intent: result.intent,
+    intent: turn.intent,
     // Sem envio, o desfecho é "sugerido": não pode entrar na conta de resolvidos.
     finalStatus: response.status,
-    handoff: result.handoff.required,
-    handoffReason: result.handoff.reason,
+    handoff: turn.handoff,
+    handoffReason: turn.handoffReason,
     correlationId: input.correlationId,
     // Quem classificou, com quanta certeza, e qual código produziu tudo isso.
-    intentSource: classified.source,
-    intentConfidence: Math.round(classified.confidence * 100),
-    intentModel: classified.model ?? null,
+    intentSource: turn.classified.source,
+    intentConfidence: Math.round(turn.classified.confidence * 100),
+    intentModel: turn.classified.model ?? null,
     appVersion: appVersion(),
   });
-
   return response;
 }
 

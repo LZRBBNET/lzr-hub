@@ -2,7 +2,7 @@ import { IxcConnectionMapper, IxcContractMapper, IxcCustomerMapper, IxcInvoiceMa
 import { sanitizeTelemetry } from "./masking.ts";
 import { ReadonlyIxcGuard } from "./guard.ts";
 import { CircuitBreaker, SlidingWindowRateLimiter, TtlCache } from "./resilience.ts";
-import type { IxcCityDto, IxcCollectionWalletDto, IxcCustomerDto, IxcCustomerPage, IxcCustomerSnapshot, IxcListResponse, IxcOsSubjectDto, IxcPaymentTermDto, IxcReadOperation, IxcSectorDto, IxcUfDto } from "./types.ts";
+import type { IxcCityDto, IxcCollectionWalletDto, IxcCustomerDto, IxcCustomerPage, IxcCustomerSnapshot, IxcListResponse, IxcOsSubjectDto, IxcPaymentTermDto, IxcReadOperation, IxcSectorDto, IxcServiceDiagnosisData, IxcUfDto } from "./types.ts";
 
 // `listOsCatalog` fica de fora porque não tem um endpoint só: a mesma operação
 // lê `su_oss_assunto` e `empresa_setor`, e o recurso vai explícito na chamada.
@@ -442,6 +442,27 @@ export class IxcReadonlyProvider {
     if(!log||!operator)return undefined;
     const at=String(log.data??"").trim();
     return{operator,at:at&&!at.startsWith("0000")?at:null};
+  }
+  /**
+   * O que o diagnóstico de "sem internet" precisa: o login (online? desde quando
+   * caiu?), o contrato (bloqueado?) e as OS ainda abertas. Três consultas em
+   * paralelo, contra as ~15 do `getSnapshot` — que traz pagamentos e plano que o
+   * diagnóstico não usa, e o limite por minuto do IXC é de todo o processo.
+   */
+  async getServiceDiagnosis(customerId:string,correlationId:string):Promise<IxcServiceDiagnosisData>{
+    this.guard.assertCustomer(customerId);
+    const [logins,contracts,orders]=await Promise.all([
+      this.read("getConnection",endpoints.getConnection,"id_cliente",customerId,correlationId,5),
+      this.read("listContracts",endpoints.listContracts,"id_cliente",customerId,correlationId,5),
+      this.read("listServiceOrders",endpoints.listServiceOrders,"id_cliente",customerId,correlationId,20,customerId,{sortname:"su_oss_chamado.data_abertura",sortorder:"desc"}),
+    ]);
+    const text=(raw:Record<string,unknown>,key:string)=>{const value=String(raw[key]??"").trim();return value&&!value.startsWith("0000-00-00")?value:undefined;};
+    return {
+      logins:logins.map((raw)=>({id:String(raw.id??""),contractId:text(raw,"id_contrato"),online:raw.online==="S"?true:raw.online==="N"?false:null,lastConnectedAt:text(raw,"ultima_conexao_inicial"),lastDisconnectedAt:text(raw,"ultima_conexao_final"),disconnectReason:text(raw,"motivo_desconexao"),neighborhood:text(raw,"bairro")})),
+      contracts:contracts.map((raw)=>({id:String(raw.id??""),status:String(raw.status??""),internetStatus:String(raw.status_internet??""),trustUnlockActive:raw.desbloqueio_confianca_ativo==="S"})),
+      // "F" é finalizada; o resto ainda está na fila de alguém.
+      openServiceOrders:orders.filter((raw)=>String(raw.status??"")!=="F").map((raw)=>({id:String(raw.id??""),status:String(raw.status??""),subjectId:text(raw,"id_assunto"),openedAt:text(raw,"data_abertura")})),
+    };
   }
   /** Contagem de faturas em aberto na base inteira: uma consulta, sem varrer registro. */
   async countOpenInvoices(correlationId:string){

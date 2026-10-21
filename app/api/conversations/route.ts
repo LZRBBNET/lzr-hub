@@ -5,6 +5,7 @@ import { metaSendConfigFromEnv } from "@/lib/integrations/meta/cloud-client";
 import { REPLY_WINDOW_MS, attendantReplyEnabled } from "@/lib/platform/attendant-reply-service";
 import { CHANNEL_NAME } from "@/lib/platform/n8n-channel-service";
 import { authEnforced, authorize } from "@/lib/platform/session-guard";
+import { DbTicketRepository, ticketSummary } from "@/lib/platform/triage-service";
 
 const LIST_LIMIT = 40;
 const MESSAGE_LIMIT = 200;
@@ -33,21 +34,32 @@ export async function GET(request: Request) {
   };
 
   try {
-    const repository = new DbConversationsRepository(await getDb());
+    const db = await getDb();
+    const repository = new DbConversationsRepository(db);
+    const tickets = new DbTicketRepository(db);
     if (id) {
-      const [messages, audit] = await Promise.all([
+      const [messages, audit, ticket] = await Promise.all([
         repository.getMessages(channel, id, MESSAGE_LIMIT),
         // A ficha de auditoria vem junto: quem abre a conversa para entender o
         // que aconteceu não deveria precisar de uma segunda tela.
         repository.getAudit(channel, id).catch(() => undefined),
+        // O atendimento (protocolo, setor, assunto). Sem tabela, a conversa abre do mesmo jeito.
+        tickets.latest(channel, id).catch(() => undefined),
       ]);
       // A janela de 24 horas vem daqui, com a mesma régua do envio: a tela avisa
       // antes, em vez de deixar o atendente escrever para receber uma recusa.
-      return NextResponse.json({ available: true, channel, id, messages, audit: audit ?? null, channelState, replyWindow: replyWindowFrom(messages, REPLY_WINDOW_MS) });
+      return NextResponse.json({ available: true, channel, id, messages, audit: audit ?? null, ticket: ticket ? ticketSummary(ticket) : null, channelState, replyWindow: replyWindowFrom(messages, REPLY_WINDOW_MS) });
     }
     // Quem está olhando: a tela separa "Minhas" das outras e sabe quando a conversa é de um colega.
     const viewer = guard.user ? { id: guard.user.id, name: guard.user.name } : null;
-    return NextResponse.json({ available: true, items: await repository.listConversations(LIST_LIMIT, url.searchParams.get("q")), channelState, viewer });
+    const items = await repository.listConversations(LIST_LIMIT, url.searchParams.get("q"));
+    // Setor e protocolo do atendimento aberto de cada conversa, numa consulta só.
+    const open = await tickets.openMany(items.map((item) => item.externalConversationId)).catch(() => new Map());
+    const withTickets = items.map((item) => {
+      const ticket = open.get(`${item.channel}:${item.externalConversationId}`);
+      return ticket ? { ...item, ticket: { protocol: ticket.protocol, queue: ticket.queue, stage: ticket.stage } } : item;
+    });
+    return NextResponse.json({ available: true, items: withTickets, channelState, viewer });
   } catch {
     return NextResponse.json({ available: false, detail: "Histórico de conversas indisponível", items: [], messages: [], channelState });
   }

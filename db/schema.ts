@@ -1,4 +1,5 @@
-import { boolean, index, integer, jsonb, pgTable, primaryKey, text, uniqueIndex } from "drizzle-orm/pg-core";
+import { sql } from "drizzle-orm";
+import { boolean, index, integer, jsonb, pgTable, primaryKey, serial, text, uniqueIndex } from "drizzle-orm/pg-core";
 
 const auditColumns = { createdAt: text("created_at").notNull(), updatedAt: text("updated_at").notNull() };
 export const customers = pgTable("customers", { id:text("id").primaryKey(), externalId:text("external_id").notNull().unique(), maskedDocument:text("masked_document").notNull(), name:text("name").notNull(), city:text("city").notNull(), neighborhood:text("neighborhood").notNull(), ...auditColumns });
@@ -441,6 +442,59 @@ export const conversationStates = pgTable("conversation_states", {
   resolvedBy: text("resolved_by"),
   updatedAt: text("updated_at").notNull(),
 }, (table) => [primaryKey({ columns: [table.channel, table.externalConversationId] })]);
+
+/**
+ * Atendimento: o que vai da primeira fala do cliente até ser resolvido (ou ficar
+ * 24 horas parado). A conversa é a mesma para sempre; o atendimento é o que tem
+ * protocolo, assunto e setor.
+ *
+ * `seq` dá o número do protocolo (`AAAAMMDD` + `seq` com 6 dígitos) — o banco
+ * garante que não se repete. `protocol` é anulável só porque nasce num segundo
+ * passo: sem ele, o atendimento continua e a tela diz "não gerado".
+ *
+ * Um atendimento aberto por conversa, garantido pelo índice parcial: duas
+ * mensagens chegando juntas não abrem dois protocolos.
+ *
+ * Do IXC fica só o código do cliente — nada de nome, documento ou telefone: a
+ * tela consulta o cadastro quando precisa.
+ */
+export const supportTickets = pgTable("support_tickets", {
+  id: text("id").primaryKey(),
+  seq: serial("seq").notNull(),
+  protocol: text("protocol"),
+  channel: text("channel").notNull(),
+  externalConversationId: text("external_conversation_id").notNull(),
+  /** `open` | `closed`. */
+  status: text("status").notNull(),
+  openedAt: text("opened_at").notNull(),
+  lastCustomerAt: text("last_customer_at").notNull(),
+  closedAt: text("closed_at"),
+  /** `resolved` (alguém resolveu a conversa) | `inactivity` (24 horas sem o cliente falar). */
+  closedReason: text("closed_reason"),
+  /** `pending` | `identified` | `not_found` (nenhum ou mais de um cadastro) | `unavailable` (IXC não respondeu). */
+  identification: text("identification").notNull(),
+  ixcCustomerId: text("ixc_customer_id"),
+  intent: text("intent"),
+  /** `llm` | `rules` | `menu` (o cliente escolheu no menu de confirmação). */
+  intentSource: text("intent_source"),
+  intentConfidence: integer("intent_confidence"),
+  /** Setor de destino (`tecnico`, `financeiro`, `comercial`, `atendimento`) — o mesmo rótulo de fila de Equipes. */
+  queue: text("queue"),
+  /** `new` | `clarifying` (a IA perguntou o assunto) | `routed` (assunto definido). */
+  stage: text("stage").notNull(),
+  /** Quando o protocolo saiu numa resposta entregue. Nulo = o cliente ainda não o recebeu. */
+  protocolSentAt: text("protocol_sent_at"),
+  /**
+   * Diagnóstico de conexão (contrato bloqueado? login online? massiva? OS aberta?)
+   * feito uma vez por atendimento técnico — ver `connection-diagnosis-shared.ts`.
+   * Fica gravado porque o IXC tem limite por minuto: abrir a conversa não refaz a consulta.
+   */
+  diagnosis: jsonb("diagnosis"),
+}, (table) => [
+  uniqueIndex("support_tickets_open_idx").on(table.channel, table.externalConversationId).where(sql`${table.status} = 'open'`),
+  uniqueIndex("support_tickets_protocol_idx").on(table.protocol),
+  index("support_tickets_conversation_idx").on(table.externalConversationId),
+]);
 
 /**
  * Respostas aprovadas que o canal usa no lugar do texto de homologação do

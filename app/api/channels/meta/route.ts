@@ -13,6 +13,8 @@ import { DbConversationStateRepository } from "@/lib/platform/conversation-state
 import { DbReplyRepository } from "@/lib/platform/attendant-reply-service";
 import { metaAutoReplyOptions } from "@/lib/platform/meta-auto-reply-service";
 import { metaSendConfigFromEnv } from "@/lib/integrations/meta/cloud-client";
+import { DbTicketRepository, ixcDiagnose, startTriage } from "@/lib/platform/triage-service";
+import { DbIncidentsRepository } from "@/lib/platform/incidents-service";
 
 /**
  * Webhook oficial do **WhatsApp Business Platform (Cloud API)**.
@@ -83,10 +85,25 @@ export async function POST(request: Request) {
   const updated = statuses.length > 0 ? await applyStatuses(new DbDeliveryRepository(db), statuses) : 0;
   const templates = messages.some((message) => message.kind === "text") ? await loadOverrides(new DbReplyTemplatesRepository(db)) : undefined;
   const sendConfig = metaSendConfigFromEnv();
+  const tickets = new DbTicketRepository(db);
 
   const results = [];
   for (const message of messages) {
     const correlationId = randomUUID();
+    const lookupCustomer = async (phone: string) => {
+      const runtime = getIxcRuntime();
+      if (!runtime.provider) throw new Error("IXC indisponível");
+      const customer = await runtime.provider.findCustomerByPhone(phone, correlationId);
+      return customer ? { id: customer.id } : undefined;
+    };
+    // Atendimento, protocolo e cliente identificado — uma consulta ao IXC por
+    // atendimento, que a captação de lead aproveita em vez de repetir.
+    const provider = getIxcRuntime().provider;
+    const triage = await startTriage(tickets, {
+      channel: CHANNEL_NAME, conversationId: message.phone, lookup: lookupCustomer,
+      // Atendimento técnico de cliente identificado ganha diagnóstico (contrato, login, massiva, OS aberta).
+      diagnose: provider ? ixcDiagnose(provider, new DbIncidentsRepository(db), correlationId) : undefined,
+    });
     // `wamid` é a chave de idempotência: a Meta reenvia o webhook quando não
     // recebe 200, e sem isso a reentrega viraria atendimento em dobro.
     if (message.kind === "text") {
@@ -101,18 +118,12 @@ export async function POST(request: Request) {
           ...await metaAutoReplyOptions({
             enabled: autoReplyEnabled(), states: new DbConversationStateRepository(db), messages: channel, claims: new DbReplyRepository(db),
             config: sendConfig, channel: CHANNEL_NAME, customerMessageAt: message.sentAt,
+            afterClarification: triage?.ticket.stage === "clarifying",
           }, message.phone),
           templates,
+          triage: triage?.hooks,
         },
-        (input) => captureLeadFromContact(
-          new DbCrmRepository(db),
-          input,
-          async (contactPhone) => {
-            const runtime = getIxcRuntime();
-            if (!runtime.provider) throw new Error("IXC indisponível");
-            return runtime.provider.findCustomerByPhone(contactPhone, correlationId);
-          },
-        ),
+        (input) => captureLeadFromContact(new DbCrmRepository(db), input, triage?.knownCustomer ?? lookupCustomer),
       ));
     } else {
       results.push(await recordUnsupportedMessage(channel, {

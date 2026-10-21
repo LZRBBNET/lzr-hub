@@ -6,11 +6,15 @@ import { needsReply, waitTone, windowOpen, type EffectiveState, type StateAction
 import { Icon } from "@/components/ui/icons";
 import { Avatar, Badge, Empty, InfoTip, Loading, Modal, Notice, relativeTime, useToast } from "@/components/ui/kit";
 import { channelLabel, conversationLabel, handoffLabel, intentLabel } from "@/components/modules/labels";
+import { IDENTIFICATION_LABELS, STAGE_LABELS, TRIAGE_QUEUES, queueLabel, type TicketSummary } from "@/lib/platform/triage-shared";
+import { VERDICT_LABELS, type DiagnosisVerdict } from "@/lib/platform/connection-diagnosis-shared";
 
 type ConversationSummary = {
   channel:string; externalConversationId:string; lastMessage:string; lastRole:"customer"|"agent"|"suggestion"; lastAt:string; messages:number;
   finalStatus?:string; intent?:string; handoff?:boolean; displayName?:string; awaitingSince?:string; lastSentBy?:string; lastSentByName?:string;
   lastCustomerAt?:string; lastCustomerMessage?:string; state?:EffectiveState;
+  /** Atendimento aberto: protocolo e setor da triagem. */
+  ticket?:{ protocol:string|null; queue:string|null; stage:string };
 };
 type ConversationMessage = { role:"customer"|"agent"|"suggestion"; content:string; createdAt:string; sentBy?:string; sentByName?:string; deliveryStatus?:string; deliveryError?:string };
 type ChannelState = { enabled:boolean; autoReply:boolean; canReply:boolean };
@@ -43,7 +47,7 @@ const NOTIFY_KEY = "lzr-inbox-notify";
 const FINAL_STATUS_LABELS: Record<string,string> = {
   suggested:"Sugestão registrada", handoff:"Transbordo", resolved:"Resolvido", waiting_customer:"Aguardando cliente",
   blocked:"Bloqueado", failed:"Falhou", simulated:"Simulado", rated:"Avaliado", unsupported:"Mídia recebida",
-  replied:"Primeira resposta da IA",
+  replied:"Primeira resposta da IA", clarifying:"IA perguntou o assunto",
 };
 const DELIVERY_LABELS: Record<string,string> = { sent:"Enviada", delivered:"Entregue", read:"Lida", failed:"Falhou" };
 const ACTION_TOAST: Record<StateAction,string> = { claim:"Conversa assumida. A IA só sugere enquanto ela estiver com você.", release:"Conversa devolvida para a IA.", resolve:"Conversa resolvida.", reopen:"Conversa reaberta." };
@@ -115,6 +119,8 @@ export function AttendanceModule({ initialConversation, onAwaiting }: { initialC
   const [messages,setMessages] = useState<ConversationMessage[]>([]);
   const [messagesState,setMessagesState] = useState<"idle"|"loading"|"ready"|"error">("idle");
   const [audit,setAudit] = useState<ConversationAudit|null>(null);
+  const [ticket,setTicket] = useState<TicketSummary|null>(null);
+  const [sector,setSector] = useState("todos");
   const [replyWindow,setReplyWindow] = useState<ReplyWindow|null>(null);
   const [ixc,setIxc] = useState<IxcMatch|null>(null);
   const [quickReplies,setQuickReplies] = useState<QuickReply[]>([]);
@@ -210,7 +216,7 @@ export function AttendanceModule({ initialConversation, onAwaiting }: { initialC
       const response = await fetch(`/api/conversations?channel=${encodeURIComponent(item.channel)}&id=${encodeURIComponent(item.externalConversationId)}`);
       if (!isOpen(key)) return;
       if (!response.ok) throw new Error("falhou");
-      const payload = await response.json() as { messages:ConversationMessage[]; audit:ConversationAudit|null; replyWindow?:ReplyWindow };
+      const payload = await response.json() as { messages:ConversationMessage[]; audit:ConversationAudit|null; ticket?:TicketSummary|null; replyWindow?:ReplyWindow };
       // Trocou de conversa enquanto esperava: esta resposta é de outro cliente.
       if (!isOpen(key)) return;
       const next = payload.messages ?? [];
@@ -224,7 +230,7 @@ export function AttendanceModule({ initialConversation, onAwaiting }: { initialC
         signatureRef.current = signature; countRef.current = next.length;
         setMessages(next);
       }
-      setAudit(payload.audit ?? null); setReplyWindow(payload.replyWindow ?? null); setMessagesState("ready");
+      setAudit(payload.audit ?? null); setTicket(payload.ticket ?? null); setReplyWindow(payload.replyWindow ?? null); setMessagesState("ready");
     } catch {
       if (mode==="open" && isOpen(key)) setMessagesState("error");
     } finally { messagesBusy.current = false; }
@@ -250,7 +256,7 @@ export function AttendanceModule({ initialConversation, onAwaiting }: { initialC
     selectedRef.current = item; setSelected(item);
     if (same) return;
     signatureRef.current = ""; countRef.current = 0; stickRef.current = true;
-    setMessages([]); setMessagesState("loading"); setAudit(null); setReplyWindow(null); setNewBelow(false);
+    setMessages([]); setMessagesState("loading"); setAudit(null); setTicket(null); setReplyWindow(null); setNewBelow(false);
     // O rascunho é da conversa em que foi escrito: trocar de cliente não o carrega junto.
     setDraft(""); setSendError(null); setSlashClosed(false);
     void loadMessages(item, "open");
@@ -377,12 +383,15 @@ export function AttendanceModule({ initialConversation, onAwaiting }: { initialC
   const isOpenState = (item:ConversationSummary) => (item.state?.status ?? "open")==="open";
   const mine = items.filter((item) => isOpenState(item) && !!viewer && item.state?.assigneeId===viewer.id);
   const resolved = items.filter((item) => !isOpenState(item));
-  const visible = queue==="fila"
+  const queued = queue==="fila"
     // Na fila, quem espera há mais tempo vem primeiro.
     ? [...waiting].sort((a,b) => (a.awaitingSince ?? "").localeCompare(b.awaitingSince ?? ""))
     : queue==="minhas" ? mine
     : queue==="resolvidas" ? resolved
     : items.filter(isOpenState);
+  // O setor vem da triagem do atendimento aberto; conversa sem atendimento só aparece em "Todos".
+  const hasSectors = items.some((item) => !!item.ticket?.queue);
+  const visible = sector==="todos" ? queued : queued.filter((item) => item.ticket?.queue===sector);
   useEffect(() => { visibleRef.current = visible; });
 
   if (state==="loading") return <div className="inbox-state"><Loading rows={6} label="Carregando conversas" /></div>;
@@ -418,6 +427,11 @@ export function AttendanceModule({ initialConversation, onAwaiting }: { initialC
           </div>
         </div>
         <label className="search-field"><Icon name="search" size={16} /><input value={query} onChange={(e)=>setQuery(e.target.value)} placeholder="Buscar nome ou número" aria-label="Buscar conversa" /></label>
+        {(hasSectors || sector!=="todos") && <label className="sector-filter"><span>Setor</span>
+          <select value={sector} onChange={(e)=>setSector(e.target.value)} aria-label="Filtrar por setor">
+            <option value="todos">Todos</option>
+            {TRIAGE_QUEUES.map((id) => <option key={id} value={id}>{queueLabel(id)}</option>)}
+          </select></label>}
         <div className="queue-tabs" role="tablist" aria-label="Filas">
           {queues.map(([id,label,total]) => <button key={id} type="button" role="tab" aria-selected={queue===id} className={queue===id ? "active" : ""} onClick={() => setQueue(id)}>
             {label}{total!==null && total>0 && <b className={id==="fila" ? "hot" : ""}>{total}</b>}
@@ -440,6 +454,7 @@ export function AttendanceModule({ initialConversation, onAwaiting }: { initialC
                 {hot && item.awaitingSince && <span className={`wait-badge tone-${waitTone(item.awaitingSince, now)}`} title="Tempo desde a primeira mensagem do cliente ainda sem resposta"><Icon name="clock" size={12} />{relativeTime(item.awaitingSince, now)}</span>}
                 {closed && <span className="soft-chip" title="Passou de 24 h desde a última mensagem do cliente: a Meta não aceita mais texto livre">janela fechada</span>}
                 {!isOpenState(item) && <span className="soft-chip ok"><Icon name="check" size={11} />resolvida</span>}
+                {isOpenState(item) && item.ticket?.queue && <span className="soft-chip" title="Setor definido pela triagem">{queueLabel(item.ticket.queue)}</span>}
                 {isOpenState(item) && (owner ? <span className="owner-chip"><span className="owner-dot" />{owner}</span> : <span className="soft-chip"><Icon name="bot" size={11} />IA</span>)}
                 {item.handoff && isOpenState(item) && !owner && <span className="soft-chip warn" title="O pipeline recomendou passar para um humano">pede humano</span>}
               </span>
@@ -533,6 +548,7 @@ export function AttendanceModule({ initialConversation, onAwaiting }: { initialC
         </div>
         <div className="details-body">
           {detailTab==="cliente" && <>
+            <TicketPanel ticket={ticket} now={now} />
             <IxcPanel match={ixc} />
             <section className="details-section">
               <h3>Conversa</h3>
@@ -640,6 +656,34 @@ function QuickReplies({ items, disabled, onPick }: { items:QuickReply[]; disable
  * Quem é o cliente no IXC, pelo telefone. Exatamente um cadastro ou nada:
  * identificar o cliente errado é pior que não identificar.
  */
+/**
+ * O atendimento em curso: protocolo, setor e o que a triagem entendeu. É o
+ * "registro do chamado" do fluxo de manutenção — o que a atendente montava à mão
+ * chega pronto quando a IA consegue, e diz que não sabe quando não consegue.
+ */
+function TicketPanel({ ticket, now }: { ticket:TicketSummary|null; now:number }) {
+  if (!ticket) return <section className="details-section"><h3>Atendimento</h3><p className="muted small">Sem atendimento registrado. A triagem só existe para mensagens que chegaram pelo canal oficial depois de ela ser ligada.</p></section>;
+  const missing = <em className="audit-missing">não gerado</em>;
+  return <section className="details-section">
+    <h3>Atendimento</h3>
+    <dl className="facts">
+      <div><dt>Protocolo</dt><dd>{ticket.protocol ? <><code>{ticket.protocol}</code> · {ticket.protocolSentAt ? "informado ao cliente" : "ainda não informado"}</> : missing}</dd></div>
+      <div><dt>Situação</dt><dd>{ticket.status==="open" ? `Aberto há ${relativeTime(ticket.openedAt, now)}` : ticket.closedReason==="inactivity" ? "Encerrado por inatividade" : "Encerrado ao resolver"}</dd></div>
+      <div><dt>Setor</dt><dd>{queueLabel(ticket.queue)}</dd></div>
+      <div><dt>Assunto</dt><dd>{ticket.intent ? intentLabel(ticket.intent) : "—"}{ticket.intentSource==="menu" ? " · escolhido pelo cliente" : ticket.intentConfidence!==null ? ` · ${ticket.intentConfidence}%` : ""}</dd></div>
+      <div><dt>Triagem</dt><dd>{STAGE_LABELS[ticket.stage] ?? ticket.stage}</dd></div>
+      <div><dt>Cliente</dt><dd>{IDENTIFICATION_LABELS[ticket.identification] ?? ticket.identification}{ticket.ixcCustomerId ? ` · código ${ticket.ixcCustomerId}` : ""}</dd></div>
+    </dl>
+    {ticket.diagnosis && <div className="diagnosis-block">
+      <h4>Diagnóstico de conexão <Badge tone={VERDICT_TONE[ticket.diagnosis.verdict]}>{VERDICT_LABELS[ticket.diagnosis.verdict]}</Badge>
+        <InfoTip>Lido do IXC uma vez, há {relativeTime(ticket.diagnosis.at, now)}: contrato, login de conexão, OS abertas e as massivas registradas aqui. Não é refeito a cada atualização — o IXC tem limite de consultas por minuto.</InfoTip></h4>
+      <ul>{ticket.diagnosis.facts.map((fact) => <li key={fact}>{fact}</li>)}</ul>
+      <p><strong>Próximo passo:</strong> {ticket.diagnosis.next}</p>
+    </div>}
+  </section>;
+}
+const VERDICT_TONE: Record<DiagnosisVerdict, "ok"|"warn"|"bad"|"neutral"> = { blocked: "bad", offline: "warn", online: "ok", unknown: "neutral" };
+
 function IxcPanel({ match }: { match:IxcMatch|null }) {
   return <section className="details-section">
     <h3>Cadastro no IXC</h3>
@@ -665,7 +709,8 @@ function ConversationAuditPanel({audit}:{audit:ConversationAudit|null}){
   const missing = <em className="audit-missing">não registrado</em>;
   const origem = audit.intentSource==="llm"
     ? <>Modelo de linguagem{audit.intentModel?<> <code>{audit.intentModel}</code></>:null}</>
-    : audit.intentSource==="rules" ? <>Regra de texto <InfoTip>O modelo não respondeu a tempo, ou está desligado.</InfoTip></> : missing;
+    : audit.intentSource==="rules" ? <>Regra de texto <InfoTip>O modelo não respondeu a tempo, ou está desligado.</InfoTip></>
+    : audit.intentSource==="menu" ? <>O próprio cliente, no menu de assuntos</> : missing;
   return <section className="details-section">
     <h3>Auditoria da IA</h3>
     <dl className="facts">

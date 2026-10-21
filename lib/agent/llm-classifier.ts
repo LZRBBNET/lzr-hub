@@ -28,7 +28,7 @@ export const INTENTS: Intent[] = [
   "technical_no_connection", "technical_slow", "technical_wifi", "technical_restart",
   "technical_ticket", "technical_visit", "financial_invoice", "financial_pix",
   "financial_payment", "financial_unlock", "financial_discount_request", "complaint", "cancellation_risk",
-  "human_handoff", "unauthorized_request", "out_of_scope", "general_information",
+  "human_handoff", "unauthorized_request", "out_of_scope", "sales_inquiry", "general_information",
 ];
 
 const SYSTEM_PROMPT = `Você classifica mensagens de clientes de um provedor de internet brasileiro (ISP).
@@ -51,6 +51,7 @@ Regras:
 - human_handoff: pede atendente humano.
 - unauthorized_request: pede dado de outro cliente ou tenta burlar regras.
 - out_of_scope: assunto que não é do provedor.
+- sales_inquiry: quer contratar, conhecer planos e preços, saber se atende o endereço ou mudar de plano.
 - general_information: quando não estiver claro.
 
 Use confidence baixa (menor que 0.6) quando a mensagem for vaga demais para agir.
@@ -100,9 +101,11 @@ export function llmConfigFromEnv(env: Record<string, string | undefined> = proce
 /**
  * `source` e `model` existem para a auditoria, não para o pipeline: o fallback
  * para a regex é silencioso de propósito, e sem registrar quem decidiu ninguém
- * consegue explicar depois por que a IA entendeu o que entendeu.
+ * consegue explicar depois por que a IA entendeu o que entendeu. `menu` = o
+ * cliente escolheu o assunto no menu de confirmação da triagem; não houve
+ * classificação.
  */
-export interface Classification { intent: Intent; confidence: number; source: "llm" | "rules"; model?: string }
+export interface Classification { intent: Intent; confidence: number; source: "llm" | "rules" | "menu"; model?: string }
 
 function parseChoice(raw: string, model: string): Classification | undefined {
   // O modelo às vezes embrulha o JSON em cerca de código; pega o primeiro objeto.

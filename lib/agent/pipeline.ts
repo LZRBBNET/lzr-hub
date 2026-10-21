@@ -39,6 +39,8 @@ export function analyzeIntent(message: string): {
   if (/sem internet|sem conex|caiu|onu offline|pppoe offline|potencia|potência|offline|conexao.*nao voltou|conexão.*não voltou/.test(text)) return { intent: "technical_no_connection", confidence: 0.97, goal: "Restaurar conexão" };
   if (/nao funciona|não funciona/.test(text)) return { intent: "technical_no_connection", confidence: 0.68, goal: "Restaurar conexão" };
   if (/receita|futebol|previsao do tempo|previsão do tempo|politica|política/.test(text)) return { intent: "out_of_scope", confidence: 0.96, goal: "Orientar limite de escopo" };
+  // Depois de lentidão e queda: "meu plano de 100 mega está lento" é lentidão, não venda.
+  if (/\bplanos?\b|contratar|assinar|quanto custa|tem cobertura|atende (no|na|o|a) |instalar internet|quero (ter )?internet|mudar de plano/.test(text)) return { intent: "sales_inquiry", confidence: 0.9, goal: "Encaminhar ao comercial com o endereço" };
   return { intent: "general_information", confidence: 0.55, goal: "Entender a necessidade do cliente" };
 }
 

@@ -36,6 +36,7 @@ export const REPLY_INTENTS: Array<{ intent: Intent; label: string }> = [
   { intent: "human_handoff", label: "Pedido de atendente" },
   { intent: "unauthorized_request", label: "Pedido não autorizado" },
   { intent: "out_of_scope", label: "Fora de escopo" },
+  { intent: "sales_inquiry", label: "Planos e contratação" },
   { intent: "general_information", label: "Informação geral" },
 ];
 
@@ -56,6 +57,7 @@ export const DEFAULT_REPLY_TEMPLATES: Record<Intent, string> = {
   human_handoff: "Certo, vou chamar um atendente para continuar com você por aqui.",
   unauthorized_request: "Não consigo ajudar com esse tipo de pedido. Posso ajudar com internet, Wi-Fi, fatura e cadastro.",
   out_of_scope: "Posso ajudar com internet, Wi-Fi, fatura e cadastro na BBNET. Para esse outro assunto, não consigo ajudar.",
+  sales_inquiry: "Que bom que você quer conhecer a BBNET! Me diga o seu bairro e cidade, que um consultor te chama por aqui com os planos disponíveis no seu endereço.",
   general_information: "Olá! Pode me contar o que você precisa? Por exemplo: internet sem conexão, lentidão, segunda via de fatura ou outro assunto.",
 };
 
