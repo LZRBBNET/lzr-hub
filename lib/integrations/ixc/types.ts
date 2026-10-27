@@ -43,7 +43,7 @@ export interface IxcServiceOrderDto { id:string; customerId:string; status:strin
  */
 export interface IxcServiceDiagnosisData {
   logins: Array<{ id:string; contractId?:string; online:boolean|null; lastConnectedAt?:string; lastDisconnectedAt?:string; disconnectReason?:string; neighborhood?:string }>;
-  contracts: Array<{ id:string; status:string; internetStatus:string; trustUnlockActive:boolean }>;
+  contracts: Array<{ id:string; status:string; internetStatus:string; trustUnlockActive:boolean; /** Ausente = fonte antiga ou valor desconhecido; não prova desligado. */ trustUnlockKnown?:boolean }>;
   openServiceOrders: Array<{ id:string; status:string; subjectId?:string; openedAt?:string }>;
 }
 export interface IxcConnectionDto { id:string; customerId:string; login:string; status:string; lastAccessAt?:string; address?:string; equipmentDescriptor?:string; connectionType?:string }

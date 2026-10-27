@@ -459,7 +459,7 @@ export class IxcReadonlyProvider {
     const text=(raw:Record<string,unknown>,key:string)=>{const value=String(raw[key]??"").trim();return value&&!value.startsWith("0000-00-00")?value:undefined;};
     return {
       logins:logins.map((raw)=>({id:String(raw.id??""),contractId:text(raw,"id_contrato"),online:raw.online==="S"?true:raw.online==="N"?false:null,lastConnectedAt:text(raw,"ultima_conexao_inicial"),lastDisconnectedAt:text(raw,"ultima_conexao_final"),disconnectReason:text(raw,"motivo_desconexao"),neighborhood:text(raw,"bairro")})),
-      contracts:contracts.map((raw)=>({id:String(raw.id??""),status:String(raw.status??""),internetStatus:String(raw.status_internet??""),trustUnlockActive:raw.desbloqueio_confianca_ativo==="S"})),
+      contracts:contracts.map((raw)=>({id:String(raw.id??""),status:String(raw.status??""),internetStatus:String(raw.status_internet??""),trustUnlockActive:raw.desbloqueio_confianca_ativo==="S",trustUnlockKnown:raw.desbloqueio_confianca_ativo==="S"||raw.desbloqueio_confianca_ativo==="N"})),
       // "F" é finalizada; o resto ainda está na fila de alguém.
       openServiceOrders:orders.filter((raw)=>String(raw.status??"")!=="F").map((raw)=>({id:String(raw.id??""),status:String(raw.status??""),subjectId:text(raw,"id_assunto"),openedAt:text(raw,"data_abertura")})),
     };
