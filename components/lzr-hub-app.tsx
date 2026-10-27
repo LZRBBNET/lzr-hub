@@ -163,14 +163,14 @@ export function LzrHubApp({ ixcMode = "disabled" }: { ixcMode?: string }) {
 function Screen({ view, intent, awaiting, onNavigate, onAwaiting }: { view: View; intent: NavIntent; awaiting: { count: number; oldest: string | null }; onNavigate: Navigate; onAwaiting: (count: number) => void }) {
   switch (view) {
     case "dashboard": return <HomeModule awaiting={awaiting} onNavigate={onNavigate} />;
-    case "atendimento": return <AttendanceModule initialConversation={intent.conversation} onAwaiting={onAwaiting} />;
+    case "atendimento": return <AttendanceModule key={intent.conversation ?? "inbox"} initialConversation={intent.conversation} onAwaiting={onAwaiting} />;
     case "training": return <TrainingModule />;
     case "clientes": return <Customer360Module />;
     case "chat-interno": return <InternalChatModule />;
     case "auditoria-contratos": return <ContractAuditModule />;
     case "monitoramento": case "massivas": case "mapa-alertas": case "chamados": return <SupportModule view={view} onNavigate={onNavigate} />;
     case "cobranca": case "acoes-cobranca": case "regua": return <BillingModule view={view} />;
-    case "recuperacao": return <RecoveryModule />;
+    case "recuperacao": return <RecoveryModule onNavigate={onNavigate} />;
     case "comercial": case "funil": case "metas": return <SalesModule view={view} />;
     case "churn": case "conhecimento": case "respostas": return <IntelligenceModule view={view} />;
     case "avaliacoes": case "prompts": return <QualityModule view={view} onNavigate={onNavigate} />;

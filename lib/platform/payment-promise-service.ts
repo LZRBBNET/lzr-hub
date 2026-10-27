@@ -28,11 +28,22 @@ export class PaymentPromiseValidationError extends Error {
   constructor(message: string) { super(message); this.name = "PaymentPromiseValidationError"; }
 }
 
+export class PaymentPromiseVerificationError extends Error {
+  readonly status: 404 | 409 | 503;
+  constructor(message: string, status: 404 | 409 | 503) {
+    super(message); this.name = "PaymentPromiseVerificationError"; this.status = status;
+  }
+}
+
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 
 /** Data prometida não pode ser passado (promessa por definição é futura) nem longe demais — mais de 60 dias não é "promessa", é ficção. */
 export function parsePromisedFor(value: string, now: Date): string {
   if (!DATE_RE.test(value)) throw new PaymentPromiseValidationError("Data prometida deve estar no formato AAAA-MM-DD");
+  const date = new Date(`${value}T00:00:00Z`);
+  if (!Number.isFinite(date.getTime()) || date.toISOString().slice(0, 10) !== value) {
+    throw new PaymentPromiseValidationError("Data prometida inválida");
+  }
   const today = businessToday(now);
   if (value < today) throw new PaymentPromiseValidationError("A data prometida não pode estar no passado");
   const maxDays = 60;
@@ -162,6 +173,38 @@ export function parsePromiseReviewCursor(value: unknown): string | null {
 export interface PromiseInvoiceSource {
   getInvoiceForCustomer(customerId: string, invoiceId: string, correlationId: string): Promise<{ id: string; customerId: string; status: string } | undefined>;
 }
+
+/**
+ * Cria somente após leitura exata e fresca: a página/cache do Customer 360
+ * não prova a existência ou a situação atual da fatura. A conexão ao banco
+ * e a escrita ficam depois de toda a validação; erro/ausência não vira dívida.
+ */
+export async function createVerifiedPaymentPromise(
+  getRepository: () => Promise<Pick<PaymentPromiseRepository, "create">>,
+  source: PromiseInvoiceSource | undefined,
+  entry: Omit<PaymentPromiseRow, "id" | "status" | "createdAt">,
+  now: Date = new Date(),
+): Promise<PaymentPromiseRow> {
+  if (!IXC_ID.test(entry.customerId) || !IXC_ID.test(entry.invoiceId)) {
+    throw new PaymentPromiseValidationError("Cliente e fatura devem ser códigos válidos do IXC");
+  }
+  const promisedFor = parsePromisedFor(entry.promisedFor, now);
+  if (!source) throw new PaymentPromiseVerificationError("IXC indisponível. Nenhuma promessa foi registrada.", 503);
+  let invoice;
+  try { invoice = await source.getInvoiceForCustomer(entry.customerId, entry.invoiceId, entry.correlationId); }
+  catch { throw new PaymentPromiseVerificationError("Não foi possível confirmar a fatura no IXC. Nenhuma promessa foi registrada.", 503); }
+  if (!invoice) throw new PaymentPromiseVerificationError("Fatura não encontrada para o cliente informado. Nenhuma promessa foi registrada.", 404);
+  if (invoice.id !== entry.invoiceId || invoice.customerId !== entry.customerId || typeof invoice.status !== "string") {
+    throw new PaymentPromiseVerificationError("A identidade ou a situação da fatura não foi confirmada. Nenhuma promessa foi registrada.", 503);
+  }
+  const status = invoice.status.trim().toUpperCase();
+  if (status === "R" || status === "C") {
+    throw new PaymentPromiseVerificationError("A fatura não está aberta. Nenhuma promessa foi registrada.", 409);
+  }
+  if (status !== "A") throw new PaymentPromiseVerificationError("O IXC não confirmou que a fatura está aberta. Nenhuma promessa foi registrada.", 503);
+  return (await getRepository()).create({ ...entry, promisedFor });
+}
+
 export interface PromiseReviewBatchResult extends PromiseReviewResult {
   examined: number;
   lookupCount: number;

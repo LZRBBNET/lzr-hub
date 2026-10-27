@@ -106,6 +106,8 @@ function usedSuggestions(messages:ConversationMessage[]) {
 }
 
 export function AttendanceModule({ initialConversation, onAwaiting }: { initialConversation?: string; onAwaiting?: (count:number) => void }) {
+  // Search before the server's 40-row limit, then still require an exact key.
+  const initialQuery = initialConversation?.match(/^[^:]+:(\d{10,15})$/)?.[1] ?? "";
   const [items,setItems] = useState<ConversationSummary[]>([]);
   const [channelState,setChannelState] = useState<ChannelState>({enabled:false,autoReply:false,canReply:false});
   const [viewer,setViewer] = useState<Viewer|null>(null);
@@ -114,7 +116,8 @@ export function AttendanceModule({ initialConversation, onAwaiting }: { initialC
   const [syncedAt,setSyncedAt] = useState<number|null>(null);
   const [syncFailed,setSyncFailed] = useState(false);
   const [queue,setQueue] = useState<Queue>("abertas");
-  const [query,setQuery] = useState("");
+  const [query,setQuery] = useState(initialQuery);
+  const [targetMissing,setTargetMissing] = useState(false);
   const [selected,setSelected] = useState<ConversationSummary|null>(null);
   const [messages,setMessages] = useState<ConversationMessage[]>([]);
   const [messagesState,setMessagesState] = useState<"idle"|"loading"|"ready"|"error">("idle");
@@ -143,7 +146,8 @@ export function AttendanceModule({ initialConversation, onAwaiting }: { initialC
   // Refs porque o temporizador enxerga só a primeira renderização: sem elas ele
   // atualizaria sempre a conversa que estava aberta quando a tela montou.
   const selectedRef = useRef<ConversationSummary|null>(null);
-  const queryRef = useRef("");
+  const queryRef = useRef(initialQuery);
+  const mountedRef = useRef(false);
   const signatureRef = useRef("");
   const countRef = useRef(0);
   const stickRef = useRef(true);
@@ -185,7 +189,7 @@ export function AttendanceModule({ initialConversation, onAwaiting }: { initialC
       if (!response.ok) throw new Error("falhou");
       const payload = await response.json() as { available:boolean; items:ConversationSummary[]; channelState:ChannelState; viewer?:Viewer|null };
       // A busca mudou enquanto esta resposta vinha: ela já não vale.
-      if (q!==queryRef.current.trim()) return;
+      if (!mountedRef.current || q!==queryRef.current.trim()) return;
       const list = payload.items ?? [];
       setAvailable(payload.available); setItems(list); setViewer(payload.viewer ?? null);
       setChannelState(payload.channelState ?? {enabled:false,autoReply:false,canReply:false});
@@ -194,17 +198,19 @@ export function AttendanceModule({ initialConversation, onAwaiting }: { initialC
       const current = selectedRef.current;
       const fresh = current ? list.find((item) => conversationKey(item)===conversationKey(current)) : undefined;
       if (fresh) { selectedRef.current = fresh; setSelected(fresh); }
+      else if (!current && initialRef.current) {
+        const wanted = list.find((item) => conversationKey(item)===initialRef.current);
+        if (wanted) { open(wanted); setPane("chat"); }
+        else setTargetMissing(true); // Never substitute another customer's conversation.
+      }
       else if (mode==="first" && !current && list.length) {
         // Quem tem cliente esperando começa pela fila; quem não tem, pelas abertas.
         if (list.some((item) => needsReply(item, Date.now()))) setQueue("fila");
-        // Veio de um clique em outra tela ("Últimas conversas"): abre aquela, não a primeira da lista.
-        const wanted = initialRef.current ? list.find((item) => conversationKey(item)===initialRef.current) : undefined;
-        open(wanted ?? list[0]);
-        if (wanted) setPane("chat");
+        open(list[0]);
       }
     } catch {
       // Falha de atualização não apaga o que já está na tela: avisa e tenta de novo.
-      if (mode==="first") setState("error"); else setSyncFailed(true);
+      if (mountedRef.current) { if (mode==="first") setState("error"); else setSyncFailed(true); }
     } finally { listBusy.current = false; }
   }
 
@@ -252,6 +258,7 @@ export function AttendanceModule({ initialConversation, onAwaiting }: { initialC
   }
 
   function open(item:ConversationSummary) {
+    initialRef.current = undefined; setTargetMissing(false);
     const same = isOpen(conversationKey(item));
     selectedRef.current = item; setSelected(item);
     if (same) return;
@@ -326,6 +333,7 @@ export function AttendanceModule({ initialConversation, onAwaiting }: { initialC
   }
 
   useEffect(() => {
+    mountedRef.current = true;
     void loadList("first");
     fetch("/api/agent/replies").then((response) => response.ok ? response.json() : null)
       .then((payload:{ items?:QuickReply[] }|null) => { if (payload?.items) setQuickReplies(payload.items.map(({ intent, label, content }) => ({ intent, label, content }))); })
@@ -357,7 +365,7 @@ export function AttendanceModule({ initialConversation, onAwaiting }: { initialC
     const timer = window.setInterval(tick, POLL_MS);
     document.addEventListener("visibilitychange", onVisibility);
     window.addEventListener("keydown", onKey);
-    return () => { window.clearInterval(timer); document.removeEventListener("visibilitychange", onVisibility); window.removeEventListener("keydown", onKey); };
+    return () => { mountedRef.current = false; selectedRef.current = null; window.clearInterval(timer); document.removeEventListener("visibilitychange", onVisibility); window.removeEventListener("keydown", onKey); };
     // Monta uma vez só: as funções leem o que muda pelas refs, e recriar o
     // temporizador a cada renderização zeraria a contagem dos 5 segundos.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -397,7 +405,7 @@ export function AttendanceModule({ initialConversation, onAwaiting }: { initialC
   if (state==="loading") return <div className="inbox-state"><Loading rows={6} label="Carregando conversas" /></div>;
   if (state==="error") return <div className="inbox-state"><Notice tone="bad">Não foi possível carregar as conversas.</Notice></div>;
   if (!available) return <div className="inbox-state"><Notice tone="bad">Histórico de conversas indisponível. Nenhuma conversa de exemplo é exibida no lugar.</Notice></div>;
-  if (items.length===0 && !query.trim() && !selected) return <div className="inbox-state"><Empty icon="chat" title="Nenhuma conversa registrada">As conversas aparecem aqui assim que o canal do WhatsApp receber mensagens — esta tela se atualiza sozinha. Nada fictício é mostrado enquanto isso.</Empty></div>;
+  if (items.length===0 && !query.trim() && !selected && !targetMissing) return <div className="inbox-state"><Empty icon="chat" title="Nenhuma conversa registrada">As conversas aparecem aqui assim que o canal do WhatsApp receber mensagens — esta tela se atualiza sozinha. Nada fictício é mostrado enquanto isso.</Empty></div>;
 
   const conversationState = selected?.state ?? null;
   const resolvedNow = conversationState?.status==="resolved";
@@ -419,6 +427,7 @@ export function AttendanceModule({ initialConversation, onAwaiting }: { initialC
   return <div className={`inbox pane-${pane} ${details ? "with-details" : ""}`}>
     <aside className="inbox-list" aria-label="Conversas">
       <div className="inbox-list-head">
+        {targetMissing && <Notice tone="warn">A conversa solicitada não foi encontrada nesta consulta. Nenhuma outra conversa foi aberta no lugar. Confira o vínculo antes de continuar.</Notice>}
         <div className="inbox-title">
           <h1>Atendimentos</h1>
           <div className="inbox-title-actions">

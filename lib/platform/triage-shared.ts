@@ -53,11 +53,9 @@ export const TRIAGE_MENU: ReadonlyArray<{ label: string; intent: Intent }> = [
   { label: "Falar com um atendente", intent: "human_handoff" },
 ];
 
-export const CLARIFY_TEXT = `Olá! Sou a assistente virtual da BBNET. Para te ajudar mais rápido, responda com o número do assunto:
-
-${TRIAGE_MENU.map((option, index) => `${index + 1}. ${option.label}`).join("\n")}
-
-Se preferir, é só escrever o que precisa.`;
+// Start with one open question rather than making someone traverse nine choices.
+// Keep numeric menu parsing for existing conversations that saw the old menu.
+export const CLARIFY_TEXT = "Sou a assistente virtual da BBNET. O que você precisa resolver? Pode me contar com suas palavras.";
 
 /** Abaixo disto a IA pergunta o assunto em vez de responder. É o mesmo corte do transbordo por "não entendi". */
 export const CLARIFY_BELOW = 0.6;

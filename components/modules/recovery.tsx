@@ -1,6 +1,8 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import type { Navigate } from "@/components/lzr-hub-app";
+import { RecoveryCasesModule } from "./recovery-cases";
 import type { RecoveryCustomerDetail, RecoveryCustomerRow, RecoveryPayload, RecoveryPromise } from "@/lib/platform/recovery-shared";
 import { Icon } from "@/components/ui/icons";
 import { Badge, Card, Empty, ErrorState, Limits, Loading, Modal, Notice, Stat, Stats, Toolbar, count, dateTime, money } from "@/components/ui/kit";
@@ -11,11 +13,24 @@ const amount = (value: number | null) => value === null ? "—" : money(value);
 const PROMISE_LABEL: Record<RecoveryPromise["status"], string> = { pending: "Pendente", fulfilled: "Cumprida (registro)", broken: "Quebrada (registro)", unknown: "Status não reconhecido" };
 
 /**
- * Fila de conferência, não de disparo. Todas as chamadas desta tela são GET.
+ * A leitura financeira faz apenas GET. Casos locais exigem confirmação explícita.
  * A posição financeira é um recorte limitado; não se infere bloqueio, contato
  * ou previsão de cancelamento a partir da simples existência de uma dívida.
  */
-export function RecoveryModule() {
+export function RecoveryModule({ onNavigate }: { onNavigate?: Navigate } = {}) {
+  const [view, setView] = useState<"reading" | "cases">("reading");
+  const [prepared, setPrepared] = useState({ customerId: "", revision: 0 });
+  function prepare(customerId: string) { setPrepared(previous => ({ customerId, revision: previous.revision + 1 })); setView("cases"); }
+  return <>
+    <div className="tool-switch" role="tablist" aria-label="Modo de recuperação">
+      <button type="button" role="tab" aria-selected={view === "reading"} className={`tool-card ${view === "reading" ? "active" : ""}`} onClick={() => setView("reading")}><span><strong>Leitura financeira</strong><span>Conferir o recorte do IXC, sem gravações</span></span></button>
+      <button type="button" role="tab" aria-selected={view === "cases"} className={`tool-card ${view === "cases" ? "active" : ""}`} onClick={() => { if (view !== "cases") { setPrepared(previous => ({ customerId: "", revision: previous.revision + 1 })); setView("cases"); } }}><span><strong>Casos acompanhados</strong><span>Responsável, retorno e histórico no HUB</span></span></button>
+    </div>
+    {view === "reading" ? <RecoveryReadOnly onPrepareCase={prepare} /> : <RecoveryCasesModule key={prepared.revision} initialCustomerId={prepared.customerId} onNavigate={onNavigate} />}
+  </>;
+}
+
+function RecoveryReadOnly({ onPrepareCase }: { onPrepareCase: (customerId: string) => void }) {
   const [page, setPage] = useState(1);
   const [revision, setRevision] = useState(0);
   const [loaded, setLoaded] = useState<{ page: number; revision: number; data?: RecoveryPayload; error?: string } | null>(null);
@@ -90,7 +105,7 @@ export function RecoveryModule() {
         ["Promessas", "O histórico inclui pendentes, cumpridas e quebradas já registradas. Uma quebra antiga não prova dívida atual; nenhuma promessa é alterada por esta consulta."],
       ]} />
     </>}
-    {selected && <RecoveryCustomerModal key={selected.customerId} row={selected} onClose={() => setSelected(null)} />}
+    {selected && <RecoveryCustomerModal key={selected.customerId} row={selected} onClose={() => setSelected(null)} onPrepareCase={onPrepareCase} />}
   </>;
 }
 
@@ -102,7 +117,7 @@ function PromiseSummary({ row }: { row: RecoveryCustomerRow }) {
   return <Badge>{row.promises.rows.length}{row.promises.truncated ? "+" : ""} registro(s)</Badge>;
 }
 
-function RecoveryCustomerModal({ row, onClose }: { row: RecoveryCustomerRow; onClose: () => void }) {
+function RecoveryCustomerModal({ row, onClose, onPrepareCase }: { row: RecoveryCustomerRow; onClose: () => void; onPrepareCase: (customerId: string) => void }) {
   const [data, setData] = useState<RecoveryCustomerDetail | null>(null);
   const [error, setError] = useState<string | null>(null);
   useEffect(() => {
@@ -118,7 +133,7 @@ function RecoveryCustomerModal({ row, onClose }: { row: RecoveryCustomerRow; onC
     return () => { active = false; controller.abort(); };
   }, [row.customerId]);
   return <Modal open title={data?.customerName ? `${data.customerName} · ${row.customerId}` : `Cliente ${row.customerId}`} onClose={onClose} wide
-    footer={<button type="button" className="button secondary" onClick={onClose}>Fechar conferência</button>}>
+    footer={<><button type="button" className="button secondary" onClick={onClose}>Fechar conferência</button><button type="button" className="button secondary" onClick={() => onPrepareCase(row.customerId)}>Preparar acompanhamento</button></>}>
     <Notice>Nenhuma ação de cobrança, envio ou desbloqueio será executada.</Notice>
     {!data && !error && <Loading rows={2} label="Consultando contratos do cliente" />}
     {error && <Notice tone="bad">{error} Feche e abra novamente para repetir a consulta.</Notice>}

@@ -3,15 +3,14 @@ import { randomUUID } from "node:crypto";
 import { getDb } from "@/db";
 import { getIxcRuntime } from "@/lib/integrations/ixc/runtime";
 import {
-  DbPaymentPromiseRepository, PaymentPromiseValidationError, parsePromisedFor, parsePromiseReviewCursor, reconcilePaymentPromises,
+  DbPaymentPromiseRepository, PaymentPromiseValidationError, PaymentPromiseVerificationError, createVerifiedPaymentPromise, parsePromiseReviewCursor, reconcilePaymentPromises,
 } from "@/lib/platform/payment-promise-service";
 import { logUnauthenticatedAction } from "@/lib/platform/audit-log";
 import { authorize } from "@/lib/platform/session-guard";
 
 /**
- * Promessa de pagamento (issue #16). Registrada só no HUB — gerar negociação
- * dentro do IXC depende do catálogo de escrita (issue #20) cobrir essa
- * operação, o que ainda não aconteceu.
+ * Promessa de pagamento: registrada só no HUB. Não é renegociação no IXC;
+ * aquela operação tem outra rota, autorização e confirmação próprias.
  */
 export async function GET(request: Request) {
   const guard = await authorize(request, "customer.read");
@@ -30,14 +29,6 @@ export async function GET(request: Request) {
   }
 }
 
-async function loadInvoiceStatusByCustomer(customerId: string, correlationId: string): Promise<Map<string, string>> {
-  let runtime;
-  try { runtime = getIxcRuntime(); } catch { runtime = undefined; }
-  if (!runtime?.provider) return new Map();
-  const snapshot = await runtime.provider.getSnapshot(customerId, correlationId).catch(() => null);
-  return new Map((snapshot?.invoices ?? []).map((invoice) => [invoice.id, invoice.status]));
-}
-
 export async function POST(request: Request) {
   const guard = await authorize(request, "billing.write-demo");
   if (!guard.allowed) return NextResponse.json({ error: guard.error }, { status: guard.status });
@@ -47,6 +38,7 @@ export async function POST(request: Request) {
   const correlationId = randomUUID();
 
   if (body.action === "create") {
+    if (!guard.user) return NextResponse.json({ error: "Registrar promessa exige sessão autenticada." }, { status: 401 });
     const invoiceId = typeof body.invoiceId === "string" ? body.invoiceId.trim() : "";
     const customerId = typeof body.customerId === "string" ? body.customerId.trim() : "";
     const promisedForRaw = typeof body.promisedFor === "string" ? body.promisedFor.trim() : "";
@@ -54,23 +46,21 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: "Campos obrigatórios: invoiceId, customerId, promisedFor" }, { status: 400 });
     }
     try {
-      const promisedFor = parsePromisedFor(promisedForRaw, new Date());
-      // Revalida contra o IXC: promessa para fatura que não existe ou já não
-      // está aberta não é registrada — não há dívida para prometer pagar.
-      const statusByInvoice = await loadInvoiceStatusByCustomer(customerId, correlationId);
-      if (!statusByInvoice.has(invoiceId)) return NextResponse.json({ error: "Fatura não encontrada no cadastro informado" }, { status: 404 });
-
-      const created = await new DbPaymentPromiseRepository(await getDb()).create({
-        invoiceId, customerId, promisedFor, registeredBy: guard.user?.email ?? "não identificado", correlationId,
-      });
+      let runtime;
+      try { runtime = getIxcRuntime(); } catch { runtime = undefined; }
+      const created = await createVerifiedPaymentPromise(
+        async () => new DbPaymentPromiseRepository(await getDb()), runtime?.provider,
+        { invoiceId, customerId, promisedFor: promisedForRaw, registeredBy: guard.user.email, correlationId },
+      );
       await logUnauthenticatedAction({
         action: "billing.promise.create", entity: `payment_promise:${created.id}`, result: "success",
-        reason: `Promessa de pagamento registrada para ${promisedFor} (fatura ${invoiceId})`, correlationId, actor: guard.user,
+        reason: `Promessa de pagamento registrada para ${created.promisedFor} (fatura ${invoiceId})`, correlationId, actor: guard.user,
       });
       return NextResponse.json(created, { status: 201 });
     } catch (error) {
       if (error instanceof PaymentPromiseValidationError) return NextResponse.json({ error: error.message }, { status: 400 });
-      return NextResponse.json({ error: "Não foi possível registrar a promessa" }, { status: 503 });
+      if (error instanceof PaymentPromiseVerificationError) return NextResponse.json({ error: error.message }, { status: error.status });
+      return NextResponse.json({ error: "Não foi possível confirmar o registro. Consulte as promessas antes de repetir; o registro pode ter sido salvo no HUB." }, { status: 503 });
     }
   }
 

@@ -11,7 +11,8 @@ import { CLARIFY_TEXT, formatProtocol, menuChoice, queueForIntent } from "../lib
 import { DEFAULT_REPLY_TEMPLATES } from "../lib/platform/reply-templates-shared.ts";
 import { analyzeIntent } from "../lib/agent/pipeline.ts";
 
-const CLIENTE = "5579991234567";
+// Synthetic channel/customer fixtures only: invalid DDD00, never a real contact.
+const CLIENTE = "5500000910001";
 
 /* ---------------------------------------------------------- regras --- */
 
@@ -105,12 +106,12 @@ test("se o protocolo não grava, o atendimento segue e diz que não há protocol
 test("o cliente é procurado no IXC uma vez por atendimento", async () => {
   const tickets = new MemoryTicketRepository();
   let consultas = 0;
-  const lookup = async () => { consultas++; return { id: "21857" }; };
+  const lookup = async () => { consultas++; return { id: "910001" }; };
   const primeira = await startTriage(tickets, { channel: CHANNEL_NAME, conversationId: CLIENTE, lookup });
   const segunda = await startTriage(tickets, { channel: CHANNEL_NAME, conversationId: CLIENTE, lookup });
   assert.equal(consultas, 1, "o IXC tem limite por minuto: não se repete a cada mensagem");
   assert.equal(primeira.ticket.identification, "identified");
-  assert.equal(segunda.ticket.ixcCustomerId, "21857");
+  assert.equal(segunda.ticket.ixcCustomerId, "910001");
 });
 
 test("IXC fora do ar fica registrado e é tentado de novo na próxima fala", async () => {
@@ -155,7 +156,7 @@ function montar({ enabled = true, fetcher, identificado = true } = {}) {
   let n = 0;
   const receber = async (text) => {
     const wamid = `wamid.E${++n}`;
-    const triage = await startTriage(tickets, { channel: CHANNEL_NAME, conversationId: CLIENTE, lookup: async () => (identificado ? { id: "21857" } : undefined) });
+    const triage = await startTriage(tickets, { channel: CHANNEL_NAME, conversationId: CLIENTE, lookup: async () => (identificado ? { id: "910001" } : undefined) });
     const auto = await metaAutoReplyOptions({
       enabled, states, messages: channel, claims, config, channel: CHANNEL_NAME,
       customerMessageAt: new Date().toISOString(), afterClarification: triage?.ticket.stage === "clarifying",
@@ -167,7 +168,7 @@ function montar({ enabled = true, fetcher, identificado = true } = {}) {
   return { channel, metrics, tickets, chamadas, estado, receber, ticket, enviados };
 }
 
-test("sem certeza do assunto, a IA pergunta com o menu e informa o protocolo", async () => {
+test("sem certeza do assunto, a IA faz uma pergunta aberta e informa o protocolo", async () => {
   const { receber, ticket, enviados, metrics } = montar();
   const result = await receber("oi, boa tarde");
   assert.equal(result.status, "clarifying");
@@ -179,15 +180,15 @@ test("sem certeza do assunto, a IA pergunta com o menu e informa o protocolo", a
   assert.equal(metrics.outcomes[0].finalStatus, "clarifying", "perguntar não é resolver");
 });
 
-test("a escolha no menu define assunto e setor, e ganha resposta — sem repetir o protocolo", async () => {
+test("a resposta à pergunta aberta define assunto e setor, e ganha resposta — sem repetir o protocolo", async () => {
   const { receber, ticket, enviados } = montar();
   await receber("oi");
-  const escolha = await receber("3");
+  const escolha = await receber("quero a segunda via");
   assert.equal(escolha.autoReply, true, "a pergunta não pode virar beco: a resposta a ela é respondida");
   assert.equal(enviados().length, 2);
   assert.equal(enviados()[1], DEFAULT_REPLY_TEMPLATES.financial_invoice, "sem o protocolo de novo");
   assert.equal(ticket().intent, "financial_invoice");
-  assert.equal(ticket().intentSource, "menu");
+  assert.equal(ticket().intentSource, "rules");
   assert.equal(ticket().queue, "financeiro");
   assert.equal(ticket().stage, "routed");
 
@@ -239,4 +240,33 @@ test("se a pergunta não sai, o atendimento não fica esperando resposta a ela",
   assert.equal(result.status, "suggested");
   assert.equal(ticket().stage, "new");
   assert.equal(ticket().protocolSentAt, null);
+});
+
+test('número após pergunta aberta não escolhe opção que o cliente nunca viu', async () => {
+  const { receber, ticket, enviados } = montar();
+  await receber('oi');
+  assert.doesNotMatch(enviados()[0], /1\. Sem internet/);
+  await receber('2');
+  assert.equal(ticket().intent, 'general_information');
+  assert.equal(ticket().intentSource, 'rules');
+  assert.equal(ticket().queue, 'atendimento');
+});
+
+test('conversa que recebeu menu antigo ainda aceita o número correspondente', async () => {
+  const { channel, receber, ticket } = montar();
+  await receber('oi');
+  await channel.saveMessages(CHANNEL_NAME, CLIENTE, [{ role: 'agent', content: '1. Sem internet\n2. Internet lenta ou Wi-Fi fraco\n3. Segunda via ou PIX\n9. Falar com um atendente' }]);
+  await receber('3');
+  assert.equal(ticket().intent, 'financial_invoice');
+  assert.equal(ticket().intentSource, 'menu');
+  assert.equal(ticket().queue, 'financeiro');
+});
+
+test('sugestão não enviada do menu antigo não habilita escolhas numéricas', async () => {
+  const { channel, receber, ticket } = montar();
+  await receber('oi');
+  await channel.saveMessages(CHANNEL_NAME, CLIENTE, [{ role: SUGGESTION_ROLE, content: '1. Sem internet\n9. Falar com um atendente' }]);
+  await receber('3');
+  assert.equal(ticket().intentSource, 'rules');
+  assert.equal(ticket().intent, 'general_information');
 });

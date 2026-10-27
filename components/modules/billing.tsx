@@ -115,12 +115,15 @@ function BillingActions(){
 
 type PaymentPromiseRow={id:string;invoiceId:string;customerId:string;promisedFor:string;status:"pending"|"fulfilled"|"broken"};
 const PROMISE_STATUS:Record<string,[string,string]>={pending:["Pendente","warn"],fulfilled:["Cumprida","ok"],broken:["Quebrada — recontatar","bad"]};
+// É data de calendário do IXC/HUB, não meia-noite UTC convertida para o dia anterior.
+const promiseDate=(value:string)=>{const date=new Date(`${value}T00:00:00Z`);return /^\d{4}-\d{2}-\d{2}$/.test(value)&&Number.isFinite(date.getTime())&&date.toISOString().slice(0,10)===value?value.split("-").reverse().join("/"):"Data não confirmada"};
 
 /**
  * Promessa de pagamento (issue #16). Registrada só no HUB. "Revisar" confere
  * contra o IXC de verdade; "quebrada" nunca dispara mensagem nenhuma, só
  * sinaliza quem precisa de recontato manual.
  */
+// Placeholder identifiers are deliberately synthetic, never copied from customer records.
 function PaymentPromisePanel(){
   const [pending,setPending]=useState<PaymentPromiseRow[]>([]);
   const [state,setState]=useState<"loading"|"ready"|"error">("loading");
@@ -131,6 +134,7 @@ function PaymentPromisePanel(){
   const [nonce,setNonce]=useState(0);
   const [reviewCursor,setReviewCursor]=useState<string|null>(null);
   const toast=useToast();
+  function reloadPending(){setState("loading");setNonce(n=>n+1)}
 
   useEffect(()=>{let active=true;
     fetch("/api/billing/promises?period=30d").then(r=>r.ok?r.json():Promise.reject(new Error("falhou")))
@@ -140,11 +144,15 @@ function PaymentPromisePanel(){
 
   async function submit(){
     setBusy(true);setError(null);
-    const response=await fetch("/api/billing/promises",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({action:"create",...form})});
-    const payload=await response.json();
-    if(response.ok){setForm({invoiceId:"",customerId:"",promisedFor:""});setNonce(n=>n+1);toast("Promessa registrada.")}
-    else setError(payload.error??"Não foi possível registrar.");
-    setBusy(false);
+    try{
+      const response=await fetch("/api/billing/promises",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({action:"create",...form})});
+      const payload=await response.json();
+      if(response.ok){setForm({invoiceId:"",customerId:"",promisedFor:""});setNonce(n=>n+1);toast("Promessa registrada.")}
+      else{setError(payload.error??"Não foi possível registrar.");if(response.status>=500){setState("loading");setNonce(n=>n+1)}}
+    }catch{
+      setError("Não foi possível confirmar o registro. Confira as promessas antes de tentar novamente.");
+      setState("loading");setNonce(n=>n+1);
+    }finally{setBusy(false)}
   }
 
   async function review(restart=false){
@@ -160,25 +168,25 @@ function PaymentPromisePanel(){
 
   return <div className="grid-2">
     <Card title="Promessas pendentes" badge={state==="ready"&&<Badge>{pending.length}</Badge>}
-      actions={<><button className="button secondary small" disabled={busy} onClick={()=>void review()}><Icon name="refresh" size={14}/>{reviewCursor?"Conferir próximo lote":"Conferir no IXC"}</button>{reviewCursor&&<button className="button secondary small" disabled={busy} onClick={()=>void review(true)}>Reiniciar conferência</button>}</>} flush>
+      actions={<><button className="button secondary small" disabled={busy||state==="loading"} onClick={reloadPending}>Atualizar lista</button><button className="button secondary small" disabled={busy} onClick={()=>void review()}><Icon name="refresh" size={14}/>{reviewCursor?"Conferir próximo lote":"Conferir no IXC"}</button>{reviewCursor&&<button className="button secondary small" disabled={busy} onClick={()=>void review(true)}>Reiniciar conferência</button>}</>} flush>
       {reviewResult&&<div className="card-content"><Notice tone={reviewResult.broken.length||reviewResult.unverified.length||reviewResult.hasMore?"warn":"ok"}>Neste lote: {reviewResult.fulfilled.length} cumprida(s), <strong>{reviewResult.broken.length} quebrada(s)</strong> — conferir antes de qualquer recontato manual —, {reviewResult.stillPending.length} ainda pendente(s). {reviewResult.unverified.length>0&&<strong>{reviewResult.unverified.length} sem confirmação: esta revisão não alterou essas promessas. Consulte a situação atual antes de agir.</strong>} {reviewResult.hasMore&&<strong>Há mais promessas não conferidas. Use Conferir próximo lote; nada será consultado automaticamente.</strong>}</Notice></div>}
       <div className="card-content"><p className="hint">Até 20 promessas por clique, por fatura e cliente exatos, sem depender da página do Customer 360. Leituras novas a cada lote. Reiniciar inclui novamente as pendentes anteriores; novos registros podem exigir uma nova rodada.</p></div>
       {state==="loading"&&<Loading rows={3}/>}
       {state==="error"&&<div className="card-content"><Notice tone="bad">Promessas indisponíveis.</Notice></div>}
       {state==="ready"&&pending.length===0&&<Empty icon="check" title="Nenhuma promessa pendente"/>}
       {state==="ready"&&<div className="list">{pending.map(p=><div className="row" key={p.id}>
-        <div className="row-main"><strong>Fatura {p.invoiceId}</strong><span>Cliente {p.customerId} · promete pagar em {new Date(p.promisedFor+"T00:00:00Z").toLocaleDateString("pt-BR")}</span></div>
+        <div className="row-main"><strong>Fatura {p.invoiceId}</strong><span>Cliente {p.customerId} · promete pagar em {promiseDate(p.promisedFor)}</span></div>
         <div className="row-value"><span className={`status ${PROMISE_STATUS[p.status]?.[1]??""}`}>{PROMISE_STATUS[p.status]?.[0]??p.status}</span></div>
       </div>)}</div>}
     </Card>
     <Card title="Registrar promessa">
       <div className="form-grid">
-        <label className="field"><span>Fatura (IXC)</span><input placeholder="ex.: 4821" value={form.invoiceId} onChange={e=>setForm(f=>({...f,invoiceId:e.target.value}))}/></label>
-        <label className="field"><span>Cliente (IXC)</span><input placeholder="ex.: 21857" value={form.customerId} onChange={e=>setForm(f=>({...f,customerId:e.target.value}))}/></label>
+        <label className="field"><span>Fatura (IXC)</span><input placeholder="ex. sintético: 940021" value={form.invoiceId} onChange={e=>setForm(f=>({...f,invoiceId:e.target.value}))}/></label>
+        <label className="field"><span>Cliente (IXC)</span><input placeholder="ex. sintético: 910001" value={form.customerId} onChange={e=>setForm(f=>({...f,customerId:e.target.value}))}/></label>
         <label className="field span-2"><span>Promete pagar em</span><input type="date" value={form.promisedFor} onChange={e=>setForm(f=>({...f,promisedFor:e.target.value}))}/></label>
         {error&&<p className="form-error span-2">{error}</p>}
-        <div className="form-actions span-2"><button className="button" disabled={busy||!form.invoiceId||!form.customerId||!form.promisedFor} onClick={()=>void submit()}>{busy?"Enviando…":"Registrar promessa"}</button></div>
-        <p className="field-hint span-2">Fica só no LZR HUB e na auditoria. Promessa quebrada não dispara mensagem: só aparece aqui para recontato.</p>
+        <div className="form-actions span-2"><button className="button" disabled={busy||state!=="ready"||!form.invoiceId||!form.customerId||!form.promisedFor} onClick={()=>void submit()}>{busy?"Enviando…":"Registrar promessa"}</button></div>
+        <p className="field-hint span-2">Exige sessão e confirmação nova da fatura aberta por código e cliente, fora do limite de 20 faturas da ficha. Fica só no LZR HUB e na auditoria. Promessa quebrada não dispara mensagem.</p>
       </div>
     </Card>
   </div>;
@@ -214,8 +222,8 @@ function InvoiceReissuePanel(){
 
   return <Card title="Segunda via de boleto" badge={<WriteBadge enabled={writeEnabled}/>}>
     <div className="form-grid" style={{maxWidth:560}}>
-      <label className="field"><span>Fatura (IXC)</span><input placeholder="ex.: 4821" value={invoiceId} onChange={e=>setInvoiceId(e.target.value)}/></label>
-      <label className="field"><span>Cliente (IXC)</span><input placeholder="ex.: 21857" value={customerId} onChange={e=>setCustomerId(e.target.value)}/></label>
+      <label className="field"><span>Fatura (IXC)</span><input placeholder="ex. sintético: 940021" value={invoiceId} onChange={e=>setInvoiceId(e.target.value)}/></label>
+      <label className="field"><span>Cliente (IXC)</span><input placeholder="ex. sintético: 910001" value={customerId} onChange={e=>setCustomerId(e.target.value)}/></label>
       <div className="form-actions span-2"><button className="button" disabled={busy||!invoiceId||!customerId} onClick={()=>void submit()}>{busy?"Verificando…":"Solicitar segunda via"}</button></div>
       {error&&<p className="form-error span-2">{error}</p>}
       {result&&<div className={`result-box span-2 ${result.status==="success"?"ok":"bad"}`}>
@@ -289,7 +297,7 @@ function RenegotiationPanel(){
       <Notice tone="warn" title="Isto altera o financeiro do cliente."
         more="O IXC cria a renegociação já no primeiro passo, antes de calcular juro e multa. Se a sequência falhar no meio, fica um registro pela metade preso às faturas — e o ledger mostra o número dele para conferência manual.">Não há campo de desconto: isso não se automatiza.</Notice>
       <form className="form-actions" onSubmit={e=>{e.preventDefault();if(customerId.trim()){setQuery(customerId.trim());setSelected([]);setResult(null);setError(null)}}}>
-        <label className="field" style={{width:220}}><span>Código do cliente no IXC</span><input value={customerId} placeholder="ex.: 21857" onChange={e=>setCustomerId(e.target.value)}/></label>
+        <label className="field" style={{width:220}}><span>Código do cliente no IXC</span><input value={customerId} placeholder="ex. sintético: 910001" onChange={e=>setCustomerId(e.target.value)}/></label>
         <button type="submit" className="button secondary" style={{alignSelf:"flex-end"}} disabled={!customerId.trim()||loading}>{loading?"Consultando…":"Buscar faturas"}</button>
       </form>
 

@@ -1,0 +1,164 @@
+{
+  "mode": "offline deterministic replay; invented scenarios with seeded history; not live-model outputs",
+  "revision": "local-working-tree",
+  "modelCalls": 0,
+  "networkAttempts": 0,
+  "scenarios": [
+    {
+      "id": "no-internet",
+      "title": "Sem internet, primeiro contato",
+      "history": [],
+      "message": "estou sem internet desde hoje cedo",
+      "output": "Vamos por partes: alguma luz do equipamento está vermelha ou apagada?",
+      "status": "suggested",
+      "handoff": false,
+      "provenance": "offline deterministic code; memory-only delivery"
+    },
+    {
+      "id": "already-restarted",
+      "title": "Reinício já feito na mensagem atual",
+      "history": [],
+      "message": "já reiniciei e continua sem internet",
+      "output": "Como você já reiniciou, não vou pedir isso de novo. Alguma luz do equipamento está vermelha ou apagada?",
+      "status": "suggested",
+      "handoff": true,
+      "provenance": "offline deterministic code; memory-only delivery"
+    },
+    {
+      "id": "restart-in-history",
+      "title": "Reinício informado antes",
+      "history": [
+        {
+          "role": "customer",
+          "content": "estou sem internet"
+        },
+        {
+          "role": "agent",
+          "content": "Você já reiniciou o roteador?",
+          "sentBy": "operador@example.test"
+        },
+        {
+          "role": "customer",
+          "content": "já reiniciei"
+        }
+      ],
+      "message": "a internet continua sem conexão",
+      "output": "Como você já reiniciou, não vou pedir isso de novo. Alguma luz do equipamento está vermelha ou apagada?",
+      "status": "suggested",
+      "handoff": false,
+      "provenance": "offline deterministic code; memory-only delivery"
+    },
+    {
+      "id": "angry-repeat",
+      "title": "Terceiro contato, irritado",
+      "history": [
+        {
+          "role": "customer",
+          "content": "estou sem internet"
+        },
+        {
+          "role": "agent",
+          "content": "Você já reiniciou o roteador?"
+        },
+        {
+          "role": "customer",
+          "content": "já reiniciei e não voltou"
+        }
+      ],
+      "message": "é a terceira vez que falo, estou sem internet, que absurdo",
+      "output": "Entendo sua frustração. Esse caso precisa da atenção de um atendente, usando o que você já contou aqui.",
+      "status": "suggested",
+      "handoff": true,
+      "provenance": "offline deterministic code; memory-only delivery"
+    },
+    {
+      "id": "already-paid",
+      "title": "Pagamento relatado, comprovante já enviado",
+      "history": [],
+      "message": "paguei ontem e já enviei o comprovante",
+      "output": "Obrigado por avisar. Um atendente precisa conferir a baixa do pagamento; ainda não tenho essa confirmação por aqui.",
+      "status": "suggested",
+      "handoff": false,
+      "provenance": "offline deterministic code; memory-only delivery"
+    },
+    {
+      "id": "unknown-outage",
+      "title": "Relato regional sem confirmação",
+      "history": [],
+      "message": "estou sem internet e os vizinhos também, tem prazo para voltar no bairro?",
+      "output": "Ainda não tenho confirmação de falha na região nem de prazo de retorno. A equipe técnica precisa verificar o que aconteceu.",
+      "status": "suggested",
+      "handoff": false,
+      "provenance": "offline deterministic code; memory-only delivery"
+    },
+    {
+      "id": "cancel",
+      "title": "Cancelamento explícito",
+      "history": [],
+      "message": "quero cancelar minha internet",
+      "output": "Sobre o cancelamento, um atendente precisa explicar as condições e dar continuidade se você decidir seguir. Não consigo concluir o cancelamento automaticamente.",
+      "status": "suggested",
+      "handoff": true,
+      "provenance": "offline deterministic code; memory-only delivery"
+    },
+    {
+      "id": "ambiguous",
+      "title": "Pedido vago, primeira pergunta de triagem",
+      "history": [],
+      "message": "preciso resolver uma coisa",
+      "output": "Sou a assistente virtual da BBNET. O que você precisa resolver? Pode me contar com suas palavras.",
+      "status": "clarifying",
+      "handoff": false,
+      "provenance": "offline deterministic code; memory-only delivery"
+    },
+    {
+      "id": "ambiguous-again",
+      "title": "Pedido segue vago após pergunta recebida",
+      "history": [
+        {
+          "role": "customer",
+          "content": "preciso de ajuda"
+        },
+        {
+          "role": "agent",
+          "content": "O que você precisa resolver?"
+        }
+      ],
+      "message": "é sobre aquilo",
+      "output": "Ainda não consegui identificar o que você precisa. Um atendente pode continuar a partir desta conversa, sem começar tudo de novo.",
+      "status": "suggested",
+      "handoff": true,
+      "provenance": "offline deterministic code; memory-only delivery"
+    },
+    {
+      "id": "identity",
+      "title": "Identidade da IA",
+      "history": [],
+      "message": "você é um robô?",
+      "output": "Sou a assistente virtual da BBNET, uma IA. Posso ajudar com as primeiras orientações; quando for preciso, o atendimento deve continuar com uma pessoa da equipe.",
+      "status": "replied",
+      "handoff": false,
+      "provenance": "offline deterministic code; memory-only delivery"
+    },
+    {
+      "id": "slow-all-devices",
+      "title": "Lentidão já informada em todos os aparelhos",
+      "history": [],
+      "message": "está lento em todos os aparelhos",
+      "output": "Isso acontece também em um aparelho conectado por cabo ou só no Wi-Fi?",
+      "status": "suggested",
+      "handoff": false,
+      "provenance": "offline deterministic code; memory-only delivery"
+    },
+    {
+      "id": "wifi-room",
+      "title": "Cômodo já informado",
+      "history": [],
+      "message": "o wifi está ruim no quarto",
+      "output": "O sinal melhora perto do roteador?",
+      "status": "suggested",
+      "handoff": false,
+      "provenance": "offline deterministic code; memory-only delivery"
+    }
+  ]
+}

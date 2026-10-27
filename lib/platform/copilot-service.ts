@@ -1,5 +1,6 @@
 import { sanitizeHandoffText } from "../agent/handoff.ts";
 import { searchDocuments, type KnowledgeDoc } from "./knowledge-service.ts";
+import { AI_SENDER } from "./conversation-state-shared.ts";
 
 /**
  * Copiloto do atendente (issue #11).
@@ -240,7 +241,7 @@ export function lastQuestionFrom(messages: Array<{ role: string; content: string
 /** Rótulo em português da intenção classificada — é ele que vira termo de busca. */
 export const intentTerms = (intent: string | undefined) => (intent ? INTENT_PT[intent] ?? "" : "");
 
-export interface SummaryMessage { role: "customer" | "agent" | "suggestion"; content: string; createdAt: string }
+export interface SummaryMessage { role: "customer" | "agent" | "suggestion"; content: string; createdAt: string; sentBy?: string }
 export interface SummaryInput {
   externalConversationId: string;
   messages: SummaryMessage[];
@@ -276,6 +277,10 @@ export function summarizeConversation(input: SummaryInput): string {
   if (fromCustomer.length > 0) {
     lines.push(`Cliente abriu com: ${quote(fromCustomer[0].content)}`);
     if (fromCustomer.length > 1) lines.push(`Última fala do cliente: ${quote(fromCustomer[fromCustomer.length - 1].content)}`);
+    // Preserve intermediate steps such as "já reiniciei" / "enviei comprovante".
+    // These are quoted customer reports, not verified diagnoses or payment facts.
+    const middle = fromCustomer.slice(1, -1).slice(-3);
+    if (middle.length > 0) lines.push(`Outros relatos recentes do cliente (não verificados): ${middle.map((message) => quote(message.content)).join("; ")}`);
   } else {
     lines.push("Nenhuma mensagem do cliente neste histórico.");
   }
@@ -283,10 +288,13 @@ export function summarizeConversation(input: SummaryInput): string {
     ? `Intenção classificada: ${INTENT_PT[input.outcome.intent] ?? input.outcome.intent}. Desfecho: ${input.outcome.finalStatus}${input.outcome.handoff ? " (transbordou para humano)" : ""}.`
     : "Nenhum desfecho registrado para esta conversa.");
   // A distinção que mais engana quem pega o caso: sugestão parece resposta dada.
+  const aiDelivered = delivered.filter((message) => message.sentBy === AI_SENDER).length;
+  const humanDelivered = delivered.filter((message) => message.sentBy && message.sentBy !== AI_SENDER).length;
   lines.push(delivered.length > 0
-    ? `A IA enviou ${delivered.length} resposta(s) ao cliente.`
+    ? `Respostas registradas como enviadas: ${delivered.length}. IA: ${aiDelivered}; atendente: ${humanDelivered}; autoria não registrada: ${delivered.length - aiDelivered - humanDelivered}.`
     : suggested.length > 0
       ? `A IA não enviou nada ao cliente: ${suggested.length} resposta(s) ficaram apenas sugeridas (modo observação).`
       : "A IA não respondeu nesta conversa.");
+  if (delivered.length > 0 && suggested.length > 0) lines.push(`${suggested.length} sugestão(ões) não enviada(s) — não são mensagens recebidas pelo cliente.`);
   return lines.join("\n");
 }

@@ -33,7 +33,7 @@ export interface IxcUfDto { id:string; name:string; initials:string }
 export interface IxcCustomerDto { id:string; name:string; document:string; phone:string; email:string; city:string; neighborhood:string; address:string; status:string; customerSince?:string; updatedAt?:string; /** `filial_id` do cadastro. A BBNET tem 21 filiais — abrir OS numa constante mandaria o chamado para a empresa errada. */ branchId?:string; /** `id_conta` do cadastro, exigido pelo wizard de renegociação. É por cliente, não do provedor. */ accountId?:string }
 export interface IxcContractDto { id:string; customerId:string; planId?:string; planName:string; status:string; dueDay?:number; monthlyValue?:number; activatedAt?:string }
 export interface IxcPlanDto { id:string; name:string; speed?:string; value?:number }
-export interface IxcInvoiceDto { id:string; customerId:string; contractId?:string; status:string; dueAt?:string; value?:number; paymentCode?:string }
+export interface IxcInvoiceDto { id:string; customerId:string; contractId?:string; status:string; dueAt?:string; value?:number; /** Ausente em snapshots antigos: origem do valor não confirmada. */ valueSource?:"open-balance"|"face-value"|"unavailable"; paymentCode?:string }
 export interface IxcPaymentDto { id:string; customerId:string; invoiceId?:string; paidAt?:string; value?:number; method:string }
 export interface IxcServiceOrderDto { id:string; customerId:string; status:string; subject:string; openedAt?:string; closedAt?:string; address?:string }
 /**
@@ -49,5 +49,7 @@ export interface IxcServiceDiagnosisData {
 export interface IxcConnectionDto { id:string; customerId:string; login:string; status:string; lastAccessAt?:string; address?:string; equipmentDescriptor?:string; connectionType?:string }
 /** Página da listagem de clientes. `total` é o tamanho do resultado no IXC, não o da página. */
 export interface IxcCustomerPage { items:IxcCustomerDto[]; total:number; page:number; pageSize:number }
-export interface IxcCustomerSnapshot { customer:IxcCustomerDto; contracts:IxcContractDto[]; plan:IxcPlanDto|null; invoices:IxcInvoiceDto[]; payments:IxcPaymentDto[]; serviceOrders:IxcServiceOrderDto[]; connection:IxcConnectionDto|null; partialSources:string[]; metrics:{totalLatencyMs:number;blockLatencies:Record<string,number>}; fetchedAt:string; mode:"staging-readonly"; cache:"hit"|"miss" }
+/** `complete` só é verdadeiro com total explícito e página íntegra; array curto não prova completude. */
+export interface IxcSnapshotCoverage { read:number; total:number|null; complete:boolean; limit:number }
+export interface IxcCustomerSnapshot { customer:IxcCustomerDto; contracts:IxcContractDto[]; plan:IxcPlanDto|null; invoices:IxcInvoiceDto[]; payments:IxcPaymentDto[]; serviceOrders:IxcServiceOrderDto[]; connection:IxcConnectionDto|null; partialSources:string[]; coverage?:Partial<Record<"contracts"|"invoices"|"payments"|"serviceOrders"|"connection",IxcSnapshotCoverage>>; metrics:{totalLatencyMs:number;blockLatencies:Record<string,number>}; fetchedAt:string; mode:"staging-readonly"; cache:"hit"|"miss" }
 export interface IxcListResponse { registros?:unknown[]; total?:number|string; page?:number|string; [key:string]:unknown }

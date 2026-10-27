@@ -1,5 +1,5 @@
 import { sql } from "drizzle-orm";
-import { boolean, index, integer, jsonb, pgTable, primaryKey, serial, text, uniqueIndex } from "drizzle-orm/pg-core";
+import { boolean, check, foreignKey, index, integer, jsonb, pgTable, primaryKey, serial, text, unique, uniqueIndex } from "drizzle-orm/pg-core";
 
 const auditColumns = { createdAt: text("created_at").notNull(), updatedAt: text("updated_at").notNull() };
 export const customers = pgTable("customers", { id:text("id").primaryKey(), externalId:text("external_id").notNull().unique(), maskedDocument:text("masked_document").notNull(), name:text("name").notNull(), city:text("city").notNull(), neighborhood:text("neighborhood").notNull(), ...auditColumns });
@@ -618,3 +618,52 @@ export const pilotEvents = pgTable("pilot_events", {
   createdAt: text("created_at").notNull(),
   updatedAt: text("updated_at").notNull(),
 }, (table) => [index("pilot_events_type_idx").on(table.eventType, table.createdAt), index("pilot_events_status_idx").on(table.status, table.severity)]);
+
+/** Supervised recovery only. Scope is a server-side installation identifier, not client input. */
+export const recoveryCases = pgTable("recovery_cases", {
+  id: text("id").primaryKey(),
+  scopeId: text("scope_id").notNull(),
+  customerId: text("customer_id").notNull(),
+  reason: text("reason").notNull(),
+  status: text("status").notNull().default("open"),
+  ownerId: text("owner_id"),
+  nextActionOn: text("next_action_on"),
+  invoiceIds: jsonb("invoice_ids").$type<string[]>().notNull().default(sql`'[]'::jsonb`),
+  promiseIds: jsonb("promise_ids").$type<string[]>().notNull().default(sql`'[]'::jsonb`),
+  attendanceTicketId: text("attendance_ticket_id"),
+  openedAt: text("opened_at").notNull(),
+  closedAt: text("closed_at"),
+  closingReason: text("closing_reason"),
+  version: integer("version").notNull().default(1),
+  createdBy: text("created_by").notNull(),
+  updatedAt: text("updated_at").notNull(),
+}, (table) => [
+  unique("recovery_cases_scope_id").on(table.scopeId, table.id),
+  uniqueIndex("recovery_cases_one_active_customer").on(table.scopeId, table.customerId).where(sql`${table.status} <> 'closed'`),
+  index("recovery_cases_due").on(table.scopeId, table.status, table.nextActionOn),
+  index("recovery_cases_owner").on(table.scopeId, table.ownerId, table.status),
+  check("recovery_cases_status_check", sql`${table.status} in ('open','in_progress','waiting','closed')`),
+  check("recovery_cases_reason_check", sql`${table.reason} in ('debt','cancellation','both')`),
+  check("recovery_cases_version_check", sql`${table.version} > 0`),
+  check("recovery_cases_closure_check", sql`((${table.status} = 'closed') and ${table.closedAt} is not null and ${table.closingReason} is not null) or ((${table.status} <> 'closed') and ${table.closedAt} is null and ${table.closingReason} is null)`),
+  check("recovery_cases_invoice_links_check", sql`jsonb_typeof(${table.invoiceIds}) = 'array' and jsonb_array_length(${table.invoiceIds}) <= 20`),
+  check("recovery_cases_promise_links_check", sql`jsonb_typeof(${table.promiseIds}) = 'array' and jsonb_array_length(${table.promiseIds}) <= 20`),
+]);
+
+/** Append-only application history. No manual note is treated as a delivery/payment receipt. */
+export const recoveryCaseEvents = pgTable("recovery_case_events", {
+  id: text("id").primaryKey(),
+  scopeId: text("scope_id").notNull(),
+  caseId: text("case_id").notNull(),
+  type: text("type").notNull(),
+  actorId: text("actor_id").notNull(),
+  createdAt: text("created_at").notNull(),
+  correlationId: text("correlation_id").notNull(),
+  idempotencyKey: text("idempotency_key").notNull(),
+  requestHash: text("request_hash").notNull(),
+  evidence: jsonb("evidence").$type<Record<string, string | number | boolean | null>>().notNull(),
+}, (table) => [
+  uniqueIndex("recovery_case_events_idempotency").on(table.scopeId, table.idempotencyKey),
+  index("recovery_case_events_history").on(table.scopeId, table.caseId, table.createdAt),
+  foreignKey({ columns: [table.scopeId, table.caseId], foreignColumns: [recoveryCases.scopeId, recoveryCases.id], name: "recovery_case_events_scope_case_fk" }),
+]);

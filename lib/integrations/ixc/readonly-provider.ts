@@ -2,7 +2,7 @@ import { IxcConnectionMapper, IxcContractMapper, IxcCustomerMapper, IxcInvoiceMa
 import { sanitizeTelemetry } from "./masking.ts";
 import { ReadonlyIxcGuard } from "./guard.ts";
 import { CircuitBreaker, SlidingWindowRateLimiter, TtlCache } from "./resilience.ts";
-import type { IxcCityDto, IxcCollectionWalletDto, IxcCustomerDto, IxcCustomerPage, IxcCustomerSnapshot, IxcListResponse, IxcOsSubjectDto, IxcPaymentTermDto, IxcReadOperation, IxcSectorDto, IxcServiceDiagnosisData, IxcUfDto } from "./types.ts";
+import type { IxcCityDto, IxcCollectionWalletDto, IxcCustomerDto, IxcCustomerPage, IxcCustomerSnapshot, IxcListResponse, IxcOsSubjectDto, IxcPaymentTermDto, IxcReadOperation, IxcSectorDto, IxcServiceDiagnosisData, IxcSnapshotCoverage, IxcUfDto } from "./types.ts";
 
 // `listOsCatalog` fica de fora porque não tem um endpoint só: a mesma operação
 // lê `su_oss_assunto` e `empresa_setor`, e o recurso vai explícito na chamada.
@@ -13,9 +13,8 @@ interface ReadOptions { strictPage?:boolean; oper?:string; page?:number; sortnam
 /**
  * Filtro composto do IXC. O trio qtype/query/oper só aceita uma condição; para
  * combinar (ex.: em aberto **e** vencida) o webservice usa `grid_param`.
- * Validado em homologação: `status=A` sozinho dá 73.870 faturas, com o
- * vencimento combinado cai para 3.541 — e um valor inválido zera, o que prova
- * que o filtro é realmente aplicado, e não ignorado.
+ * O filtro de vencimento deve reduzir o conjunto de faturas abertas;
+ * testes verificam a combinação para não apresentar faturas futuras como vencidas.
  */
 export interface GridFilter { TB:string; OP:string; P:string }
 /**
@@ -46,7 +45,7 @@ export function customerQuery(term:string){
 /**
  * Formata um número do WhatsApp como o IXC o guarda.
  *
- * O canal entrega `5579998307232`; o IXC grava `(79) 99830-7232`. Buscar por
+ * Exemplo sintético, com DDD00 inválido: `5500000910001` vira `(00) 00091-0001`. Buscar por
  * dígitos puros devolve **zero em silêncio** — foi o que fez isso parecer
  * impossível por muito tempo (`scripts/ixc-probe-phone-lookup.mjs`).
  *
@@ -65,9 +64,9 @@ export function ixcPhoneFormat(raw:string):string|undefined{
  * Os formatos em que o mesmo celular pode estar gravado, por causa do **nono
  * dígito**.
  *
- * Medido no canal real: o WhatsApp entregou `557999151289` — DDD mais **oito**
- * dígitos — para um celular. O próprio log da Evolution mostra os dois convivendo:
- * `Register exists for [5579999151289, 557999151289]?`. Se o cliente escrever
+ * Exemplo inteiramente sintético com DDD00 inválido: `550080000001` tem
+ * DDD mais **oito** dígitos; a variante `5500980000001` inclui o nono dígito.
+ * Os dois formatos podem coexistir no canal. Se o cliente escrever
  * pelo formato curto e o IXC tiver o longo, a busca não acha e um cliente antigo
  * vira lead — o erro que a regra de "exatamente um ou nada" existe para evitar,
  * entrando por outra porta.
@@ -75,17 +74,12 @@ export function ixcPhoneFormat(raw:string):string|undefined{
  * Fixo não ganha nono dígito: só celular, que começa com 6 a 9 depois do DDD.
  */
 /**
- * Onde procurar o telefone, em ordem de aposta.
- *
- * Medido em 800 cadastros reais: `telefone_celular` está preenchido em **100%**
- * deles e `whatsapp` em 99%; `fone` e `telefone_comercial` aparecem em ~3%. Por
- * isso os dois primeiros formam a primeira tentativa, e os raros só são
- * consultados quando ela não achou nada — cada campo a mais é uma consulta ao
- * ERP por mensagem recebida.
- *
- * ⚠️ Todos os 800 estavam **mascarados**, sem exceção. Procurar por dígitos
- * puros seria consulta jogada fora, e é por isso que só o formato com máscara é
- * usado aqui — diferente do documento, onde os dois aparecem.
+ * Onde procurar o telefone, em ordem de tentativa.
+ * Primeiro celular e WhatsApp; fone e telefone comercial são alternativas
+ * consultadas somente se a primeira tentativa não identificar um cadastro.
+ * Cada campo adicional custa uma consulta ao ERP por mensagem recebida.
+ * A busca usa formato com máscara: dígitos puros podem não corresponder
+ * ao formato armazenado. Os exemplos deste arquivo são sintéticos.
  */
 const PHONE_FIELD_TIERS = [["telefone_celular","whatsapp"],["fone","telefone_comercial"]] as const;
 
@@ -157,13 +151,10 @@ export class IxcReadonlyProvider {
   }
   /**
    * Faturas em aberto e já vencidas de toda a base, para a Cobrança.
-   *
-   * O IXC não soma nada por nós: `total` diz quantas faturas existem, mas o
-   * valor só sai varrendo os registros. Em homologação são ~3.500 vencidas,
-   * o que cabe em poucas páginas de 500. As 73 mil "em aberto" (a maioria ainda
-   * não vencida) não caberiam, por isso essa varredura é só das vencidas — e
-   * quem chama recebe `truncated` se bater no teto, em vez de um total menor
-   * apresentado como se fosse completo.
+   * O IXC informa contagem, não soma: o valor depende da leitura dos registros.
+   * Varre somente as vencidas, em páginas limitadas, para não percorrer também
+   * faturas futuras. `truncated` sinaliza o teto: recorte incompleto não pode
+   * ser apresentado como saldo total da carteira.
    */
   async listOverdueInvoices(todayIso:string,correlationId:string,maxPages=12,pageSize=500){
     const filters:GridFilter[]=[{TB:"fn_areceber.status",OP:"=",P:"A"},{TB:"fn_areceber.data_vencimento",OP:"<",P:todayIso.slice(0,10)}];
@@ -176,15 +167,10 @@ export class IxcReadonlyProvider {
     return{rows,total,truncated:rows.length<total};
   }
   /**
-   * Fila de ordens de serviço ainda não fechadas, da base inteira.
-   *
-   * Diferente da Cobrança, aqui não é preciso varrer nada: a fila é paginada, e
-   * cada página é uma consulta só. O `total` do IXC dá a contagem exata
-   * (~4.700 em homologação, contra 195 mil já fechadas).
-   *
-   * A OS traz `id_cliente` e o endereço, mas **não** o nome do cliente — buscar
-   * o nome linha a linha seria uma consulta por item da página. Quem chama
-   * mostra o id e o endereço em vez de disparar essa rajada.
+   * Fila paginada de ordens de serviço ainda não fechadas.
+   * Cada página é uma consulta; `total` informa a contagem do filtro.
+   * A OS traz `id_cliente` e endereço, mas não o nome: buscá-lo linha a linha
+   * acrescentaria uma consulta por item, então a tela usa o código informado.
    */
   async listOpenServiceOrders(page:number,pageSize:number,correlationId:string){
     const size=Math.min(Math.max(pageSize,1),100);
@@ -192,15 +178,9 @@ export class IxcReadonlyProvider {
     return{items:records.map(IxcServiceOrderMapper.map),total,page:Math.max(page,1),pageSize:size};
   }
   /**
-   * Assuntos e setores de OS, direto do IXC.
-   *
-   * Existe porque abrir uma ordem de serviço exige `id_assunto` e `setor`, e
-   * esses números são **configuração deste provedor**, não constante universal:
-   * na base da BBNET são 159 assuntos e 12 setores, com ids salteados. Fixar um
-   * número no código abriria chamado real na fila errada, e alguém iria atendê-lo.
-   *
-   * Cache longo (o mesmo das cidades): catálogo muda raramente e é lido a cada
-   * abertura de tela.
+   * Assuntos e setores de OS são configuração do provedor, não constantes.
+   * Consulte `id_assunto` e `setor` do catálogo para não abrir chamado na fila
+   * errada. O catálogo tem cache longo e é lido ao abrir a tela.
    */
   async listOsSubjects(correlationId:string):Promise<IxcOsSubjectDto[]>{
     const {records}=await this.readPage("listOsCatalog","su_oss_assunto","su_oss_assunto.id","0",correlationId,200,"",{oper:">",sortname:"su_oss_assunto.id"});
@@ -218,7 +198,7 @@ export class IxcReadonlyProvider {
    * cliente há cinco anos.
    *
    * ⚠️ **Exatamente um resultado, ou nada.** Buscar pelo final do número
-   * (`%7232%`) trouxe 4 clientes diferentes na base real. Com zero ou vários, a
+   * pode retornar vários cadastros, mesmo em uma base sintética. Com zero ou vários, a
    * resposta é "não identificado" — identificar o cliente errado é pior que não
    * identificar, porque a partir daí tudo que o sistema fizer será sobre outra
    * pessoa.
@@ -260,8 +240,8 @@ export class IxcReadonlyProvider {
    * UFs e cidades do IXC, para cadastrar cliente.
    *
    * ⚠️ O cadastro guarda o **código interno do IXC** em `cidade` e `uf`, não o
-   * nome nem o código do IBGE — o cadastro real 21857 tem `cidade: "1759"` e
-   * `uf: "28"`. Digitar "Aracaju" num desses campos cria cliente sem cidade
+   * nome nem o código do IBGE — exemplo inteiramente sintético: cliente910001,
+   * `cidade: "990001"` e `uf: "990002"`. Digitar "Cidade Sintética" cria cliente sem cidade
    * válida, e ninguém percebe até a primeira cobrança.
    */
   async listUfs(correlationId:string):Promise<IxcUfDto[]>{
@@ -293,13 +273,9 @@ export class IxcReadonlyProvider {
     return undefined;
   }
   /**
-   * Carteiras de cobrança e condições de pagamento, para a renegociação de dívida.
-   *
-   * Na base da BBNET são 27 carteiras (Banco do Brasil, CAIXA, BANESE, carnês,
-   * PIX) e 87 condições ("A vista", "30,60 dias", "Entrada + 1 vez"…). A
-   * carteira define **juro e multa**; a condição define **em quantas parcelas**.
-   * Os dois decidem quanto o cliente vai pagar — fixar qualquer um no código
-   * seria arbitrar dinheiro alheio.
+   * Carteiras e condições de pagamento vêm do catálogo do provedor.
+   * A carteira define juros/multa e a condição define o parcelamento.
+   * Fixar essas opções no código poderia alterar indevidamente o valor devido.
    */
   async listCollectionWallets(correlationId:string):Promise<IxcCollectionWalletDto[]>{
     const {records}=await this.readPage("listFinanceCatalog","fn_carteira_cobranca","fn_carteira_cobranca.id","0",correlationId,100,"",{oper:">",sortname:"fn_carteira_cobranca.id"});
@@ -315,19 +291,11 @@ export class IxcReadonlyProvider {
       .filter((item)=>item.id&&item.name);
   }
   /**
-   * Contratos ativados no período: é o que a BBNET vendeu.
-   *
-   * **Não filtra por situação do contrato, de propósito.** Antes filtrava
-   * `status = A`, e isso escondia toda venda que já tinha cancelado depois —
-   * medido em homologação na competência 06/2026: 248 contratos ativados no mês,
-   * dos quais 14 já cancelaram. O filtro antigo respondia 234, subestimando a
-   * venda em 5,6%. Venda cancelada continua sendo venda: quem vendeu bate a meta
-   * do mês mesmo que o cliente saia depois, e o cancelamento é medido à parte,
-   * no churn.
-   *
-   * Varre de verdade (algumas centenas por mês cabem numa página de 500) porque
-   * ticket médio e mix de planos só saem lendo o plano linha a linha — o IXC
-   * devolve contagem, nunca soma.
+   * Contratos ativados no período, independentemente da situação atual.
+   * Filtrar somente `status = A` esconderia vendas canceladas posteriormente.
+   * Venda e cancelamento são eventos distintos; o churn mede o segundo.
+   * A leitura paginada permite calcular ticket e mix usando o plano real,
+   * sem tratar contagem de contratos como soma de receita.
    */
   async listActivations(sinceIso:string,correlationId:string,maxPages=4,pageSize=500,untilIso?:string){
     const filters:GridFilter[]=[{TB:"cliente_contrato.data_ativacao",OP:">=",P:sinceIso.slice(0,10)}];
@@ -341,11 +309,8 @@ export class IxcReadonlyProvider {
     return{rows,total,truncated:rows.length<total};
   }
   /**
-   * Resolve nome e mensalidade dos planos informados.
-   *
-   * Existe porque o contrato não carrega valor nenhum: sem isto, toda soma de
-   * receita sai zerada. Custa pouco na prática — 262 ativações de um mês usam
-   * só 14 planos distintos — e o resultado fica em cache junto com as cidades.
+   * Resolve nome e mensalidade dos planos: o contrato não carrega o valor.
+   * Deduplica os planos e mantém cache para reduzir consultas repetidas.
    */
   async resolvePlanValues(planIds:string[],correlationId:string):Promise<Map<string,{name:string;value?:number}>>{
     const resolved=new Map<string,{name:string;value?:number}>();
@@ -394,11 +359,8 @@ export class IxcReadonlyProvider {
   }
   /**
    * Contratos criados depois do `id` informado, do mais antigo para o mais novo.
-   *
-   * O `id` do contrato cresce com a criação — conferido nos 200 mais recentes de
-   * 37 mil —, por isso ele é o ponto de parada da auditoria: ler "acima do último
-   * visto" não deixa nenhum contrato novo de fora, mesmo que a auditoria fique
-   * dias sem rodar. Data de criação não serviria: tem resolução de dia.
+   * O identificador crescente é o cursor da auditoria; uma data de criação
+   * com resolução de dia não permite distinguir todas as criações do período.
    */
   async listContractsAfter(afterId:number,limit:number,correlationId:string){
     return (await this.readPage("listContracts",endpoints.listContracts,"cliente_contrato.id",String(afterId),correlationId,limit,"",{oper:">",sortname:"cliente_contrato.id",sortorder:"asc"})).records;
@@ -424,16 +386,10 @@ export class IxcReadonlyProvider {
   rateLimitRemaining(){return this.limiter.remaining();}
   /**
    * Quem criou um registro, pelo log de alterações do IXC (`ixc_logs`).
-   *
-   * O contrato não tem campo de "criado por": `id_vendedor` é o vendedor
-   * creditado, e medido nos 200 contratos mais recentes ele **não** é quem
-   * digitou — 16% estão com o "Vendedor padrão", e há contrato de um vendedor
-   * inserido por outra atendente. O log guarda a operação `inseriu` com o
-   * `operador`, que já vem como o nome do usuário. Uma consulta, ~150 ms
-   * (`scripts/ixc-probe-contract-creator.mjs`).
-   *
-   * Só lê `tipo`, `operador` e `data`: `campos` e `executou` trazem os valores
-   * alterados, que podem ser dado de cliente, e nada aqui precisa deles.
+   * `id_vendedor` credita a venda, não identifica quem digitou o cadastro.
+   * A operação `inseriu` registra o operador e a data.
+   * Só lê `tipo`, `operador` e `data`: `campos` e `executou` podem conter
+   * dados de cliente e não são necessários para esta auditoria.
    */
   async getRecordCreator(table:string,recordId:string,authorizedCustomerId:string,correlationId:string):Promise<{operator:string;at:string|null}|undefined>{
     const {records}=await this.readPage("getRecordHistory",endpoints.getRecordHistory,"ixc_logs.id_tabela",recordId,correlationId,1,authorizedCustomerId,{oper:"=",sortname:"ixc_logs.id",sortorder:"asc",gridParam:[{TB:"ixc_logs.tabela",OP:"=",P:table},{TB:"ixc_logs.tipo",OP:"=",P:"inseriu"}]});
@@ -491,33 +447,45 @@ export class IxcReadonlyProvider {
     const started=this.now();
     try{
       const customerRows=await this.read("getCustomer","cliente","id",customerId,correlationId,1);if(!customerRows[0])throw new Error("IXC_CUSTOMER_NOT_FOUND");
+      if(customerRows.length!==1||String(customerRows[0].id??"")!==customerId)throw new Error("IXC_CUSTOMER_SCOPE_MISMATCH");
       const settled=await Promise.allSettled([
-        this.read("listContracts",endpoints.listContracts,"id_cliente",customerId,correlationId),
-        this.read("listInvoices",endpoints.listInvoices,"id_cliente",customerId,correlationId),
-        this.read("listServiceOrders",endpoints.listServiceOrders,"id_cliente",customerId,correlationId),
-        this.read("getConnection",endpoints.getConnection,"id_cliente",customerId,correlationId),
+        this.readPage("listContracts",endpoints.listContracts,"id_cliente",customerId,correlationId),
+        this.readPage("listInvoices",endpoints.listInvoices,"id_cliente",customerId,correlationId),
+        this.readPage("listServiceOrders",endpoints.listServiceOrders,"id_cliente",customerId,correlationId),
+        this.readPage("getConnection",endpoints.getConnection,"id_cliente",customerId,correlationId),
       ]);
-      const rows=(index:number)=>settled[index].status==="fulfilled"?settled[index].value:[];
-      const sourceNames=["contracts","invoices","serviceOrders","connection"];const contracts=rows(0).map(IxcContractMapper.map);let plan=null;let planFailed=false;
-      if(contracts[0]?.planId){try{const planRows=await this.read("getPlan",endpoints.getPlan,"id",contracts[0].planId,correlationId,1,customerId);plan=planRows[0]?IxcPlanMapper.map(planRows[0]):null;if(plan&&contracts[0])contracts[0]={...contracts[0],planName:plan.name,monthlyValue:plan.value};}catch{planFailed=true;}}
+      const rows=(index:number)=>settled[index].status==="fulfilled"?settled[index].value.records.slice(0,20):[];
+      const sourceNames=["contracts","invoices","serviceOrders","connection"] as const;
+      const coverage:IxcCustomerSnapshot["coverage"]={};
+      for(const [index,name] of sourceNames.entries()){
+        const result=settled[index];
+        coverage[name]=result.status==="fulfilled"?{...result.value.coverage,read:rows(index).length,
+          complete:result.value.coverage.complete&&rows(index).every(row=>String(row.id_cliente??"")===customerId)}:{read:0,total:null,complete:false,limit:20};
+      }
+      const contracts=rows(0).map(IxcContractMapper.map);let plan=null;let planFailed=false;
+      if(contracts[0]?.planId&&contracts[0].customerId===customerId){try{const planRows=await this.read("getPlan",endpoints.getPlan,"id",contracts[0].planId,correlationId,1,customerId);if(planRows.length!==1||String(planRows[0].id??"")!==contracts[0].planId)throw new Error("IXC_PLAN_SCOPE_MISMATCH");plan=IxcPlanMapper.map(planRows[0]);contracts[0]={...contracts[0],planName:plan.name,monthlyValue:plan.value};}catch{planFailed=true;}}
       // `fn_movim_finan` (pagamentos) não tem coluna id_cliente -- filtrar por ela sempre
       // devolvia página de erro do próprio IXC, nunca um problema de rede. O vínculo real é
       // por fatura (id_receber), então busca-se por fatura já sabidamente do cliente
-      // (confirmada pela consulta de faturas acima). Limitado às 10 faturas mais recentes
+      // (confirmada pela consulta de faturas acima). Limitado às primeiras 10 faturas lidas
       // para não disparar uma fatura de chamadas por atendimento.
       const invoiceRows=rows(1);let payments:ReturnType<typeof IxcPaymentMapper.map>[]=[];let paymentsFailed=false;
-      if(invoiceRows.length>0){
-        const paymentSettled=await Promise.allSettled(invoiceRows.slice(0,10).map((invoice)=>{
+      const paymentInvoices=invoiceRows.filter(invoice=>String(invoice.id_cliente??"")===customerId&&String(invoice.id??"").trim()&&invoiceRows.filter(other=>String(other.id)===String(invoice.id)).length===1).slice(0,10);
+      coverage.payments={read:0,total:coverage.invoices?.complete&&invoiceRows.length===0?0:null,complete:coverage.invoices?.complete===true&&invoiceRows.length===0,limit:100};
+      if(paymentInvoices.length>0){
+        const paymentSettled=await Promise.allSettled(paymentInvoices.map((invoice)=>{
           const invoiceId=String((invoice as Record<string,unknown>).id??"");
-          return this.read("listPayments",endpoints.listPayments,"id_receber",invoiceId,correlationId,10,customerId);
+          return this.readPage("listPayments",endpoints.listPayments,"id_receber",invoiceId,correlationId,10,customerId);
         }));
-        payments=paymentSettled.flatMap((item)=>item.status==="fulfilled"?item.value.map((row)=>IxcPaymentMapper.map(row,customerId)):[]);
+        payments=paymentSettled.flatMap((item,index)=>item.status==="fulfilled"?item.value.records.slice(0,10).filter(row=>String(row.id_receber??row.id_fatura??"")===String(paymentInvoices[index].id)).map((row)=>IxcPaymentMapper.map(row,customerId)):[]);
         paymentsFailed=paymentSettled.some((item)=>item.status==="rejected");
+        const complete=coverage.invoices?.complete===true&&invoiceRows.length<=10&&paymentInvoices.length===invoiceRows.length&&paymentSettled.every((item,index)=>item.status==="fulfilled"&&item.value.coverage.complete&&item.value.records.every(row=>String(row.id_receber??row.id_fatura??"")===String(paymentInvoices[index].id)));
+        coverage.payments={read:payments.length,total:complete?payments.length:null,complete,limit:100};
       }
       let customer=IxcCustomerMapper.map(customerRows[0]);
       const cityCode=String(customerRows[0].cidade??"").trim();
       if(cityCode){const cityName=await this.resolveCityName(cityCode,correlationId,customerId);if(cityName)customer={...customer,city:cityName};}
-      const snapshot:IxcCustomerSnapshot={customer,contracts,plan,invoices:invoiceRows.map(IxcInvoiceMapper.map),payments,serviceOrders:rows(2).map(IxcServiceOrderMapper.map),connection:rows(3)[0]?IxcConnectionMapper.map(rows(3)[0]):null,partialSources:[...settled.flatMap((item,index)=>item.status==="rejected"?[sourceNames[index]]:[]),...(planFailed?["plan"]:[]),...(paymentsFailed?["payments"]:[])],metrics:{totalLatencyMs:this.now()-started,blockLatencies:{...(this.durations.get(correlationId)??{})}},fetchedAt:new Date(this.now()).toISOString(),mode:"staging-readonly",cache:"miss"};
+      const snapshot:IxcCustomerSnapshot={customer,contracts,plan,invoices:invoiceRows.map(IxcInvoiceMapper.map),payments,serviceOrders:rows(2).map(IxcServiceOrderMapper.map),connection:rows(3)[0]?IxcConnectionMapper.map(rows(3)[0]):null,coverage,partialSources:[...settled.flatMap((item,index)=>item.status==="rejected"?[sourceNames[index]]:[]),...(planFailed?["plan"]:[]),...(paymentsFailed?["payments"]:[])],metrics:{totalLatencyMs:this.now()-started,blockLatencies:{...(this.durations.get(correlationId)??{})}},fetchedAt:new Date(this.now()).toISOString(),mode:"staging-readonly",cache:"miss"};
       this.cache.set(customerId,snapshot);this.emit("ixc.snapshot",correlationId,this.now()-started,"success",{partial:settled.some((item)=>item.status==="rejected")});return snapshot;
     }catch(error){this.emit("ixc.snapshot",correlationId,this.now()-started,"failed",{error:error instanceof Error?error.name:"unknown"});throw error;}
   }
@@ -536,7 +504,7 @@ export class IxcReadonlyProvider {
   private async read(operation:IxcReadOperation,resource:string,qtype:string,query:string,correlationId:string,rp=20,authorizedCustomerId=query,options?:ReadOptions):Promise<Record<string,unknown>[]>{
     return (await this.readPage(operation,resource,qtype,query,correlationId,rp,authorizedCustomerId,options)).records;
   }
-  private async readPage(operation:IxcReadOperation,resource:string,qtype:string,query:string,correlationId:string,rp=20,authorizedCustomerId=query,options?:ReadOptions):Promise<{records:Record<string,unknown>[];total:number}>{
+  private async readPage(operation:IxcReadOperation,resource:string,qtype:string,query:string,correlationId:string,rp=20,authorizedCustomerId=query,options?:ReadOptions):Promise<{records:Record<string,unknown>[];total:number;coverage:IxcSnapshotCoverage}>{
     this.guard.assertOperation(operation);if(!GLOBAL_SCOPE_OPERATIONS.has(operation))this.guard.assertCustomer(authorizedCustomerId);if(!this.breaker.canRequest())throw new Error("IXC_CIRCUIT_OPEN");this.limiter.assert();
     const url=`${this.options.baseUrl.replace(/\/$/,"")}/webservice/v1/${resource}`;let last:unknown;
     const payload:Record<string,string>={qtype,query,oper:options?.oper??"=",page:String(options?.page??1),rp:String(rp),sortname:options?.sortname??"id",sortorder:options?.sortorder??"asc"};
@@ -549,7 +517,14 @@ export class IxcReadonlyProvider {
         &&body.registros.length===Number(rawTotal)&&body.registros.length<=rp;
       if(!complete)throw new IxcReadonlyError("IXC_INCOMPLETE_INVOICE_RESPONSE");
     }
-    const records=Array.isArray(body.registros)?body.registros.filter((item):item is Record<string,unknown>=>!!item&&typeof item==="object"):[];const total=Number((body as {total?:unknown}).total??records.length);this.breaker.success();this.emit(`ixc.${operation}`,correlationId,this.now()-started,"success",{count:records.length});return{records,total:Number.isFinite(total)?total:records.length};}catch(error){clearTimeout(timer);last=classifyError(error);if(attempt+1<maxAttempts&&(last as IxcReadonlyError).code==="IXC_TIMEOUT")continue;break;}}
+    const records=Array.isArray(body.registros)?body.registros.filter((item):item is Record<string,unknown>=>!!item&&typeof item==="object"&&!Array.isArray(item)):[];
+    const rawTotal=body.total;
+    const knownTotal=(typeof rawTotal==="number"||(typeof rawTotal==="string"&&/^\d+$/.test(rawTotal)))&&Number.isSafeInteger(Number(rawTotal))&&Number(rawTotal)>=records.length?Number(rawTotal):null;
+    const validRows=Array.isArray(body.registros)&&body.registros.length===records.length&&records.every(row=>(typeof row.id==="string"&&!!row.id.trim())||(typeof row.id==="number"&&Number.isSafeInteger(row.id)&&row.id>0));
+    const uniqueIds=new Set(records.map(row=>String(row.id))).size===records.length;
+    const firstPage=(options?.page??1)===1&&(body.page===undefined||String(body.page)==="1");
+    const coverage={read:records.length,total:knownTotal,complete:validRows&&uniqueIds&&firstPage&&knownTotal===records.length&&records.length<=rp,limit:rp};
+    const total=Number(rawTotal??records.length);this.breaker.success();this.emit(`ixc.${operation}`,correlationId,this.now()-started,"success",{count:records.length});return{records,total:Number.isFinite(total)?total:records.length,coverage};}catch(error){clearTimeout(timer);last=classifyError(error);if(attempt+1<maxAttempts&&(last as IxcReadonlyError).code==="IXC_TIMEOUT")continue;break;}}
     const failure=classifyError(last);this.breaker.failure();this.emit(`ixc.${operation}`,correlationId,0,"failed",sanitizeTelemetry({error:failure.code}) as Record<string,unknown>);throw failure;
   }
   private emit(event:string,correlationId:string,durationMs:number,status:IxcTrace["status"],attributes:Record<string,unknown>){if(event.startsWith("ixc.")&&event!=="ixc.snapshot"){const key=event.slice(4);this.durations.set(correlationId,{...(this.durations.get(correlationId)??{}),[key]:durationMs});}this.options.trace?.({event,correlationId,durationMs,status,attributes:sanitizeTelemetry(attributes) as Record<string,unknown>});}

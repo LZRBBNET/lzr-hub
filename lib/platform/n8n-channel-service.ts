@@ -1,13 +1,14 @@
 import { randomUUID } from "node:crypto";
 import { and, asc, eq, sql } from "drizzle-orm";
 import { auditEvents, channelIdempotencyKeys, channelMessages } from "../../db/schema.ts";
-import { runAgentPipeline } from "../agent/pipeline.ts";
+import { analyzeIntent, runAgentPipeline } from "../agent/pipeline.ts";
 import { classifyIntent, llmConfigFromEnv, type Classification } from "../agent/llm-classifier.ts";
 import { sanitizeHandoffText } from "../agent/handoff.ts";
 import type { ChatMessage, Intent } from "../agent/types.ts";
 import { appVersion } from "../runtime/app-version.ts";
 import { traceAgentResult } from "../observability/trace-agent-result.ts";
-import { resolveReply, type ReplyOverrides } from "./reply-templates-shared.ts";
+import { type ReplyOverrides } from "./reply-templates-shared.ts";
+import { asksAiIdentity, expressesFrustration, requestsHuman, resolveSupportReply } from "./support-reply.ts";
 import { AI_SENDER } from "./conversation-state-shared.ts";
 import {
   CSAT_QUESTION,
@@ -249,17 +250,26 @@ export async function processChannelMessage(
   }
 
   // O assunto escolhido no menu da triagem dispensa o classificador: o cliente disse.
-  const menuIntent = options.triage?.menuChoice(input.text);
+  // Numeric choices are meaningful only if the delivered prompt actually showed
+  // the legacy numbered menu. The new open question must not turn "2" into slow Wi-Fi.
+  const numericChoice = /^\s*(?:op[cç][aã]o\s*)?\d{1,2}\s*[).:-]?\s*$/i.test(input.text);
+  const sawLegacyMenu = lastAgentMessage?.includes("1. Sem internet") && lastAgentMessage.includes("9. Falar com um atendente");
+  const menuIntent = !numericChoice || sawLegacyMenu ? options.triage?.menuChoice(input.text) : undefined;
   // Classifica antes de rodar o pipeline: sem chave configurada isto cai na
   // regex e o comportamento é idêntico ao de antes. O contexto é o que o
   // modelo precisa para entender "sim" e "continua igual".
-  const classified: Classification = menuIntent
+  const identityQuestion = asksAiIdentity(input.text);
+  const replyHistory = contextForClassifier(historyRows);
+  const identityIntent = identityQuestion ? analyzeIntent(input.text) : undefined;
+  const classified: Classification = identityIntent
+    ? { intent: identityIntent.intent === "human_handoff" && !requestsHuman(input.text) ? "general_information" : identityIntent.intent, confidence: 1, source: "rules" }
+    : menuIntent
     ? { intent: menuIntent, confidence: 1, source: "menu" }
-    : await classifyIntent(input.text, llmConfigFromEnv(), undefined, contextForClassifier(historyRows));
+    : await classifyIntent(input.text, llmConfigFromEnv(), undefined, replyHistory);
 
   // Sem certeza do assunto, a IA pergunta — mas só quando é ela quem fala. No
   // modo observação o atendente lê a conversa e não precisa de menu.
-  const clarification = !menuIntent && options.autoReply ? options.triage?.clarification(classified) : undefined;
+  const clarification = !identityQuestion && !expressesFrustration(input.text) && !menuIntent && options.autoReply ? options.triage?.clarification(classified) : undefined;
   if (clarification) {
     const footer = options.triage?.footer();
     const question = footer ? `${clarification.text}\n\n${footer}` : clarification.text;
@@ -283,7 +293,8 @@ export async function processChannelMessage(
   // ("preparei a segunda via fictícia") e não pode chegar a um cliente real.
   // A primeira resposta do atendimento leva o protocolo no fim.
   const footer = options.triage?.footer();
-  const approved = footer ? `${resolveReply(result.intent, options.templates)}\n\n${footer}` : resolveReply(result.intent, options.templates);
+  const contextualReply = resolveSupportReply({ intent: result.intent, message: input.text, history: replyHistory, handoffReason: result.handoff.reason, templates: options.templates });
+  const approved = footer ? `${contextualReply}\n\n${footer}` : contextualReply;
 
   // Só pede nota quando a resposta é de fato entregue — não dá para avaliar
   // um atendimento que o cliente não recebeu. E não na primeira resposta pela
