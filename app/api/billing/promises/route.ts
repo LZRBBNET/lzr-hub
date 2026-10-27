@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import { getDb } from "@/db";
 import { getIxcRuntime } from "@/lib/integrations/ixc/runtime";
 import {
-  DbPaymentPromiseRepository, PaymentPromiseValidationError, parsePromisedFor, reconcilePaymentPromises,
+  DbPaymentPromiseRepository, PaymentPromiseValidationError, parsePromisedFor, parsePromiseReviewCursor, reconcilePaymentPromises,
 } from "@/lib/platform/payment-promise-service";
 import { logUnauthenticatedAction } from "@/lib/platform/audit-log";
 import { authorize } from "@/lib/platform/session-guard";
@@ -75,16 +75,24 @@ export async function POST(request: Request) {
   }
 
   if (body.action === "review") {
-    let runtime;
-    try { runtime = getIxcRuntime(); } catch { runtime = undefined; }
-    const result = await reconcilePaymentPromises(new DbPaymentPromiseRepository(await getDb()), runtime?.provider, correlationId);
+    const headers = { "cache-control": "private, no-store" };
+    if (!guard.user) return NextResponse.json({ error: "A conferência exige sessão autenticada." }, { status: 401, headers });
+    try {
+      const cursor = parsePromiseReviewCursor(body.cursor);
+      let runtime;
+      try { runtime = getIxcRuntime(); } catch { runtime = undefined; }
+      const result = await reconcilePaymentPromises(new DbPaymentPromiseRepository(await getDb()), runtime?.provider, correlationId, new Date(), cursor);
 
-    await logUnauthenticatedAction({
-      action: "billing.promise.review", entity: "payment_promises", result: result.unverified.length ? "partial" : "success",
-      reason: `Revisão: ${result.fulfilled.length} cumprida(s), ${result.broken.length} quebrada(s) — precisam de recontato, ${result.stillPending.length} ainda pendente(s), ${result.unverified.length} sem confirmação do IXC — preservada(s) sem alteração. Nenhum recontato foi enviado.`,
-      correlationId, actor: guard.user,
-    });
-    return NextResponse.json(result);
+      await logUnauthenticatedAction({
+        action: "billing.promise.review", entity: "payment_promises", result: result.unverified.length || result.hasMore ? "partial" : "success",
+        reason: `Lote de ${result.examined} promessa(s), ${result.lookupCount} consulta(s) pontual(is): ${result.fulfilled.length} cumprida(s), ${result.broken.length} quebrada(s), ${result.stillPending.length} pendente(s), ${result.unverified.length} sem confirmação. ${result.hasMore ? "Há próximo lote não conferido." : "Fim do recorte atual."} Nenhum contato foi enviado.`,
+        correlationId, actor: guard.user,
+      });
+      return NextResponse.json(result, { headers });
+    } catch (error) {
+      if (error instanceof PaymentPromiseValidationError) return NextResponse.json({ error: error.message }, { status: 400, headers });
+      return NextResponse.json({ error: "Não foi possível confirmar o lote. Consulte as promessas antes de repetir; uma parte pode ter sido atualizada no HUB." }, { status: 503, headers });
+    }
   }
 
   return NextResponse.json({ error: "Ação inválida" }, { status: 400 });

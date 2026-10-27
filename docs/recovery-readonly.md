@@ -22,15 +22,19 @@ A aba **Cobrança → Recuperação** reúne faturas vencidas e histórico de pr
 
 ## Reconciliação de promessas
 
-O botão existente **Conferir no IXC** agora usa leituras frescas. Uma fatura ausente, erro, fonte parcial, cancelamento ou status desconhecido preserva a promessa e retorna `unverified`. Apenas `R` (recebida, código verificado na integração) cumpre a promessa; `A` vencida após a data prometida permite marcá-la quebrada. A tela e a auditoria mostram conferência incompleta.
+O botão existente **Conferir no IXC** usa leituras pontuais frescas por cliente e ID da fatura, sem depender das primeiras 20 faturas do snapshot. Cada clique confere até 20 promessas, com leitura limitada do banco e no máximo 20 consultas lógicas ao IXC (cada uma pode ter um retry). **Conferir próximo lote** avança por ID da promessa, mesmo que as anteriores continuem sem confirmação; **Reiniciar conferência** inclui novamente as pendentes anteriores. Novas promessas inseridas durante a rodada podem exigir reinício. O limite é de quantidade de consultas: há timeout/retry por chamada no adaptador, mas não há prazo global de duração do lote; uma fonte lenta pode prolongar a resposta. A compatibilidade ao vivo da consulta pontual ainda exige homologação autorizada. Uma fatura ausente, erro, fonte parcial, cancelamento ou status desconhecido preserva a promessa e retorna `unverified`. Apenas `R` (recebida, código verificado na integração) cumpre a promessa; `A` vencida após a data prometida permite marcá-la quebrada. A tela e a auditoria mostram conferência incompleta.
+
+A revisão exige sessão autenticada com `billing.write-demo`, inclusive no modo de demonstração sem autenticação. Consulta exata com resposta incompleta, duplicada, divergente ou sem total confiável permanece sem confirmação. A atualização no HUB exige que a promessa ainda esteja pendente, para não sobrescrever uma revisão concorrente. Não há escrita no IXC.
 
 A correção não altera retroativamente promessas antes marcadas incorretamente. Essas exigem conferência humana; por isso a nova aba descreve estados concluídos como registros históricos.
 
 ## Validação e próximos passos
 
 - Regras, autorização, paginação, falhas, valores, datas, histórico, SQL parametrizado e adaptador IXC falso: `node --experimental-strip-types --test tests/recovery.test.mjs`.
-- Reconciliação: `node --experimental-strip-types --test tests/payment-promise.test.mjs`.
+- Reconciliação e consulta pontual: `node --experimental-strip-types --test tests/payment-promise.test.mjs tests/ixc-invoice-lookup.test.mjs`.
+- HTTP sem sessão: `tests/payment-promise-route.test.mjs` (após build).
+- Contrato reutilizado do adaptador: `fn_areceber`, `ixcsoft: listar`, igualdade por `fn_areceber.id` e filtro composto `fn_areceber.id_cliente`; testes usam transporte falso. Os campos e mecanismo de filtros já constam no código/probes do repositório. Não foi executada consulta real neste incremento; o [catálogo oficial de API](https://wikiapiprovedor.ixcsoft.com.br/) é a referência para homologação.
 - Antes de publicação: `npm run typecheck`, `npm run lint`, `npm test`, `npm run test:staging`.
-- Próxima etapa de dados: consulta de faturas específicas para promessas fora da página do snapshot, cobertura completa por job controlado e evidência de bloqueio/contato com proveniência. Isso não autoriza disparos, reativação, renegociação ou alterações no ERP.
+- Próxima etapa de dados: homologação autenticada da consulta pontual, cobertura completa por job controlado e evidência de bloqueio/contato com proveniência. Isso não autoriza disparos, reativação, renegociação ou alterações no ERP.
 
 Publicar exige revisão e autorização próprias: push na `main` dispara deploy automático no Railway.
