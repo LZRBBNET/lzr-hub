@@ -126,7 +126,7 @@ function PaymentPromisePanel(){
   const [form,setForm]=useState({invoiceId:"",customerId:"",promisedFor:""});
   const [busy,setBusy]=useState(false);
   const [error,setError]=useState<string|null>(null);
-  const [reviewResult,setReviewResult]=useState<{fulfilled:string[];broken:string[];stillPending:string[]}|null>(null);
+  const [reviewResult,setReviewResult]=useState<{fulfilled:string[];broken:string[];stillPending:string[];unverified:string[]}|null>(null);
   const [nonce,setNonce]=useState(0);
   const toast=useToast();
 
@@ -147,17 +147,19 @@ function PaymentPromisePanel(){
 
   async function review(){
     setBusy(true);setError(null);setReviewResult(null);
-    const response=await fetch("/api/billing/promises",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({action:"review"})});
-    const payload=await response.json();
-    if(response.ok){setReviewResult(payload);setNonce(n=>n+1)}
-    else setError(payload.error??"Não foi possível revisar.");
-    setBusy(false);
+    try{
+      const response=await fetch("/api/billing/promises",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({action:"review"})});
+      const payload=await response.json();
+      if(response.ok){setReviewResult(payload);setNonce(n=>n+1)}
+      else setError(payload.error??"Não foi possível revisar.");
+    }catch{setError("Não foi possível confirmar a revisão. Consulte as promessas antes de tentar novamente.")}
+    finally{setBusy(false)}
   }
 
   return <div className="grid-2">
     <Card title="Promessas pendentes" badge={state==="ready"&&<Badge>{pending.length}</Badge>}
       actions={<button className="button secondary small" disabled={busy} onClick={()=>void review()}><Icon name="refresh" size={14}/>Conferir no IXC</button>} flush>
-      {reviewResult&&<div className="card-content"><Notice tone={reviewResult.broken.length?"warn":"ok"}>{reviewResult.fulfilled.length} cumprida(s), <strong>{reviewResult.broken.length} quebrada(s)</strong> — essas precisam de recontato manual —, {reviewResult.stillPending.length} ainda pendente(s).</Notice></div>}
+      {reviewResult&&<div className="card-content"><Notice tone={reviewResult.broken.length||reviewResult.unverified.length?"warn":"ok"}>{reviewResult.fulfilled.length} cumprida(s), <strong>{reviewResult.broken.length} quebrada(s)</strong> — essas precisam de recontato manual —, {reviewResult.stillPending.length} ainda pendente(s). {reviewResult.unverified.length>0&&<strong>{reviewResult.unverified.length} sem confirmação do IXC: continuam pendentes, sem alteração. Confira novamente quando houver dados disponíveis.</strong>}</Notice></div>}
       {state==="loading"&&<Loading rows={3}/>}
       {state==="error"&&<div className="card-content"><Notice tone="bad">Promessas indisponíveis.</Notice></div>}
       {state==="ready"&&pending.length===0&&<Empty icon="check" title="Nenhuma promessa pendente"/>}

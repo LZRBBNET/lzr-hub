@@ -1,7 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { desc, eq, and } from "drizzle-orm";
 import { paymentPromises } from "../../db/schema.ts";
-import { businessToday, isOpenInvoice } from "./billing-service.ts";
+import { businessToday } from "./billing-service.ts";
+import type { IxcCustomerSnapshot } from "../integrations/ixc/types.ts";
 
 /**
  * Promessa de pagamento (issue #16, item 2). Registrada e avaliada só contra
@@ -92,10 +93,15 @@ export class MemoryPaymentPromiseRepository implements PaymentPromiseRepository 
  * Decide o novo status de uma promessa pendente contra a fatura de verdade —
  * nunca marca "cumprida" ou "quebrada" sem checar o IXC. Promessa que já não
  * está pendente não é reavaliada aqui: uma vez cumprida ou quebrada, o
- * histórico não muda de novo.
+ * histórico não muda de novo. Não encontrar a fatura não prova pagamento:
+ * o snapshot é paginado, e o IXC pode estar indisponível. Cancelamento e
+ * código desconhecido também não provam que o cliente cumpriu a promessa.
  */
-export function evaluatePendingPromise(promise: { promisedFor: string }, invoiceStatus: string | undefined, today: string): PromiseStatus {
-  if (invoiceStatus === undefined || !isOpenInvoice(invoiceStatus)) return "fulfilled";
+export function evaluatePendingPromise(promise: { promisedFor: string }, invoiceStatus: string | undefined, today: string): PromiseStatus | "unverified" {
+  const status = invoiceStatus?.trim().toUpperCase();
+  // R=recebida é o código confirmado no IXC; outro código exige conferência.
+  if (status === "R") return "fulfilled";
+  if (status !== "A") return "unverified";
   if (promise.promisedFor < today) return "broken";
   return "pending";
 }
@@ -104,6 +110,8 @@ export interface PromiseReviewResult {
   fulfilled: string[];
   broken: string[];
   stillPending: string[];
+  /** Permanecem pendentes no banco: faltou evidência para mudar o estado. */
+  unverified: string[];
 }
 
 /**
@@ -113,12 +121,52 @@ export interface PromiseReviewResult {
  * resultado (ex.: repository.updateStatus para cada id).
  */
 export function reviewPendingPromises(promises: PaymentPromiseRow[], invoiceStatusById: Map<string, string>, today: string): PromiseReviewResult {
-  const result: PromiseReviewResult = { fulfilled: [], broken: [], stillPending: [] };
+  const result: PromiseReviewResult = { fulfilled: [], broken: [], stillPending: [], unverified: [] };
   for (const promise of promises) {
+    if (promise.status !== "pending") continue;
     const status = evaluatePendingPromise(promise, invoiceStatusById.get(promise.invoiceId), today);
     if (status === "fulfilled") result.fulfilled.push(promise.id);
     else if (status === "broken") result.broken.push(promise.id);
-    else result.stillPending.push(promise.id);
+    else if (status === "pending") result.stillPending.push(promise.id);
+    else result.unverified.push(promise.id);
+  }
+  return result;
+}
+
+export interface PromiseInvoiceSource {
+  getSnapshot(customerId: string, correlationId: string, force: boolean): Promise<Pick<IxcCustomerSnapshot, "invoices" | "partialSources">>;
+}
+
+/**
+ * Uma consulta fresca por cliente, sem reutilizar o cache do Customer 360.
+ * Ausência, falha e fonte parcial preservam as promessas para nova conferência;
+ * só evidência positiva altera o banco. Nunca envia cobrança nem escreve no IXC.
+ */
+export async function reconcilePaymentPromises(
+  repository: PaymentPromiseRepository,
+  source: PromiseInvoiceSource | undefined,
+  correlationId: string,
+  now: Date = new Date(),
+): Promise<PromiseReviewResult> {
+  const pending = await repository.listPending();
+  const byCustomer = new Map<string, PaymentPromiseRow[]>();
+  for (const promise of pending) byCustomer.set(promise.customerId, [...(byCustomer.get(promise.customerId) ?? []), promise]);
+  const result: PromiseReviewResult = { fulfilled: [], broken: [], stillPending: [], unverified: [] };
+  const today = businessToday(now);
+
+  for (const [customerId, promises] of byCustomer) {
+    const snapshot = await source?.getSnapshot(customerId, correlationId, true).catch(() => undefined);
+    const invoices = snapshot && !snapshot.partialSources.includes("invoices") ? snapshot.invoices : [];
+    // A evidência de um cadastro nunca liquida a promessa de outro, mesmo se
+    // uma resposta do provedor contiver uma linha que não pertence ao cliente.
+    const statuses = new Map(invoices.filter((invoice) => invoice.customerId === customerId).map((invoice) => [invoice.id, invoice.status]));
+    const reviewed = reviewPendingPromises(promises, statuses, today);
+    for (const id of reviewed.fulfilled) await repository.updateStatus(id, "fulfilled");
+    for (const id of reviewed.broken) await repository.updateStatus(id, "broken");
+    result.fulfilled.push(...reviewed.fulfilled);
+    result.broken.push(...reviewed.broken);
+    result.stillPending.push(...reviewed.stillPending);
+    result.unverified.push(...reviewed.unverified);
   }
   return result;
 }

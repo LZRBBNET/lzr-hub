@@ -2,9 +2,8 @@ import { NextResponse } from "next/server";
 import { randomUUID } from "node:crypto";
 import { getDb } from "@/db";
 import { getIxcRuntime } from "@/lib/integrations/ixc/runtime";
-import { businessToday } from "@/lib/platform/billing-service";
 import {
-  DbPaymentPromiseRepository, PaymentPromiseValidationError, parsePromisedFor, reviewPendingPromises,
+  DbPaymentPromiseRepository, PaymentPromiseValidationError, parsePromisedFor, reconcilePaymentPromises,
 } from "@/lib/platform/payment-promise-service";
 import { logUnauthenticatedAction } from "@/lib/platform/audit-log";
 import { authorize } from "@/lib/platform/session-guard";
@@ -76,25 +75,13 @@ export async function POST(request: Request) {
   }
 
   if (body.action === "review") {
-    const repository = new DbPaymentPromiseRepository(await getDb());
-    const pending = await repository.listPending();
-    const byCustomer = new Map<string, string[]>();
-    for (const promise of pending) byCustomer.set(promise.customerId, [...(byCustomer.get(promise.customerId) ?? []), promise.invoiceId]);
-
-    const statusByInvoice = new Map<string, string>();
-    for (const customerId of byCustomer.keys()) {
-      const statuses = await loadInvoiceStatusByCustomer(customerId, correlationId);
-      for (const [invoiceId, status] of statuses) statusByInvoice.set(invoiceId, status);
-    }
-
-    const today = businessToday(new Date());
-    const result = reviewPendingPromises(pending, statusByInvoice, today);
-    for (const id of result.fulfilled) await repository.updateStatus(id, "fulfilled");
-    for (const id of result.broken) await repository.updateStatus(id, "broken");
+    let runtime;
+    try { runtime = getIxcRuntime(); } catch { runtime = undefined; }
+    const result = await reconcilePaymentPromises(new DbPaymentPromiseRepository(await getDb()), runtime?.provider, correlationId);
 
     await logUnauthenticatedAction({
-      action: "billing.promise.review", entity: "payment_promises", result: "success",
-      reason: `Revisão: ${result.fulfilled.length} cumprida(s), ${result.broken.length} quebrada(s) — precisam de recontato, ${result.stillPending.length} ainda pendente(s). Nenhum recontato foi enviado: sem ponte de envio.`,
+      action: "billing.promise.review", entity: "payment_promises", result: result.unverified.length ? "partial" : "success",
+      reason: `Revisão: ${result.fulfilled.length} cumprida(s), ${result.broken.length} quebrada(s) — precisam de recontato, ${result.stillPending.length} ainda pendente(s), ${result.unverified.length} sem confirmação do IXC — preservada(s) sem alteração. Nenhum recontato foi enviado.`,
       correlationId, actor: guard.user,
     });
     return NextResponse.json(result);
