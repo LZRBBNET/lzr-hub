@@ -9,7 +9,7 @@ import type { IxcCityDto, IxcCollectionWalletDto, IxcCustomerDto, IxcCustomerPag
 const endpoints:Record<Exclude<IxcReadOperation,"testConnection"|"findCustomer"|"getCustomer"|"listCustomers"|"listOsCatalog"|"listFinanceCatalog">,string>={listContracts:"cliente_contrato",getPlan:"vd_contratos",listInvoices:"fn_areceber",listPayments:"fn_movim_finan",listServiceOrders:"su_oss_chamado",getConnection:"radusuarios",getCity:"cidade",getRecordHistory:"ixc_logs"};
 export interface IxcTrace { event:string; correlationId:string; durationMs:number; status:"success"|"failed"|"cache-hit"|"blocked"; attributes:Record<string,unknown> }
 export interface IxcReadonlyOptions { baseUrl:string; token:string; allowedCustomerIds:string[]; fullBase?:boolean; timeoutMs?:number; retryLimit?:0|1; cacheTtlMs?:number; cityCacheTtlMs?:number; rateLimitPerMinute?:number; fetcher?:typeof fetch; trace?:(event:IxcTrace)=>void; now?:()=>number }
-interface ReadOptions { oper?:string; page?:number; sortname?:string; sortorder?:"asc"|"desc"; gridParam?:GridFilter[] }
+interface ReadOptions { strictPage?:boolean; oper?:string; page?:number; sortname?:string; sortorder?:"asc"|"desc"; gridParam?:GridFilter[] }
 /**
  * Filtro composto do IXC. O trio qtype/query/oper só aceita uma condição; para
  * combinar (ex.: em aberto **e** vencida) o webservice usa `grid_param`.
@@ -459,10 +459,28 @@ export class IxcReadonlyProvider {
     const text=(raw:Record<string,unknown>,key:string)=>{const value=String(raw[key]??"").trim();return value&&!value.startsWith("0000-00-00")?value:undefined;};
     return {
       logins:logins.map((raw)=>({id:String(raw.id??""),contractId:text(raw,"id_contrato"),online:raw.online==="S"?true:raw.online==="N"?false:null,lastConnectedAt:text(raw,"ultima_conexao_inicial"),lastDisconnectedAt:text(raw,"ultima_conexao_final"),disconnectReason:text(raw,"motivo_desconexao"),neighborhood:text(raw,"bairro")})),
-      contracts:contracts.map((raw)=>({id:String(raw.id??""),status:String(raw.status??""),internetStatus:String(raw.status_internet??""),trustUnlockActive:raw.desbloqueio_confianca_ativo==="S"})),
+      contracts:contracts.map((raw)=>({id:String(raw.id??""),status:String(raw.status??""),internetStatus:String(raw.status_internet??""),trustUnlockActive:raw.desbloqueio_confianca_ativo==="S",trustUnlockKnown:raw.desbloqueio_confianca_ativo==="S"||raw.desbloqueio_confianca_ativo==="N"})),
       // "F" é finalizada; o resto ainda está na fila de alguém.
       openServiceOrders:orders.filter((raw)=>String(raw.status??"")!=="F").map((raw)=>({id:String(raw.id??""),status:String(raw.status??""),subjectId:text(raw,"id_assunto"),openedAt:text(raw,"data_abertura")})),
     };
+  }
+  /**
+   * Leitura pontual para reconciliação: o ID da fatura não substitui o escopo
+   * do cliente. Consulta `fn_areceber` com os dois filtros e revalida o retorno.
+   * Não usa o cache/snapshot nem filtra por status: recebidas também importam.
+   */
+  async getInvoiceForCustomer(customerId:string,invoiceId:string,correlationId:string):Promise<{id:string;customerId:string;status:string}|undefined>{
+    if(!/^[1-9]\d{0,31}$/.test(customerId)||!/^[1-9]\d{0,31}$/.test(invoiceId))throw new IxcReadonlyError("IXC_INVALID_INVOICE_REFERENCE");
+    const {records,total}=await this.readPage("listInvoices",endpoints.listInvoices,"fn_areceber.id",invoiceId,correlationId,2,customerId,{
+      oper:"=",page:1,sortname:"fn_areceber.id",strictPage:true,
+      gridParam:[{TB:"fn_areceber.id_cliente",OP:"=",P:customerId}],
+    });
+    if(total===0&&records.length===0)return undefined;
+    if(total!==1||records.length!==1)throw new IxcReadonlyError("IXC_AMBIGUOUS_INVOICE");
+    const row=records[0];
+    const id=(value:unknown)=>typeof value==="string"?value:typeof value==="number"&&Number.isSafeInteger(value)?String(value):"";
+    if(id(row.id)!==invoiceId||id(row.id_cliente)!==customerId)throw new IxcReadonlyError("IXC_INVOICE_SCOPE_MISMATCH");
+    return{id:invoiceId,customerId,status:typeof row.status==="string"?row.status:""};
   }
   /** Contagem de faturas em aberto na base inteira: uma consulta, sem varrer registro. */
   async countOpenInvoices(correlationId:string){
@@ -523,7 +541,15 @@ export class IxcReadonlyProvider {
     const url=`${this.options.baseUrl.replace(/\/$/,"")}/webservice/v1/${resource}`;let last:unknown;
     const payload:Record<string,string>={qtype,query,oper:options?.oper??"=",page:String(options?.page??1),rp:String(rp),sortname:options?.sortname??"id",sortorder:options?.sortorder??"asc"};
     if(options?.gridParam?.length)payload.grid_param=JSON.stringify(options.gridParam);
-    const maxAttempts=1+(this.options.retryLimit??1);for(let attempt=0;attempt<maxAttempts;attempt+=1){const controller=new AbortController();const timer=setTimeout(()=>controller.abort(),this.timeoutMs);const started=this.now();try{const response=await this.fetcher(url,{method:"POST",headers:{Authorization:`Basic ${basicCredential(this.options.token)}`,"Content-Type":"application/json","ixcsoft":"listar","x-correlation-id":correlationId},body:JSON.stringify(payload),signal:controller.signal});clearTimeout(timer);if(!response.ok){const retry=response.status===429||response.status>=500;if(retry&&attempt+1<maxAttempts){last=new IxcReadonlyError(`IXC_HTTP_${response.status}`);continue}throw new IxcReadonlyError(`IXC_HTTP_${response.status}`)}const body=await response.json() as IxcListResponse;const contractError=apiError(body);if(contractError)throw contractError;const records=Array.isArray(body.registros)?body.registros.filter((item):item is Record<string,unknown>=>!!item&&typeof item==="object"):[];const total=Number((body as {total?:unknown}).total??records.length);this.breaker.success();this.emit(`ixc.${operation}`,correlationId,this.now()-started,"success",{count:records.length});return{records,total:Number.isFinite(total)?total:records.length};}catch(error){clearTimeout(timer);last=classifyError(error);if(attempt+1<maxAttempts&&(last as IxcReadonlyError).code==="IXC_TIMEOUT")continue;break;}}
+    const maxAttempts=1+(this.options.retryLimit??1);for(let attempt=0;attempt<maxAttempts;attempt+=1){const controller=new AbortController();const timer=setTimeout(()=>controller.abort(),this.timeoutMs);const started=this.now();try{const response=await this.fetcher(url,{method:"POST",headers:{Authorization:`Basic ${basicCredential(this.options.token)}`,"Content-Type":"application/json","ixcsoft":"listar","x-correlation-id":correlationId},body:JSON.stringify(payload),signal:controller.signal});clearTimeout(timer);if(!response.ok){const retry=response.status===429||response.status>=500;if(retry&&attempt+1<maxAttempts){last=new IxcReadonlyError(`IXC_HTTP_${response.status}`);continue}throw new IxcReadonlyError(`IXC_HTTP_${response.status}`)}const body=await response.json() as IxcListResponse;const contractError=apiError(body);if(contractError)throw contractError;if(options?.strictPage){
+      const rawTotal=body.total;
+      const validTotal=typeof rawTotal==="number"||(typeof rawTotal==="string"&&/^\d+$/.test(rawTotal));
+      const complete=validTotal&&Number.isSafeInteger(Number(rawTotal))&&Number(rawTotal)>=0&&Array.isArray(body.registros)
+        &&body.registros.every((row)=>!!row&&typeof row==="object"&&!Array.isArray(row))
+        &&body.registros.length===Number(rawTotal)&&body.registros.length<=rp;
+      if(!complete)throw new IxcReadonlyError("IXC_INCOMPLETE_INVOICE_RESPONSE");
+    }
+    const records=Array.isArray(body.registros)?body.registros.filter((item):item is Record<string,unknown>=>!!item&&typeof item==="object"):[];const total=Number((body as {total?:unknown}).total??records.length);this.breaker.success();this.emit(`ixc.${operation}`,correlationId,this.now()-started,"success",{count:records.length});return{records,total:Number.isFinite(total)?total:records.length};}catch(error){clearTimeout(timer);last=classifyError(error);if(attempt+1<maxAttempts&&(last as IxcReadonlyError).code==="IXC_TIMEOUT")continue;break;}}
     const failure=classifyError(last);this.breaker.failure();this.emit(`ixc.${operation}`,correlationId,0,"failed",sanitizeTelemetry({error:failure.code}) as Record<string,unknown>);throw failure;
   }
   private emit(event:string,correlationId:string,durationMs:number,status:IxcTrace["status"],attributes:Record<string,unknown>){if(event.startsWith("ixc.")&&event!=="ixc.snapshot"){const key=event.slice(4);this.durations.set(correlationId,{...(this.durations.get(correlationId)??{}),[key]:durationMs});}this.options.trace?.({event,correlationId,durationMs,status,attributes:sanitizeTelemetry(attributes) as Record<string,unknown>});}

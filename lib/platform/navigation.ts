@@ -15,7 +15,7 @@
 export type View =
   | "dashboard" | "atendimento" | "clientes" | "chat-interno"
   | "monitoramento" | "massivas" | "mapa-alertas" | "chamados"
-  | "cobranca" | "acoes-cobranca" | "regua"
+  | "cobranca" | "recuperacao" | "acoes-cobranca" | "regua"
   | "comercial" | "funil" | "metas" | "churn"
   | "avaliacoes" | "prompts" | "training" | "conhecimento" | "respostas"
   | "auditoria-contratos" | "usuarios" | "equipes" | "auditoria" | "integracoes" | "filas";
@@ -50,6 +50,7 @@ export const navigation: NavSection[] = [
   ] },
   { id: "cobranca", label: "Cobrança", icon: "wallet", group: "Negócio", tabs: [
     { id: "cobranca", label: "Visão geral", description: "Posição financeira lida do IXC." },
+    { id: "recuperacao", label: "Recuperação", description: "Faturas vencidas, promessas e conferência humana, sem disparos.", permission: "customer.read" },
     { id: "acoes-cobranca", label: "Ações no IXC", description: "Segunda via, renegociação e promessas de pagamento." },
     { id: "regua", label: "Régua", description: "Quando e por onde falar com quem está em atraso." },
   ] },

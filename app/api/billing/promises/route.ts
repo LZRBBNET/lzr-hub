@@ -2,9 +2,8 @@ import { NextResponse } from "next/server";
 import { randomUUID } from "node:crypto";
 import { getDb } from "@/db";
 import { getIxcRuntime } from "@/lib/integrations/ixc/runtime";
-import { businessToday } from "@/lib/platform/billing-service";
 import {
-  DbPaymentPromiseRepository, PaymentPromiseValidationError, parsePromisedFor, reviewPendingPromises,
+  DbPaymentPromiseRepository, PaymentPromiseValidationError, parsePromisedFor, parsePromiseReviewCursor, reconcilePaymentPromises,
 } from "@/lib/platform/payment-promise-service";
 import { logUnauthenticatedAction } from "@/lib/platform/audit-log";
 import { authorize } from "@/lib/platform/session-guard";
@@ -76,28 +75,24 @@ export async function POST(request: Request) {
   }
 
   if (body.action === "review") {
-    const repository = new DbPaymentPromiseRepository(await getDb());
-    const pending = await repository.listPending();
-    const byCustomer = new Map<string, string[]>();
-    for (const promise of pending) byCustomer.set(promise.customerId, [...(byCustomer.get(promise.customerId) ?? []), promise.invoiceId]);
+    const headers = { "cache-control": "private, no-store" };
+    if (!guard.user) return NextResponse.json({ error: "A conferência exige sessão autenticada." }, { status: 401, headers });
+    try {
+      const cursor = parsePromiseReviewCursor(body.cursor);
+      let runtime;
+      try { runtime = getIxcRuntime(); } catch { runtime = undefined; }
+      const result = await reconcilePaymentPromises(new DbPaymentPromiseRepository(await getDb()), runtime?.provider, correlationId, new Date(), cursor);
 
-    const statusByInvoice = new Map<string, string>();
-    for (const customerId of byCustomer.keys()) {
-      const statuses = await loadInvoiceStatusByCustomer(customerId, correlationId);
-      for (const [invoiceId, status] of statuses) statusByInvoice.set(invoiceId, status);
+      await logUnauthenticatedAction({
+        action: "billing.promise.review", entity: "payment_promises", result: result.unverified.length || result.hasMore ? "partial" : "success",
+        reason: `Lote de ${result.examined} promessa(s), ${result.lookupCount} consulta(s) pontual(is): ${result.fulfilled.length} cumprida(s), ${result.broken.length} quebrada(s), ${result.stillPending.length} pendente(s), ${result.unverified.length} sem confirmação. ${result.hasMore ? "Há próximo lote não conferido." : "Fim do recorte atual."} Nenhum contato foi enviado.`,
+        correlationId, actor: guard.user,
+      });
+      return NextResponse.json(result, { headers });
+    } catch (error) {
+      if (error instanceof PaymentPromiseValidationError) return NextResponse.json({ error: error.message }, { status: 400, headers });
+      return NextResponse.json({ error: "Não foi possível confirmar o lote. Consulte as promessas antes de repetir; uma parte pode ter sido atualizada no HUB." }, { status: 503, headers });
     }
-
-    const today = businessToday(new Date());
-    const result = reviewPendingPromises(pending, statusByInvoice, today);
-    for (const id of result.fulfilled) await repository.updateStatus(id, "fulfilled");
-    for (const id of result.broken) await repository.updateStatus(id, "broken");
-
-    await logUnauthenticatedAction({
-      action: "billing.promise.review", entity: "payment_promises", result: "success",
-      reason: `Revisão: ${result.fulfilled.length} cumprida(s), ${result.broken.length} quebrada(s) — precisam de recontato, ${result.stillPending.length} ainda pendente(s). Nenhum recontato foi enviado: sem ponte de envio.`,
-      correlationId, actor: guard.user,
-    });
-    return NextResponse.json(result);
   }
 
   return NextResponse.json({ error: "Ação inválida" }, { status: 400 });

@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
-import { desc, eq, and } from "drizzle-orm";
+import { asc, desc, eq, and, gt } from "drizzle-orm";
 import { paymentPromises } from "../../db/schema.ts";
-import { businessToday, isOpenInvoice } from "./billing-service.ts";
+import { businessToday } from "./billing-service.ts";
 
 /**
  * Promessa de pagamento (issue #16, item 2). Registrada e avaliada só contra
@@ -45,7 +45,8 @@ export interface PaymentPromiseRepository {
   create(entry: Omit<PaymentPromiseRow, "id" | "status" | "createdAt">): Promise<PaymentPromiseRow>;
   listByCustomer(customerId: string): Promise<PaymentPromiseRow[]>;
   listPending(): Promise<PaymentPromiseRow[]>;
-  updateStatus(id: string, status: PromiseStatus): Promise<void>;
+  listPendingForReview(afterId: string | null, limit: number): Promise<PaymentPromiseRow[]>;
+  updateStatus(id: string, status: PromiseStatus): Promise<boolean>;
 }
 
 export class DbPaymentPromiseRepository implements PaymentPromiseRepository {
@@ -68,8 +69,16 @@ export class DbPaymentPromiseRepository implements PaymentPromiseRepository {
     return this.db.select().from(paymentPromises).where(eq(paymentPromises.status, "pending")).orderBy(desc(paymentPromises.createdAt));
   }
 
-  async updateStatus(id: string, status: PromiseStatus): Promise<void> {
-    await this.db.update(paymentPromises).set({ status, updatedAt: new Date().toISOString() }).where(and(eq(paymentPromises.id, id)));
+  async listPendingForReview(afterId: string | null, limit: number): Promise<PaymentPromiseRow[]> {
+    return this.db.select().from(paymentPromises)
+      .where(and(eq(paymentPromises.status, "pending"), afterId ? gt(paymentPromises.id, afterId) : undefined))
+      .orderBy(asc(paymentPromises.id)).limit(Math.min(Math.max(limit, 1), PROMISE_REVIEW_BATCH_SIZE + 1));
+  }
+
+  async updateStatus(id: string, status: PromiseStatus): Promise<boolean> {
+    const changed = await this.db.update(paymentPromises).set({ status, updatedAt: new Date().toISOString() })
+      .where(and(eq(paymentPromises.id, id), eq(paymentPromises.status, "pending"))).returning({ id: paymentPromises.id });
+    return changed.length === 1;
   }
 }
 
@@ -82,9 +91,15 @@ export class MemoryPaymentPromiseRepository implements PaymentPromiseRepository 
   }
   async listByCustomer(customerId: string) { return this.rows.filter((row) => row.customerId === customerId); }
   async listPending() { return this.rows.filter((row) => row.status === "pending"); }
+  async listPendingForReview(afterId: string | null, limit: number) {
+    return this.rows.filter((row) => row.status === "pending" && (!afterId || row.id > afterId))
+      .sort((a, b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0).slice(0, Math.min(Math.max(limit, 1), PROMISE_REVIEW_BATCH_SIZE + 1));
+  }
   async updateStatus(id: string, status: PromiseStatus) {
-    const row = this.rows.find((item) => item.id === id);
-    if (row) row.status = status;
+    const row = this.rows.find((item) => item.id === id && item.status === "pending");
+    if (!row) return false;
+    row.status = status;
+    return true;
   }
 }
 
@@ -92,10 +107,15 @@ export class MemoryPaymentPromiseRepository implements PaymentPromiseRepository 
  * Decide o novo status de uma promessa pendente contra a fatura de verdade —
  * nunca marca "cumprida" ou "quebrada" sem checar o IXC. Promessa que já não
  * está pendente não é reavaliada aqui: uma vez cumprida ou quebrada, o
- * histórico não muda de novo.
+ * histórico não muda de novo. Não encontrar a fatura não prova pagamento:
+ * o snapshot é paginado, e o IXC pode estar indisponível. Cancelamento e
+ * código desconhecido também não provam que o cliente cumpriu a promessa.
  */
-export function evaluatePendingPromise(promise: { promisedFor: string }, invoiceStatus: string | undefined, today: string): PromiseStatus {
-  if (invoiceStatus === undefined || !isOpenInvoice(invoiceStatus)) return "fulfilled";
+export function evaluatePendingPromise(promise: { promisedFor: string }, invoiceStatus: string | undefined, today: string): PromiseStatus | "unverified" {
+  const status = invoiceStatus?.trim().toUpperCase();
+  // R=recebida é o código confirmado no IXC; outro código exige conferência.
+  if (status === "R") return "fulfilled";
+  if (status !== "A") return "unverified";
   if (promise.promisedFor < today) return "broken";
   return "pending";
 }
@@ -104,6 +124,8 @@ export interface PromiseReviewResult {
   fulfilled: string[];
   broken: string[];
   stillPending: string[];
+  /** Permanecem pendentes no banco: faltou evidência para mudar o estado. */
+  unverified: string[];
 }
 
 /**
@@ -113,12 +135,88 @@ export interface PromiseReviewResult {
  * resultado (ex.: repository.updateStatus para cada id).
  */
 export function reviewPendingPromises(promises: PaymentPromiseRow[], invoiceStatusById: Map<string, string>, today: string): PromiseReviewResult {
-  const result: PromiseReviewResult = { fulfilled: [], broken: [], stillPending: [] };
+  const result: PromiseReviewResult = { fulfilled: [], broken: [], stillPending: [], unverified: [] };
   for (const promise of promises) {
+    if (promise.status !== "pending") continue;
     const status = evaluatePendingPromise(promise, invoiceStatusById.get(promise.invoiceId), today);
     if (status === "fulfilled") result.fulfilled.push(promise.id);
     else if (status === "broken") result.broken.push(promise.id);
-    else result.stillPending.push(promise.id);
+    else if (status === "pending") result.stillPending.push(promise.id);
+    else result.unverified.push(promise.id);
+  }
+  return result;
+}
+
+/** Cada clique lê até 20 promessas; nunca varre toda a base ou todas as faturas. */
+export const PROMISE_REVIEW_BATCH_SIZE = 20;
+const IXC_ID = /^[1-9]\d{0,31}$/;
+
+export function parsePromiseReviewCursor(value: unknown): string | null {
+  if (value === undefined || value === null) return null;
+  if (typeof value !== "string" || !/^[A-Za-z0-9_-]{1,128}$/.test(value)) {
+    throw new PaymentPromiseValidationError("Cursor de conferência inválido. Reinicie a conferência.");
+  }
+  return value;
+}
+
+export interface PromiseInvoiceSource {
+  getInvoiceForCustomer(customerId: string, invoiceId: string, correlationId: string): Promise<{ id: string; customerId: string; status: string } | undefined>;
+}
+export interface PromiseReviewBatchResult extends PromiseReviewResult {
+  examined: number;
+  lookupCount: number;
+  batchLimit: number;
+  hasMore: boolean;
+  nextCursor: string | null;
+}
+
+/**
+ * Uma consulta exata, fresca e escopada por par cliente/fatura distinto do lote.
+ * Não depende das primeiras 20 faturas do Customer 360. Cada clique tem teto
+ * de 20 leituras lógicas (cada leitura mantém no máximo um retry do adaptador).
+ * Cursor por ID da promessa evita que pendentes não verificáveis prendam os
+ * lotes seguintes; reiniciar a conferência inclui novamente os IDs anteriores.
+ * Ausência, falha, resposta parcial ou divergente nunca provam pagamento.
+ */
+export async function reconcilePaymentPromises(
+  repository: PaymentPromiseRepository,
+  source: PromiseInvoiceSource | undefined,
+  correlationId: string,
+  now: Date = new Date(),
+  afterId: string | null = null,
+): Promise<PromiseReviewBatchResult> {
+  const cursor = parsePromiseReviewCursor(afterId);
+  const candidates = await repository.listPendingForReview(cursor, PROMISE_REVIEW_BATCH_SIZE + 1);
+  const pending = candidates.slice(0, PROMISE_REVIEW_BATCH_SIZE);
+  const hasMore = candidates.length > PROMISE_REVIEW_BATCH_SIZE;
+  const result: PromiseReviewBatchResult = {
+    fulfilled: [], broken: [], stillPending: [], unverified: [], examined: pending.length,
+    lookupCount: 0, batchLimit: PROMISE_REVIEW_BATCH_SIZE, hasMore,
+    nextCursor: hasMore ? pending[pending.length - 1].id : null,
+  };
+  const today = businessToday(now);
+  const evidence = new Map<string, string | undefined>();
+  for (const promise of pending) {
+    if (promise.status !== "pending") continue;
+    const key = JSON.stringify([promise.customerId, promise.invoiceId]);
+    if (!evidence.has(key)) {
+      let status: string | undefined;
+      if (source && IXC_ID.test(promise.customerId) && IXC_ID.test(promise.invoiceId)) {
+        result.lookupCount++;
+        try {
+          const invoice = await source.getInvoiceForCustomer(promise.customerId, promise.invoiceId, correlationId);
+          if (invoice?.id === promise.invoiceId && invoice.customerId === promise.customerId && typeof invoice.status === "string") status = invoice.status;
+        } catch { /* Não substitui erro por dívida quitada ou vencida. */ }
+      }
+      evidence.set(key, status);
+    }
+    const status = evaluatePendingPromise(promise, evidence.get(key), today);
+    if (status === "fulfilled" || status === "broken") {
+      // Outra revisão pode ter encerrado a promessa enquanto o IXC respondia.
+      if (await repository.updateStatus(promise.id, status)) result[status].push(promise.id);
+      else result.unverified.push(promise.id);
+    } else if (status === "pending") result.stillPending.push(promise.id);
+    else result.unverified.push(promise.id);
   }
   return result;
 }

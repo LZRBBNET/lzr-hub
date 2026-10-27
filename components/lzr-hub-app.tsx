@@ -12,6 +12,7 @@ import { TrainingModule } from "@/components/modules/training";
 import { Customer360Module } from "@/components/modules/customer360";
 import { SupportModule } from "@/components/modules/support";
 import { BillingModule } from "@/components/modules/billing";
+import { RecoveryModule } from "@/components/modules/recovery";
 import { SalesModule } from "@/components/modules/sales";
 import { IntelligenceModule } from "@/components/modules/intelligence";
 import { AdminModule } from "@/components/modules/admin";
@@ -169,6 +170,7 @@ function Screen({ view, intent, awaiting, onNavigate, onAwaiting }: { view: View
     case "auditoria-contratos": return <ContractAuditModule />;
     case "monitoramento": case "massivas": case "mapa-alertas": case "chamados": return <SupportModule view={view} onNavigate={onNavigate} />;
     case "cobranca": case "acoes-cobranca": case "regua": return <BillingModule view={view} />;
+    case "recuperacao": return <RecoveryModule />;
     case "comercial": case "funil": case "metas": return <SalesModule view={view} />;
     case "churn": case "conhecimento": case "respostas": return <IntelligenceModule view={view} />;
     case "avaliacoes": case "prompts": return <QualityModule view={view} onNavigate={onNavigate} />;
