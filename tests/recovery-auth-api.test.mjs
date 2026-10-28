@@ -83,6 +83,42 @@ test('failure diagnostics expose fixed categories only, even after a forged prop
   assert.equal(secretFree(apiFailureMessage(error),[sentinel]),true);
 });
 
+test('auth diagnostics retain only a fixed stage and validated numeric HTTP status', () => {
+  assert.match(apiFailureMessage(new ApiGateFailure('AUTH_WRONG_PASSWORD',503)),/AUTH_WRONG_PASSWORD HTTP503\./);
+  for(const status of ['503','SYNTHETIC-SECRET',NaN,Infinity,199,600,503.5,null,{}]) {
+    const error=new ApiGateFailure('AUTH_LOGIN',status);
+    assert.equal(apiFailureMessage(error).includes(' HTTP'),false);
+    error.status=status; // Formatting revalidates mutation, not just the constructor.
+    assert.equal(apiFailureMessage(error).includes(' HTTP'),false);
+    assert.equal(apiFailureMessage(error).includes('SYNTHETIC-SECRET'),false);
+  }
+  const nonAuth=new ApiGateFailure('CHILD_FAILED',503);nonAuth.status=503;
+  assert.equal(apiFailureMessage(nonAuth).includes(' HTTP'),false);
+});
+
+test('authentication failures identify the exact boundary and clean up sessions already accepted', async () => {
+  const accounts=[{id:'qa-one',email:'one@fixture.invalid',role:'Cobrança',password:'synthetic-one'}, {id:'qa-two',email:'two@fixture.invalid',role:'Somente leitura',password:'synthetic-two'}];
+  const scenarios=[['AUTH_UNAUTH_GET',503],['AUTH_UNAUTH_POST',403],['AUTH_WRONG_PASSWORD',503],['AUTH_LOGIN',401],['AUTH_IDENTITY',200],['AUTH_ME',200],['AUTH_SESSION_UNIQUE',undefined]];
+  for(const [stage,status] of scenarios) {
+    let loginCalls=0,meCalls=0,logoutCalls=0;
+    const client=async(path,{method='GET'}={})=>{
+      if(path==='/api/auth/logout'){logoutCalls++;return{status:200,body:{ok:true},cleared:true};}
+      if(path==='/api/billing/recovery/cases')return{status:stage===(method==='GET'?'AUTH_UNAUTH_GET':'AUTH_UNAUTH_POST')?status:401,body:{}};
+      if(path==='/api/auth/login'){
+        loginCalls++;
+        if(loginCalls===1)return{status:stage==='AUTH_WRONG_PASSWORD'?status:401,body:{}};
+        const account=accounts[loginCalls-2];
+        if(stage==='AUTH_LOGIN')return{status,body:{}};
+        return{status:200,body:{user:stage==='AUTH_IDENTITY'?{...account,id:'wrong-synthetic-id'}:account},sessionCookie:`lzr_session=${(stage==='AUTH_SESSION_UNIQUE'?'a':String(loginCalls)).repeat(64)}`};
+      }
+      if(path==='/api/auth/me')return{status:200,body:{authenticated:stage!=='AUTH_ME',authRequired:true,user:accounts[meCalls++]}};
+      assert.fail('Unexpected route in auth-boundary fixture');
+    };
+    await assert.rejects(()=>exerciseAuthenticatedApi(client,accounts),error=>error.category===stage&&error.status===status);
+    assert.equal(logoutCalls,['AUTH_IDENTITY','AUTH_ME'].includes(stage)?1:stage==='AUTH_SESSION_UNIQUE'?2:0);
+  }
+});
+
 const CHILD_LINES = [
   'PASS: exact repository migration chain applied to approved empty disposable Railway database.',
   'PASS: real concurrent active uniqueness, same-key replay and version CAS.',
@@ -184,11 +220,11 @@ test('login cookie requires exact session shape and HttpOnly Secure SameSite Pat
   assert.equal(result.sessionCookie===syntheticCookie,true);
   for(const cookie of [validSetCookie.replace('; Secure',''),validSetCookie.replace('; HttpOnly',''),validSetCookie.replace('SameSite=Lax','SameSite=None'),validSetCookie.replace('Path=/','Path=/other'),'lzr_session=invalid; Path=/; HttpOnly; Secure; SameSite=Lax']) {
     const fake=fakeTransport({headers:{'set-cookie':[cookie]}});
-    await assert.rejects(()=>createApiClient(3000,{request:fake.request})('/api/auth/login',{method:'POST'}),category('AUTH_FAILED'));
+    await assert.rejects(()=>createApiClient(3000,{request:fake.request})('/api/auth/login',{method:'POST'}),category('AUTH_COOKIE'));
   }
   for(const cookies of [[],[validSetCookie,validSetCookie]]) {
     const fake=fakeTransport({headers:{'set-cookie':cookies}});
-    await assert.rejects(()=>createApiClient(3000,{request:fake.request})('/api/auth/login',{method:'POST'}),category('AUTH_FAILED'));
+    await assert.rejects(()=>createApiClient(3000,{request:fake.request})('/api/auth/login',{method:'POST'}),category('AUTH_COOKIE'));
   }
   const stray=fakeTransport({headers:{'set-cookie':[validSetCookie]}});
   await assert.rejects(()=>createApiClient(3000,{request:stray.request})('/api/auth/me'),category('HTTP_PROTOCOL'));

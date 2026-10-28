@@ -28,7 +28,10 @@ export function browserInputs(env, now = new Date()) {
 export function browserAppEnvironment(target, address, fixturePort, appPort, platform = {}) {
   if (!isPrivateTestAddress(address) || !Number.isInteger(fixturePort) || fixturePort < 1024 || fixturePort > 65535) refuse('verified private database IP and local fixture port required.');
   const host = address.includes(':') ? `[${address}]` : address;
-  const database = `postgresql://${encodeURIComponent(target.databaseUser)}:${encodeURIComponent(target.password)}@${host}:${target.databasePort}/${target.databaseName}`;
+  // pg-connection-string preserves IPv6 authority brackets as part of its host.
+  // Override only that parser field with the SAME already validated/pinned IP;
+  // do not introduce a new DNS target, fallback or inherited connection setting.
+  const database = `postgresql://${encodeURIComponent(target.databaseUser)}:${encodeURIComponent(target.password)}@${host}:${target.databasePort}/${target.databaseName}${address.includes(':') ? `?host=${encodeURIComponent(address)}` : ''}`;
   // Build a new environment rather than spreading Railway/inherited secrets. No PG*, proxy,
   // NODE_OPTIONS, webhook tokens, real IXC, LLM, Meta, Evolution or email config survives.
   return {

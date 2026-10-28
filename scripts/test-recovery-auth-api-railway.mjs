@@ -11,13 +11,19 @@ import { FIXTURE_ACCOUNTS } from './recovery-browser-fixture.mjs';
 
 const ROOT = fileURLToPath(new URL('../', import.meta.url));
 const MAX_RUN_MS = 5 * 60 * 1000;
-const CATEGORIES = new Set(['TARGET_REFUSED','PORT_OCCUPIED','CHILD_FAILED','CHILD_OUTPUT','READINESS_FAILED','HTTP_FAILED','HTTP_PROTOCOL','AUTH_FAILED','CASE_FAILED','REFERENCE_FAILED','PROMISE_FAILED','RBAC_FAILED','LOGOUT_FAILED','CLEANUP_FAILED','DEADLINE','STOPPED']);
+const AUTH_CATEGORIES = new Set(['AUTH_UNAUTH_GET','AUTH_UNAUTH_POST','AUTH_WRONG_PASSWORD','AUTH_LOGIN','AUTH_COOKIE','AUTH_IDENTITY','AUTH_ME','AUTH_SESSION_UNIQUE']);
+const CATEGORIES = new Set(['TARGET_REFUSED','PORT_OCCUPIED','CHILD_FAILED','CHILD_OUTPUT','READINESS_FAILED','HTTP_FAILED','HTTP_PROTOCOL',...AUTH_CATEGORIES,'CASE_FAILED','REFERENCE_FAILED','PROMISE_FAILED','RBAC_FAILED','LOGOUT_FAILED','CLEANUP_FAILED','DEADLINE','STOPPED']);
+const validStatus = value => Number.isInteger(value) && value >= 200 && value < 600;
 export class ApiGateFailure extends Error {
-  constructor(category) { super('Isolated API check stopped.'); this.category = CATEGORIES.has(category) ? category : 'TARGET_REFUSED'; }
+  constructor(category, status) { super('Isolated API check stopped.'); this.category = CATEGORIES.has(category) ? category : 'TARGET_REFUSED'; this.status = AUTH_CATEGORIES.has(this.category) && validStatus(status) ? status : undefined; }
 }
-const fail = category => { throw new ApiGateFailure(category); };
-const check = (condition, category) => { if (!condition) fail(category); };
-export const apiFailureMessage = error => `FAIL: isolated authenticated API gate ${error instanceof ApiGateFailure && CATEGORIES.has(error.category) ? error.category : 'CHILD_FAILED'}. No credential, cookie or response values logged. Inspect the disposable target; do not retry or reset automatically.`;
+const fail = (category, status) => { throw new ApiGateFailure(category, status); };
+const check = (condition, category, status) => { if (!condition) fail(category, status); };
+export const apiFailureMessage = error => {
+  const category = error instanceof ApiGateFailure && CATEGORIES.has(error.category) ? error.category : 'CHILD_FAILED';
+  const status = AUTH_CATEGORIES.has(category) && validStatus(error.status) ? ` HTTP${error.status}` : '';
+  return `FAIL: isolated authenticated API gate ${category}${status}. No credential, cookie or response body values logged. Inspect the disposable target; do not retry or reset automatically.`;
+};
 
 export function apiTarget(env, now = new Date()) {
   let target;
@@ -139,7 +145,7 @@ export function createApiClient(port, { request = httpRequest, timeoutMs = 10000
               if (login) {
                 check(session.length === 1 && /^lzr_session=[a-f0-9]{64};/.test(session[0])
                   && /;\s*HttpOnly(?:;|$)/i.test(session[0]) && /;\s*Secure(?:;|$)/i.test(session[0])
-                  && /;\s*SameSite=Lax(?:;|$)/i.test(session[0]) && /;\s*Path=\/(?:;|$)/i.test(session[0]), 'AUTH_FAILED');
+                  && /;\s*SameSite=Lax(?:;|$)/i.test(session[0]) && /;\s*Path=\/(?:;|$)/i.test(session[0]), 'AUTH_COOKIE', response.statusCode);
                 sessionCookie = session[0].split(';')[0];
               } else if (path !== '/api/auth/logout') check(session.length === 0, 'HTTP_PROTOCOL');
               const cleared = session.length === 1 && /^lzr_session=;/.test(session[0]) && /;\s*Max-Age=0(?:;|$)/i.test(session[0]);
@@ -172,17 +178,21 @@ export async function exerciseAuthenticatedApi(client, accounts, now = new Date(
     const after = await detail(id); check(after.item.version === before.item.version && after.events.length === before.events.length, category);
   };
   try {
-    check((await client(cases)).status === 401 && (await client(cases, { method:'POST', body:{action:'open',customerId:'910001',reason:'debt',idempotencyKey:key()} })).status === 401, 'AUTH_FAILED');
+    const unauthGet = await client(cases);
+    check(unauthGet.status === 401, 'AUTH_UNAUTH_GET', unauthGet.status);
+    const unauthPost = await client(cases, { method:'POST', body:{action:'open',customerId:'910001',reason:'debt',idempotencyKey:key()} });
+    check(unauthPost.status === 401, 'AUTH_UNAUTH_POST', unauthPost.status);
     const wrong = await client('/api/auth/login', {method:'POST',body:{email:accounts[0].email,password:accounts[1].password}});
-    check(wrong.status === 401 && !wrong.sessionCookie, 'AUTH_FAILED');
+    check(wrong.status === 401 && !wrong.sessionCookie, 'AUTH_WRONG_PASSWORD', wrong.status);
     for (const [i, account] of accounts.entries()) {
       const login = await client('/api/auth/login', {method:'POST',body:{email:account.email,password:account.password}});
-      check(login.status === 200 && !!login.sessionCookie && login.body.user?.id === account.id && login.body.user?.role === account.role, 'AUTH_FAILED');
+      check(login.status === 200 && !!login.sessionCookie, 'AUTH_LOGIN', login.status);
       cookies[i] = login.sessionCookie;
+      check(login.body.user?.id === account.id && login.body.user?.role === account.role, 'AUTH_IDENTITY', login.status);
       const me = await client('/api/auth/me', {cookie:cookies[i]});
-      check(me.status === 200 && me.body.authenticated === true && me.body.authRequired === true && me.body.user?.id === account.id && me.body.user?.role === account.role, 'AUTH_FAILED');
+      check(me.status === 200 && me.body.authenticated === true && me.body.authRequired === true && me.body.user?.id === account.id && me.body.user?.role === account.role, 'AUTH_ME', me.status);
     }
-    check(cookies[0] !== cookies[1], 'AUTH_FAILED'); stages++;
+    check(cookies[0] !== cookies[1], 'AUTH_SESSION_UNIQUE'); stages++;
     for (const i of [0,1]) {
       const list = await client(cases, {cookie:cookies[i]});
       check(list.status === 200 && list.body.available === true && list.body.canWrite === (i === 0) && list.body.currentActorId === accounts[i].id && list.body.total === 0, 'RBAC_FAILED');

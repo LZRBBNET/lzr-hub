@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
+import { Client } from 'pg';
 import { IxcReadonlyProvider } from '../lib/integrations/ixc/readonly-provider.ts';
 import { Customer360Service } from '../lib/platform/customer360-service.ts';
 import { PROJECT_ID, PROTECTED_ID_TEST_SENTINEL, RailwayGateRefusal } from '../scripts/railway-recovery-gate-target.mjs';
@@ -97,6 +98,23 @@ test('child app env has real auth, pinned privateDB, only loopback syntheticIXC 
   for (const [name,value] of Object.entries(child)) if (name.startsWith('FEATURE_') && !['FEATURE_AUTH','FEATURE_IXC_FULL_BASE'].includes(name)) assert.equal(value, 'false');
   assert.equal(child.IXC_WRITE_ENABLED, 'false'); assert.equal(child.PILOT_MODE, 'disabled'); assert.equal(child.IXC_API_TOKEN, FIXTURE_TOKEN);
   assert.throws(() => browserAppEnvironment(target, '8.8.8.8', 19999, 3000), refused);
+});
+test('child database URL pins the exact verified private IPv6 through the real pg parser; IPv4 stays unchanged', () => {
+  const {target} = browserInputs(environment(), now);
+  for (const address of ['fd12::1','fd12:3456:789a::1234','10.42.0.7']) {
+    const child = browserAppEnvironment(target,address,19999,3000), client = new Client({connectionString:child.DATABASE_URL});
+    assert.equal(client.host,address);
+    assert.equal(client.port,target.databasePort);
+    assert.equal(client.database,target.databaseName);
+    assert.equal(client.user,target.databaseUser);
+    assert.equal(client.password === target.password,true);
+    const url = new URL(child.DATABASE_URL);
+    assert.equal(url.searchParams.get('host'),address.includes(':')?address:null);
+    assert.equal([...url.searchParams.keys()].every(key=>key==='host'),true);
+  }
+  for (const address of ['example.invalid','[fd12::1]','fd12::1?host=8.8.8.8','8.8.8.8','::1','127.0.0.1']) {
+    assert.throws(()=>browserAppEnvironment(target,address,19999,3000),refused);
+  }
 });
 function ready(changes = {}, count = 0, scopeCount = 0) {
   const {target} = browserInputs(environment(), now), calls = [];
