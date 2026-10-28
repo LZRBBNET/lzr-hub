@@ -2,6 +2,8 @@
 
 This is a **test-only runner**, not a product feature or production startup. It uses the real built app, real login/RBAC/session cookies, and real PostgreSQL; the ERP HTTP responses are explicitly synthetic. It proves no real payment, recovery amount, cancellation prevention, customer contact, or real IXC compatibility.
 
+For a browser assistant that must not see reusable passwords, use the optional [private Railway Console handoff](recovery-browser-console.md). It collects the two passwords from the user in the authenticated Console, supplies only hashes to this unchanged runner and then uses secure credential requests for genuine login. It adds no public enrollment or authentication bypass; do not start its waiting runtime until the user is available.
+
 ## Exact order (one execution, no reset)
 
 1. Verify the approved empty environment and DB through Railway control-plane IDs. Follow `railway-recovery-gate.md`: exact test service hostname, nonce DB name, private network, production denylist, <=24h approval and <=USD5 budget. Approval/metadata are not a cryptographic boundary or a spending cap.
