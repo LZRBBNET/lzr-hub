@@ -73,45 +73,70 @@ async function readReady(directory, target, now = new Date()) {
   return ready;
 }
 
-export function readMaskedPassword(input, output, label, { deadline, signal, sessionRaw = false } = {}) {
-  if (input.isTTY !== true || output.isTTY !== true || typeof input.setRawMode !== 'function' || (input.isRaw === true) !== sessionRaw) refuse();
+const INPUT_CATEGORIES = new Set(['INPUT_INVALID', 'INPUT_INTERRUPTED', 'INPUT_EXPIRED', 'TERMINAL_CLOSED', 'TERMINAL_UNAVAILABLE', 'PROVISION_REFUSED']);
+const safeInputCategory = category => INPUT_CATEGORIES.has(category) ? category : 'PROVISION_REFUSED';
+export class ConsoleInputRefusal extends RailwayGateRefusal {
+  constructor(category) { super('Private Console input stopped.'); this.category = safeInputCategory(category); }
+}
+export function consoleFailureMessage(error) {
+  const category = error instanceof ConsoleInputRefusal ? safeInputCategory(error.category) : 'SETUP_REFUSED_OR_STOPPED';
+  return `NOT RUN or stopped: private test setup ${category}. No credential values logged; inspect the isolated container before any retry.`;
+}
+
+export function readMaskedPassword(input, output, label, { deadline, signal, sessionRaw = false, transport = { skipLF: false } } = {}) {
+  if (input.isTTY !== true || output.isTTY !== true || typeof input.setRawMode !== 'function' || (input.isRaw === true) !== sessionRaw) throw new ConsoleInputRefusal('TERMINAL_UNAVAILABLE');
   return new Promise((resolve, reject) => {
-    const bytes = Buffer.alloc(128); let length = 0, settled = false, timer;
-    const finish = (error) => {
+    const bytes = Buffer.alloc(128); let length = 0, settled = false, timer, pasted = false, escape = '';
+    const finish = category => {
       if (settled) return; settled = true;
       clearTimeout(timer); input.removeListener('data', onData); input.removeListener('end', onEnd); input.removeListener('error', onEnd);
-      signal?.removeEventListener('abort', onEnd);
+      signal?.removeEventListener('abort', onAbort);
       let result;
-      try { if (!sessionRaw) input.setRawMode(false); input.pause(); output.write('\n'); if (!error) result = Buffer.from(bytes.subarray(0, length)); }
-      catch { error = new Error('Private terminal unavailable.'); }
-      bytes.fill(0);
-      if (error) reject(new Error('Private input cancelled or invalid.')); else resolve(result);
+      try { if (!sessionRaw) input.setRawMode(false); input.pause(); output.write('\n'); if (!category) result = Buffer.from(bytes.subarray(0, length)); }
+      catch { category = 'TERMINAL_UNAVAILABLE'; }
+      bytes.fill(0); escape = ''; pasted = false;
+      if (category) reject(new ConsoleInputRefusal(category)); else resolve(result);
     };
-    const onEnd = () => finish(new Error('Private input cancelled.'));
+    const onEnd = () => finish('TERMINAL_CLOSED');
+    const onAbort = () => finish('INPUT_INTERRUPTED');
     const onData = chunk => {
-      if (!Buffer.isBuffer(chunk)) { onEnd(); return; }
+      if (!Buffer.isBuffer(chunk)) { finish('INPUT_INVALID'); return; }
       try {
         for (let index = 0; index < chunk.length; index++) {
           const byte = chunk[index];
-          if (byte === 13 || byte === 10) {
-            const trailing = chunk.length - index - 1;
-            if (trailing > 0 && !(byte === 13 && trailing === 1 && chunk[index + 1] === 10)) { onEnd(); return; }
-            finish(length >= 16 ? undefined : new Error('Invalid length.')); return;
+          // A CR/LF pair may arrive in two reads, including across two prompts.
+          // Swallow only its one LF; never discard another character or whole line.
+          if (transport.skipLF) { transport.skipLF = false; if (byte === 10) continue; }
+          if (byte === 3) { onAbort(); return; }
+          if (escape || byte === 27) {
+            const expected = pasted ? '\x1b[201~' : '\x1b[200~';
+            escape += String.fromCharCode(byte); // Terminal framing only, never password data.
+            if (!expected.startsWith(escape)) { finish('INPUT_INVALID'); return; }
+            if (escape === expected) { pasted = !pasted; escape = ''; }
+            continue;
           }
-          if (byte === 127 || byte === 8) { if (length) bytes[--length] = 0; continue; }
-          // Reject escape/control/non-ASCII input rather than interpreting terminal sequences.
-          if (byte < 32 || byte > 126 || length >= bytes.length) { onEnd(); return; }
+          if (byte === 13 || byte === 10) {
+            // Bracketed paste is accepted only as printable single-line text.
+            // Its closing marker does not submit: a separate Enter is required.
+            if (pasted) { finish('INPUT_INVALID'); return; }
+            const trailing = chunk.length - index - 1;
+            if (trailing > 0 && !(byte === 13 && trailing === 1 && chunk[index + 1] === 10)) { finish('INPUT_INVALID'); return; }
+            transport.skipLF = byte === 13 && trailing === 0;
+            finish(length >= 16 ? undefined : 'INPUT_INVALID'); return;
+          }
+          if (!pasted && (byte === 127 || byte === 8)) { if (length) bytes[--length] = 0; continue; }
+          if (byte < 32 || byte > 126 || length >= bytes.length) { finish('INPUT_INVALID'); return; }
           bytes[length++] = byte;
         }
       } finally { chunk.fill(0); }
     };
     try {
       if (!sessionRaw) input.setRawMode(true); // No prompt or input listener before echo is disabled.
-      output.write(`${label} (16–128 caracteres ASCII; entrada oculta): `);
-      input.on('data', onData); input.once('end', onEnd); input.once('error', onEnd); signal?.addEventListener('abort', onEnd, { once: true });
-      timer = setTimeout(onEnd, Math.max(0, Math.min(WAIT_MS, deadline - Date.now())));
-      input.resume(); if (signal?.aborted || !Number.isFinite(deadline) || deadline <= Date.now()) onEnd();
-    } catch { onEnd(); }
+      output.write(`${label} (16–128 caracteres ASCII; entrada oculta; uma linha, depois Enter): `);
+      input.on('data', onData); input.once('end', onEnd); input.once('error', onEnd); signal?.addEventListener('abort', onAbort, { once: true });
+      timer = setTimeout(() => finish('INPUT_EXPIRED'), Math.max(0, Math.min(WAIT_MS, deadline - Date.now())));
+      input.resume(); if (signal?.aborted) onAbort(); else if (!Number.isFinite(deadline) || deadline <= Date.now()) finish('INPUT_EXPIRED');
+    } catch { finish('TERMINAL_UNAVAILABLE'); }
   });
 }
 
@@ -129,10 +154,10 @@ export async function provisionConsole(directory, target, input = process.stdin,
   // Never fall back to an echoing stream, argv, environment, browser DOM or log.
   if (input.isTTY !== true || output.isTTY !== true || typeof input.setRawMode !== 'function' || input.isRaw === true) refuse();
   await privateWrite(directory, 'claim', 'single private console handoff');
-  const buffers = []; let raw = false;
+  const buffers = [], transport = { skipLF: false }; let raw = false;
   try {
     input.setRawMode(true); raw = true; // No echo between fields, including asynchronous file/hash work.
-    const ask = async label => { const value = await readMaskedPassword(input, output, label, { deadline: ready.deadline, signal, sessionRaw: true }); buffers.push(value); return value; };
+    const ask = async label => { const value = await readMaskedPassword(input, output, label, { deadline: ready.deadline, signal, sessionRaw: true, transport }); buffers.push(value); return value; };
     const operator = await ask('Senha temporária de Cobrança');
     const operatorConfirmation = await ask('Confirme a senha de Cobrança');
     if (operator.length !== operatorConfirmation.length || !timingSafeEqual(operator, operatorConfirmation)) refuse();
@@ -155,10 +180,14 @@ export async function provisionConsole(directory, target, input = process.stdin,
       await removeCredentials(directory);
     } else if (Date.now() >= ready.deadline) refuse();
     output.write('Credenciais temporárias entregues ao runner. Nenhuma senha foi gravada ou exibida. O login será feito no formulário real do app.\n');
-  } catch {
-    await privateWrite(directory, 'aborted', 'private handoff aborted').catch(() => {});
+  } catch (error) {
+    const category = error instanceof ConsoleInputRefusal ? safeInputCategory(error.category) : 'PROVISION_REFUSED';
+    // Fsync the fixed category before publishing the empty marker. If its write
+    // fails, still stop the waiter; missing/malformed categories become generic.
+    await privateWrite(directory, 'aborted-category', category).catch(() => {});
+    await privateWrite(directory, 'aborted', '').catch(() => {});
     await removeCredentials(directory);
-    refuse();
+    throw new ConsoleInputRefusal(category);
   } finally {
     for (const value of buffers) value.fill(0);
     if (raw) {
@@ -177,7 +206,13 @@ export async function consumeConsole(directory, env, signal) {
   try {
     while (true) {
       await readReady(directory, target);
-      if (signal?.aborted || await exists(directory, 'aborted')) refuse();
+      if (signal?.aborted) throw new ConsoleInputRefusal('INPUT_INTERRUPTED');
+      // One failed private attempt stops the waiter. Never reopen a credential prompt automatically.
+      if (await exists(directory, 'aborted')) {
+        const marker = await privateRead(directory, 'aborted');
+        const category = marker === '' ? await privateRead(directory, 'aborted-category').catch(() => '') : '';
+        throw new ConsoleInputRefusal(safeInputCategory(category));
+      }
       if (await exists(directory, 'committed')) {
         if (await privateRead(directory, 'committed') !== '') refuse();
         const credentials = JSON.parse(await privateRead(directory, 'credentials.json'));
@@ -220,5 +255,5 @@ export async function runConsole(mode, env = process.env) {
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   if (process.argv.length !== 3) { console.error('Use exactly: recovery-browser-console.mjs wait|provision. Never pass credentials.'); process.exitCode = 1; }
-  else runConsole(process.argv[2]).catch(() => { console.error('NOT RUN or stopped: private test setup refused. No credential values logged; inspect the isolated container before any retry.'); process.exitCode = 1; });
+  else runConsole(process.argv[2]).catch(error => { console.error(consoleFailureMessage(error)); process.exitCode = 1; });
 }

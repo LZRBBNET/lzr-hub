@@ -1,69 +1,45 @@
-import type { IxcCustomerSnapshot, IxcInvoiceDto, IxcPaymentDto } from "../integrations/ixc/types.ts";
+import type { IxcCustomerSnapshot, IxcInvoiceDto } from "../integrations/ixc/types.ts";
 
-/**
- * Posição financeira real, calculada das faturas e pagamentos do IXC.
- *
- * Toda a agregação é função pura sobre os snapshots já buscados: dá para provar
- * o cálculo de atraso e de valor em aberto sem banco e sem rede.
- *
- * O escopo é a allowlist do IXC — o ERP não expõe busca aberta da base — e a
- * resposta declara isso, para ninguém ler "R$ X em aberto" como se fosse a
- * carteira inteira da BBNET.
- */
-
-/**
- * Fatura em aberto.
- *
- * Lista branca de propósito. A versão anterior excluía "R" e "P" e deixava
- * passar o resto — só que o IXC também usa **"C" (cancelada)**, e são 557 mil
- * delas na base. Cada uma entrava como dívida do cliente. Com lista branca, um
- * código desconhecido deixa de ser cobrado em vez de virar dívida inventada:
- * errar para menos aqui é reversível, errar para mais é cobrar quem não deve.
- *
- * Códigos verificados em homologação: A=aberta, R=recebida, C=cancelada.
- */
+/** Observed financial evidence, never an estimate of missing balances or receipts. */
 export function isOpenInvoice(status: string): boolean {
-  const value = status.trim();
-  if (/^[A-Za-z]$/.test(value)) return value.toUpperCase() === "A";
-  return !/pago|recebido|cancelad|baixad|estornad/i.test(value);
+  return /^(a|aberta|aberto|em aberto)$/i.test(status.trim());
 }
+const isClosedInvoice = (status: string) => /^(r|p|c|pago|paga|recebido|recebida|cancelado|cancelada|baixado|baixada|estornado|estornada)$/i.test(status.trim());
 
-export interface AgingBucket { label: string; minDays: number; maxDays: number | null; invoices: number; value: number }
+export interface AgingBucket { label: string; minDays: number; maxDays: number | null; invoices: number; value: number | null }
 export interface BillingOverview {
   scope: "allowlist";
   customersConsulted: number;
   customersUnavailable: number;
   openInvoices: number;
-  openValue: number;
+  openValue: number | null;
   overdueInvoices: number;
-  overdueValue: number;
-  /** Faturas em aberto que ainda não venceram — não são inadimplência. */
+  overdueValue: number | null;
   upcomingInvoices: number;
-  upcomingValue: number;
+  upcomingValue: number | null;
   aging: AgingBucket[];
+  amountIncomplete: boolean;
+  excludedInvoices: number;
   paymentsInPeriod: number;
-  paidInPeriod: number;
+  paidInPeriod: number | null;
+  paymentsIncomplete: boolean;
+  excludedPayments: number;
   paymentMethods: Record<string, number>;
-  /** Faturas em aberto sem data de vencimento legível: contadas à parte, nunca chutadas para uma faixa. */
+  /** Open invoices without a valid calendar due date cannot be aged. */
   invoicesWithoutDueDate: number;
 }
 
-/**
- * Posição da base inteira. Diferente do recorte por allowlist: aqui a contagem
- * de faturas em aberto é exata (vem do `total` do IXC numa consulta só), mas o
- * **valor** total em aberto fica `null` — somar exigiria varrer ~74 mil
- * registros a cada abertura de tela. Preferimos dizer que não somamos a
- * estimar. As vencidas são varridas de verdade, e `truncated` avisa quando a
- * varredura parou antes do fim.
- */
+/** Counts come from the source; balances cover only validated rows actually read. */
 export interface FullBaseBilling {
   scope: "full-base";
   openInvoices: number;
   openValue: null;
   overdueInvoices: number;
-  overdueValue: number;
+  overdueValue: number | null;
   overdueScanned: number;
   truncated: boolean;
+  amountIncomplete: boolean;
+  excludedInvoices: number;
   aging: AgingBucket[];
   invoicesWithoutDueDate: number;
 }
@@ -74,92 +50,155 @@ const BUCKETS: Array<Omit<AgingBucket, "invoices" | "value">> = [
   { label: "16–30 dias", minDays: 16, maxDays: 30 },
   { label: "31+ dias", minDays: 31, maxDays: null },
 ];
-
-/**
- * Data de referência no fuso do negócio.
- *
- * O vencimento do IXC é uma data de calendário brasileira, sem hora nem fuso.
- * Comparar com `toISOString()` (UTC) fazia o "hoje" virar amanhã a partir das
- * 21h de Brasília — e toda fatura ganhava um dia de atraso à noite, mudando de
- * faixa. O servidor roda em UTC, então o fuso precisa ser explícito.
- */
 const SAO_PAULO = new Intl.DateTimeFormat("en-CA", { timeZone: "America/Sao_Paulo", year: "numeric", month: "2-digit", day: "2-digit" });
 export const businessToday = (now: Date) => SAO_PAULO.format(now);
 
-/** Datas do IXC vêm como AAAA-MM-DD. Formato diferente devolve undefined em vez de NaN silencioso. */
+function calendarDate(raw: string | undefined): string | undefined {
+  if (!raw || !/^\d{4}-\d{2}-\d{2}$/.test(raw)) return undefined;
+  const date = new Date(`${raw}T00:00:00Z`);
+  return Number.isFinite(date.getTime()) && date.toISOString().slice(0, 10) === raw ? raw : undefined;
+}
 export function daysOverdue(dueAt: string | undefined, now: Date): number | undefined {
-  if (!dueAt) return undefined;
-  const parsed = new Date(`${dueAt.slice(0, 10)}T00:00:00Z`);
-  if (Number.isNaN(parsed.getTime())) return undefined;
-  const today = new Date(`${businessToday(now)}T00:00:00Z`);
-  return Math.round((today.getTime() - parsed.getTime()) / 86400000);
+  const due = calendarDate(dueAt);
+  if (!due) return undefined;
+  return Math.round((Date.parse(`${businessToday(now)}T00:00:00Z`) - Date.parse(`${due}T00:00:00Z`)) / 86400000);
+}
+
+type Money = { cents: number; known: number };
+const emptyMoney = (): Money => ({ cents: 0, known: 0 });
+function centsOf(value: number | undefined): number | undefined {
+  if (typeof value !== "number" || !Number.isFinite(value) || value < 0) return undefined;
+  const cents = Math.round(value * 100);
+  return Number.isSafeInteger(cents) ? cents : undefined;
+}
+function addMoney(total: Money, cents: number | undefined): boolean {
+  if (cents === undefined || !Number.isSafeInteger(total.cents + cents)) return false;
+  total.cents += cents;
+  total.known++;
+  return true;
+}
+const moneyValue = (total: Money, incomplete: boolean) => !total.known && incomplete ? null : total.cents / 100;
+const agingState = () => BUCKETS.map((bucket) => ({ ...bucket, invoices: 0, total: emptyMoney() }));
+const agingResult = (aging: ReturnType<typeof agingState>, incomplete: boolean): AgingBucket[] => aging.map(({ total, ...bucket }) => ({ ...bucket, value: moneyValue(total, incomplete) }));
+function idCounts(rows: Array<{ id: string }>): Map<string, number> {
+  const counts = new Map<string, number>();
+  for (const row of rows) counts.set(row.id, (counts.get(row.id) ?? 0) + 1);
+  return counts;
+}
+function validIdentity(row: { id: string; customerId: string }, counts: Map<string, number>, customerId?: string): boolean {
+  return typeof row.id === "string" && !!row.id.trim() && typeof row.customerId === "string" && !!row.customerId.trim()
+    && counts.get(row.id) === 1 && (customerId === undefined || row.customerId === customerId);
+}
+function completeSource(snapshot: IxcCustomerSnapshot, source: "invoices" | "payments"): boolean {
+  const metadata = snapshot.coverage?.[source];
+  const count = snapshot[source].length;
+  const limit = source === "invoices" ? 20 : 100;
+  return !snapshot.partialSources.includes(source) && metadata?.complete === true
+    && Number.isSafeInteger(metadata.total) && metadata.total === count && metadata.read === count && count <= limit;
 }
 
 export function summarizeFullBase(
-  invoices: Array<{ status: string; dueAt?: string; value?: number }>,
+  invoices: IxcInvoiceDto[],
   options: { now: Date; overdueTotal: number; openCount: number; truncated: boolean },
 ): FullBaseBilling {
-  const aging: AgingBucket[] = BUCKETS.map((bucket) => ({ ...bucket, invoices: 0, value: 0 }));
-  let overdueValue = 0, invoicesWithoutDueDate = 0;
-
+  const aging = agingState(), total = emptyMoney(), counts = idCounts(invoices);
+  let excludedInvoices = 0, invoicesWithoutDueDate = 0;
+  let amountIncomplete = options.truncated || options.overdueTotal !== invoices.length;
   for (const invoice of invoices) {
-    const value = invoice.value ?? 0;
+    if (!validIdentity(invoice, counts) || !isOpenInvoice(invoice.status)) { excludedInvoices++; continue; }
     const days = daysOverdue(invoice.dueAt, options.now);
-    if (days === undefined) { invoicesWithoutDueDate += 1; continue; }
-    overdueValue += value;
-    const bucket = aging.find((item) => days >= item.minDays && (item.maxDays === null || days <= item.maxDays));
-    if (bucket) { bucket.invoices += 1; bucket.value += value; }
+    if (days === undefined) { invoicesWithoutDueDate++; excludedInvoices++; continue; }
+    if (days < 1) { excludedInvoices++; continue; }
+    const cents = invoice.valueSource === "open-balance" ? centsOf(invoice.value) : undefined;
+    const bucket = aging.find((item) => days >= item.minDays && (item.maxDays === null || days <= item.maxDays))!;
+    bucket.invoices++;
+    if (!addMoney(total, cents)) { excludedInvoices++; continue; }
+    addMoney(bucket.total, cents);
   }
-
+  amountIncomplete ||= excludedInvoices > 0;
   return {
-    scope: "full-base",
-    openInvoices: options.openCount,
-    openValue: null,
-    overdueInvoices: options.overdueTotal,
-    overdueValue,
-    overdueScanned: invoices.length,
-    truncated: options.truncated,
-    aging,
-    invoicesWithoutDueDate,
+    scope: "full-base", openInvoices: options.openCount, openValue: null,
+    overdueInvoices: options.overdueTotal, overdueValue: moneyValue(total, amountIncomplete),
+    overdueScanned: invoices.length, truncated: options.truncated, amountIncomplete, excludedInvoices,
+    aging: agingResult(aging, amountIncomplete), invoicesWithoutDueDate,
   };
+}
+
+/** Exact instants use the inclusive interval. A date without a zone/time is not an instant. */
+function paymentInPeriod(raw: string | undefined, since: Date, now: Date): "inside" | "outside" | "unknown" {
+  if (!raw || !Number.isFinite(since.getTime()) || since > now) return "unknown";
+  let date = calendarDate(raw);
+  if (!date) {
+    const match = /^(\d{4}-\d{2}-\d{2})[T ](\d{2}):(\d{2}):(\d{2})(?:\.\d{1,3})?(Z|[+-]\d{2}:\d{2})?$/.exec(raw);
+    if (!match || !calendarDate(match[1]) || +match[2] > 23 || +match[3] > 59 || +match[4] > 59) return "unknown";
+    date = match[1];
+    if (match[5]) {
+      if (match[5] !== "Z" && (+match[5].slice(1, 3) > 23 || +match[5].slice(4) > 59)) return "unknown";
+      const instant = new Date(raw.replace(" ", "T"));
+      if (!Number.isFinite(instant.getTime()) || instant > now) return "unknown";
+      return instant >= since ? "inside" : "outside";
+    }
+  }
+  const firstDay = businessToday(since), lastDay = businessToday(now);
+  if (date < firstDay) return "outside";
+  // Only full interior calendar days are certainly within the requested interval.
+  return date > firstDay && date < lastDay ? "inside" : "unknown";
 }
 
 export function summarizeBilling(
   snapshots: IxcCustomerSnapshot[],
   options: { now: Date; unavailable: number; paymentsSinceIso: string },
 ): BillingOverview {
-  const invoices: IxcInvoiceDto[] = snapshots.flatMap((snapshot) => snapshot.invoices);
-  const payments: IxcPaymentDto[] = snapshots.flatMap((snapshot) => snapshot.payments);
-  const open = invoices.filter((invoice) => isOpenInvoice(invoice.status));
-
-  const aging: AgingBucket[] = BUCKETS.map((bucket) => ({ ...bucket, invoices: 0, value: 0 }));
-  let overdueInvoices = 0, overdueValue = 0, upcomingInvoices = 0, upcomingValue = 0, invoicesWithoutDueDate = 0;
-
-  for (const invoice of open) {
-    const value = invoice.value ?? 0;
-    const days = daysOverdue(invoice.dueAt, options.now);
-    if (days === undefined) { invoicesWithoutDueDate += 1; continue; }
-    if (days < 1) { upcomingInvoices += 1; upcomingValue += value; continue; }
-    overdueInvoices += 1; overdueValue += value;
-    const bucket = aging.find((item) => days >= item.minDays && (item.maxDays === null || days <= item.maxDays));
-    if (bucket) { bucket.invoices += 1; bucket.value += value; }
-  }
-
-  const inPeriod = payments.filter((payment) => (payment.paidAt ?? "") >= options.paymentsSinceIso.slice(0, 10));
+  const aging = agingState(), open = emptyMoney(), overdue = emptyMoney(), upcoming = emptyMoney(), paid = emptyMoney();
+  const invoiceIds = idCounts(snapshots.flatMap((snapshot) => snapshot.invoices));
+  const paymentIds = idCounts(snapshots.flatMap((snapshot) => snapshot.payments));
+  let amountIncomplete = options.unavailable > 0 || snapshots.some((snapshot) => !completeSource(snapshot, "invoices"));
+  let paymentsIncomplete = options.unavailable > 0 || snapshots.some((snapshot) => !completeSource(snapshot, "payments"));
+  let openInvoices = 0, overdueInvoices = 0, upcomingInvoices = 0, invoicesWithoutDueDate = 0, excludedInvoices = 0;
+  let paymentsInPeriod = 0, excludedPayments = 0;
   const paymentMethods: Record<string, number> = {};
-  for (const payment of inPeriod) paymentMethods[payment.method] = (paymentMethods[payment.method] ?? 0) + 1;
+  const since = new Date(options.paymentsSinceIso);
 
+  for (const snapshot of snapshots) {
+    for (const invoice of snapshot.invoices) {
+      if (!validIdentity(invoice, invoiceIds, snapshot.customer.id)) { excludedInvoices++; continue; }
+      if (isClosedInvoice(invoice.status)) continue;
+      if (!isOpenInvoice(invoice.status)) { excludedInvoices++; continue; }
+      openInvoices++;
+      const cents = invoice.valueSource === "open-balance" ? centsOf(invoice.value) : undefined;
+      const known = addMoney(open, cents);
+      const days = daysOverdue(invoice.dueAt, options.now);
+      if (days === undefined) { invoicesWithoutDueDate++; excludedInvoices++; continue; }
+      if (days < 1) {
+        upcomingInvoices++;
+        if (!known || !addMoney(upcoming, cents)) excludedInvoices++;
+      } else {
+        overdueInvoices++;
+        const bucket = aging.find((item) => days >= item.minDays && (item.maxDays === null || days <= item.maxDays))!;
+        bucket.invoices++;
+        if (!known || !addMoney(overdue, cents)) { excludedInvoices++; continue; }
+        addMoney(bucket.total, cents);
+      }
+    }
+    for (const payment of snapshot.payments) {
+      if (!validIdentity(payment, paymentIds, snapshot.customer.id)) { excludedPayments++; continue; }
+      const period = paymentInPeriod(payment.paidAt, since, options.now);
+      if (period === "outside") continue;
+      if (period === "unknown") { excludedPayments++; continue; }
+      paymentsInPeriod++;
+      // An upstream method name is a data key, never a prototype setter.
+      const method = payment.method || "Não informado";
+      Object.defineProperty(paymentMethods, method, { value: (Object.hasOwn(paymentMethods, method) ? paymentMethods[method] : 0) + 1, enumerable: true, configurable: true });
+      if (!addMoney(paid, centsOf(payment.value))) excludedPayments++;
+    }
+  }
+  amountIncomplete ||= excludedInvoices > 0;
+  paymentsIncomplete ||= excludedPayments > 0;
   return {
-    scope: "allowlist",
-    customersConsulted: snapshots.length,
-    customersUnavailable: options.unavailable,
-    openInvoices: open.length,
-    openValue: open.reduce((sum, invoice) => sum + (invoice.value ?? 0), 0),
-    overdueInvoices, overdueValue, upcomingInvoices, upcomingValue,
-    aging,
-    paymentsInPeriod: inPeriod.length,
-    paidInPeriod: inPeriod.reduce((sum, payment) => sum + (payment.value ?? 0), 0),
-    paymentMethods,
-    invoicesWithoutDueDate,
+    scope: "allowlist", customersConsulted: snapshots.length, customersUnavailable: options.unavailable,
+    openInvoices, openValue: moneyValue(open, amountIncomplete), overdueInvoices, overdueValue: moneyValue(overdue, amountIncomplete),
+    upcomingInvoices, upcomingValue: moneyValue(upcoming, amountIncomplete), aging: agingResult(aging, amountIncomplete),
+    amountIncomplete, excludedInvoices, invoicesWithoutDueDate,
+    paymentsInPeriod, paidInPeriod: moneyValue(paid, paymentsIncomplete), paymentsIncomplete, excludedPayments, paymentMethods,
   };
 }

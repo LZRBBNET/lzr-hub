@@ -7,7 +7,7 @@ import { tmpdir } from 'node:os';
 import { execFileSync } from 'node:child_process';
 import { verifyPassword } from '../lib/platform/auth.ts';
 import { PROJECT_ID, PROTECTED_ID_TEST_SENTINEL, RailwayGateRefusal } from '../scripts/railway-recovery-gate-target.mjs';
-import { consoleTarget, consoleDirectory, consumeConsole, deriveConsoleCredentials, prepareConsole, provisionConsole, readMaskedPassword } from '../scripts/recovery-browser-console.mjs';
+import { consoleTarget, consoleDirectory, consumeConsole, deriveConsoleCredentials, prepareConsole, provisionConsole, readMaskedPassword, ConsoleInputRefusal, consoleFailureMessage } from '../scripts/recovery-browser-console.mjs';
 
 // Deliberately non-credential input sent only to local fake/isolated TTY tests.
 const operator = 'NOT-A-REAL-OPERATOR-PASSWORD', reader = 'NOT-A-REAL-READER-PASSWORD';
@@ -74,6 +74,114 @@ test('masked prompt handles backspace without echoing plaintext', async () => {
   const input=new FakeTTY([`${operator}X\x7f\r`]),out=output();
   const value=await readMaskedPassword(input,out,'Test',{deadline:Date.now()+5000});
   assert.equal(value.toString(),operator);value.fill(0);assert.equal(out.text.includes(operator),false);
+});
+
+test('split CRLF is transport framing across prompts, never an empty confirmation', async () => {
+  const input=new FakeTTY(),out=output(),transport={skipLF:false};
+  const first=readMaskedPassword(input,out,'First',{deadline:Date.now()+5000,transport});
+  input.emit('data',Buffer.from(`${operator}\r`));const a=await first;
+  const second=readMaskedPassword(input,out,'Second',{deadline:Date.now()+5000,transport});
+  input.emit('data',Buffer.from('\n'));
+  assert.equal(input.isRaw,true,'LF pair does not finish the next prompt');
+  input.emit('data',Buffer.from(`${operator}\r`));const b=await second;
+  assert.deepEqual(a,b);a.fill(0);b.fill(0);assert.equal(out.text.includes(operator),false);
+});
+
+test('single-line bracketed paste survives every marker chunk boundary and still waits for Enter', async () => {
+  const framed=`\x1b[200~${operator}\x1b[201~`;
+  for(let split=1;split<framed.length;split++) {
+    const input=new FakeTTY(),out=output();let settled=false;
+    const pending=readMaskedPassword(input,out,'Paste',{deadline:Date.now()+5000}).then(value=>{settled=true;return value;});
+    for(const part of [framed.slice(0,split),framed.slice(split)]) {const chunk=Buffer.from(part);input.emit('data',chunk);assert.ok(chunk.every(byte=>byte===0));}
+    await Promise.resolve();assert.equal(settled,false,'closing marker is not submit');assert.equal(input.isRaw,true);
+    input.emit('data',Buffer.from('\r'));const value=await pending;
+    assert.equal(value.toString(),operator);value.fill(0);assert.equal(out.text.includes(operator),false);
+  }
+});
+
+test('bracketed paste rejects newline, nested/wrong framing, control and nonASCII without echo', async () => {
+  for(const payload of [`\x1b[200~${operator}\n${reader}\x1b[201~`,`\x1b[200~${operator}\r\x1b[201~`,`\x1b[200~${operator}\x1b[200~`,
+    `\x1b[201~${operator}`,`\x1b[200~${operator}\x1b[A`,`\x1b[200~${operator}\x7f`,`\x1b[200~é`,`${operator}\r${reader}\r`]) {
+    const input=new FakeTTY(),out=output(),chunk=Buffer.from(payload);
+    const pending=readMaskedPassword(input,out,'Invalid',{deadline:Date.now()+5000});input.emit('data',chunk);
+    await assert.rejects(pending,error=>error instanceof ConsoleInputRefusal&&error.category==='INPUT_INVALID');
+    assert.equal(input.isRaw,false);assert.ok(chunk.every(byte=>byte===0));assert.equal(out.text.includes(operator),false);
+  }
+});
+
+test('first-entry failure diagnostics are fixed categories, never reflected error/input content', async () => {
+  for(const [kind,category] of [['short','INPUT_INVALID'],['ctrl-c','INPUT_INTERRUPTED'],['signal','INPUT_INTERRUPTED'],['end','TERMINAL_CLOSED'],['error','TERMINAL_CLOSED'],['timeout','INPUT_EXPIRED']]) {
+    const input=new FakeTTY(),out=output(),controller=new AbortController();
+    const pending=readMaskedPassword(input,out,'Test',{deadline:Date.now()+(kind==='timeout'?5:5000),signal:controller.signal});
+    if(kind==='short')input.emit('data',Buffer.from('short\r'));
+    if(kind==='ctrl-c')input.emit('data',Buffer.from('\x03'));
+    if(kind==='signal')controller.abort();
+    if(kind==='end')input.emit('end');
+    if(kind==='error')input.emit('error',new Error(operator));
+    await assert.rejects(pending,error=>error.category===category&&consoleFailureMessage(error).includes(category));
+    assert.equal(out.text.includes(operator),false);assert.equal(input.isRaw,false);
+  }
+  assert.equal(consoleFailureMessage(new Error(operator)).includes(operator),false);
+  const forged=new ConsoleInputRefusal('INPUT_INVALID');forged.category=operator;
+  assert.match(consoleFailureMessage(forged),/PROVISION_REFUSED/);assert.equal(consoleFailureMessage(forged).includes(operator),false);
+});
+
+test('four confirmed bracketed pastes with split CRLF retain one-shot hash-only handoff', async t => {
+  const {directory,target,env}=await context(t),out=output();
+  const framed=value=>`\x1b[200~${value}\x1b[201~\r`;
+  const terminal=new FakeTTY([framed(operator),`\n${framed(operator)}`,`\n${framed(reader)}`,`\n${framed(reader)}`]);
+  await provisionConsole(directory,target,terminal,out);const merged=await consumeConsole(directory,env);
+  assert.equal(await verifyPassword(operator,merged.RECOVERY_BROWSER_OPERATOR_PASSWORD_HASH,merged.RECOVERY_BROWSER_OPERATOR_PASSWORD_SALT),true);
+  assert.deepEqual(terminal.modes,[true,false]);assert.equal(await exists(join(directory,'credentials.json')),false);
+  assert.equal(out.text.includes(operator),false);assert.equal(out.text.includes(reader),false);
+});
+
+test('a failed first entry stops the waiter with safe category and cannot seed/retry the handoff', async t => {
+  const {directory,target,env}=await context(t),out=output();
+  await assert.rejects(()=>provisionConsole(directory,target,new FakeTTY(['short\r']),out),error=>error.category==='INPUT_INVALID');
+  assert.equal(await readFile(join(directory,'aborted'),'utf8'),'');
+  assert.equal(await readFile(join(directory,'aborted-category'),'utf8'),'INPUT_INVALID');
+  assert.equal(await exists(join(directory,'credentials.json')),false);assert.equal(await exists(join(directory,'committed')),false);
+  await assert.rejects(()=>consumeConsole(directory,env),error=>error.category==='INPUT_INVALID');
+  assert.equal(await exists(join(directory,'finished-stopped')),true);assert.equal(await exists(join(directory,'finished-consumed')),false);
+  await assert.rejects(()=>provisionConsole(directory,target,new FakeTTY(),output()));
+});
+
+test('untrusted abort marker cannot inject text into waiter diagnostics', async t => {
+  const {directory,env}=await context(t);await writeFile(join(directory,'aborted'),operator,{mode:0o600});
+  await assert.rejects(()=>consumeConsole(directory,env),error=>error.category==='PROVISION_REFUSED'&&!consoleFailureMessage(error).includes(operator));
+});
+
+test('abort category publication is atomic before a concurrent waiter consumes the empty marker', async t => {
+  for(let attempt=0;attempt<10;attempt++) {
+    const {directory,target,env}=await context(t);
+    const consumer=consumeConsole(directory,env);
+    const rejected=assert.rejects(consumer,error=>error.category==='INPUT_INVALID');
+    await assert.rejects(()=>provisionConsole(directory,target,new FakeTTY(['short\r']),output()),error=>error.category==='INPUT_INVALID');
+    await rejected;
+    assert.equal(await readFile(join(directory,'aborted'),'utf8'),'');
+    assert.equal(await readFile(join(directory,'aborted-category'),'utf8'),'INPUT_INVALID');
+    assert.equal(await exists(join(directory,'credentials.json')),false);
+  }
+});
+
+test('missing or malformed abort category still stops the waiter with only generic diagnostics', async t => {
+  for(const malformed of [undefined,operator]) {
+    const {directory,env}=await context(t);
+    if(malformed!==undefined)await writeFile(join(directory,'aborted-category'),malformed,{mode:0o600});
+    await writeFile(join(directory,'aborted'),'',{mode:0o600});
+    await assert.rejects(()=>consumeConsole(directory,env),error=>error.category==='PROVISION_REFUSED'&&!consoleFailureMessage(error).includes(operator));
+    assert.equal(await exists(join(directory,'finished-stopped')),true);
+  }
+});
+
+test('failed category write still publishes the stop marker and cannot reopen the private prompt', async t => {
+  const {directory,target,env}=await context(t);
+  await import('node:fs/promises').then(fs=>fs.mkdir(join(directory,'aborted-category'),{mode:0o700}));
+  await assert.rejects(()=>provisionConsole(directory,target,new FakeTTY(['short\r']),output()),error=>error.category==='INPUT_INVALID');
+  assert.equal(await readFile(join(directory,'aborted'),'utf8'),'');
+  await assert.rejects(()=>consumeConsole(directory,env),error=>error.category==='PROVISION_REFUSED');
+  assert.equal(await exists(join(directory,'credentials.json')),false);
 });
 
 test('hashing uses product scrypt hex-string salt, independent salts and rejects equal or invalid passwords', async () => {

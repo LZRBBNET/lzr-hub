@@ -33,7 +33,7 @@ Then use the browser's documented manual takeover. The user, not the assistant, 
 1. A new temporary password for `operator@lzr-qa.invalid`, then repeats it.
 2. A **different** temporary password for `reader@lzr-qa.invalid`, then repeats it.
 
-Use 16–128 printable ASCII characters for each; do not reuse a real password. Enter each prompt separately, not a multiline paste. Input is hidden for the **entire four-field session**, including transitions, hashing and file writes. Do not type a password at the shell prompt or supply it as a command argument/environment variable. Ctrl-C, mismatched confirmation, invalid input, timeout or a second provisioner refuses the attempt. Do not retry automatically.
+Use 16–128 printable ASCII characters for each; do not reuse a real password. Enter each prompt separately, not a multiline paste. A single-line bracketed terminal paste is supported, including markers split across input chunks; its closing marker does **not** submit the password. Press Enter after that one line. A CR/LF pair split across two reads is treated as one Enter, not an empty confirmation. Newlines inside a bracketed paste, other escape/control sequences, non-ASCII and overflow still refuse the attempt. Input is hidden for the **entire four-field session**, including transitions, hashing and file writes. Do not type a password at the shell prompt or supply it as a command argument/environment variable. Ctrl-C, mismatched confirmation, invalid input, timeout or a second provisioner refuses the attempt. Do not retry automatically.
 
 The assistant must not inspect the Console during this private handoff. After the user finishes and returns control, inspect only the non-secret completion status. No password, hash, salt, cookie or connection setting belongs in chat, screenshots, logs, source or evidence artifacts. If the Console is not a genuine TTY or manual takeover is unavailable, **stop**: there is no echoing/direct-entry fallback.
 
@@ -47,11 +47,29 @@ Run the real UI checklist in `recovery-browser-homologation.md`, including wrong
 
 ## Failure, expiry and limits
 
+- A failed private provision writes the allowlisted `aborted-category` and publishes an empty `aborted` stop marker. The waiter detects it, clears verifier/commit files and exits nonzero rather than silently reopening a prompt. A platform may label this **Crashed** even for a controlled refusal. This lifecycle alone does not prove why a particular deployment stopped. A hard container failure may produce no category at all.
+- Diagnostics use only a fixed allowlist: `INPUT_INVALID`, `INPUT_INTERRUPTED`, `INPUT_EXPIRED`, `TERMINAL_CLOSED`, `TERMINAL_UNAVAILABLE`, `PROVISION_REFUSED` or `SETUP_REFUSED_OR_STOPPED`. They do not print the input, its length, an arbitrary exception message or file contents. Categories distinguish evidence, not a proven diagnosis of a previous generic failure.
 - A stopped/expired/consumed container handoff is not reusable. The bridge does not reset the database, regenerate passwords, repair a failed seed or retry deployments. Preserve the failure and verify whether any DB write happened before planning a new attempt.
 - Private file checks reduce accidental reuse/link exposure; they are **not isolation from Railway account administrators, root or another trusted same-UID container process**. The existing authenticated Railway control plane is the access boundary. There is no anonymous setup route or additional setup-access credential.
 - Mutable prompt/input buffers are cleared, but Node/runtime/platform memory and terminal transport do not provide a claim of guaranteed end-to-end secret zeroization. The helper never prints or persists plaintext. After a hard process/container crash, a hash-only temporary file can remain until that container is disposed of; do not copy it into evidence.
 - The original browser entrypoint stops its child app at the approved deadline. Account unreachability then depends on app shutdown and removal of the QA resources; **there is no new per-user database expiry field**. The operational owner must confirm cleanup of only the approved test resources by the budget/deadline. Stopping the process alone is not a billing cap or volume deletion.
 - Tests of fake TTYs/files and actual local PTY masking are separate from an authenticated Railway Console or real browser pass. Keep these evidence categories distinct.
+
+### Console environment differences
+
+The Console shell's PATH and ambient variables can differ from the running
+waiter. If `node` is absent, discover the running Node executable path without
+dumping process arguments or environment values and use that verified absolute
+path. Do not install a new runtime or spoof `RAILWAY_*` identity variables.
+
+If a reviewed names-only diagnosis proves that Console injects an unnecessary
+`RAILWAY_API_TOKEN`, while the unchanged waiter passes preflight, remove **only
+that credential from the provisioning child** using `env -u RAILWAY_API_TOKEN`
+before the verified Node command. Never display/copy its value, alter the global
+service configuration, blanket-clear failed checks or remove identities to
+force the guard through. Other refusals need their own evidence; do not add
+unsets speculatively. This procedure narrows the child's privileges and leaves
+the full existing guard unchanged.
 
 ## Local verification
 

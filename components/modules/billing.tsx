@@ -18,11 +18,12 @@ export function BillingModule({view}:{view:"cobranca"|"acoes-cobranca"|"regua"})
   return <BillingOverview/>;
 }
 
-type AgingBucket={label:string;minDays:number;maxDays:number|null;invoices:number;value:number};
-type BillingSummary={scope:string;customersConsulted:number;customersUnavailable:number;openInvoices:number;openValue:number;overdueInvoices:number;overdueValue:number;upcomingInvoices:number;upcomingValue:number;aging:AgingBucket[];paymentsInPeriod:number;paidInPeriod:number;paymentMethods:Record<string,number>;invoicesWithoutDueDate:number};
-type FullBaseSummary={scope:"full-base";openInvoices:number;openValue:null;overdueInvoices:number;overdueValue:number;overdueScanned:number;truncated:boolean;aging:AgingBucket[];invoicesWithoutDueDate:number};
+type AgingBucket={label:string;minDays:number;maxDays:number|null;invoices:number;value:number|null};
+type BillingSummary={scope:"allowlist";customersConsulted:number;customersUnavailable:number;openInvoices:number;openValue:number|null;overdueInvoices:number;overdueValue:number|null;upcomingInvoices:number;upcomingValue:number|null;aging:AgingBucket[];paymentsInPeriod:number;paidInPeriod:number|null;paymentMethods:Record<string,number>;invoicesWithoutDueDate:number;amountIncomplete:boolean;excludedInvoices:number;paymentsIncomplete:boolean;excludedPayments:number};
+type FullBaseSummary={scope:"full-base";openInvoices:number;openValue:null;overdueInvoices:number;overdueValue:number|null;overdueScanned:number;truncated:boolean;aging:AgingBucket[];invoicesWithoutDueDate:number;amountIncomplete:boolean;excludedInvoices:number};
 type BillingPayload={available:boolean;detail?:string;period:string;scope?:"allowlist"|"full-base";allowlistSize?:number;summary:BillingSummary|FullBaseSummary|null};
 const isFullBase=(summary:BillingSummary|FullBaseSummary|null):summary is FullBaseSummary=>summary?.scope==="full-base";
+const observedMoney=(value:number|null|undefined)=>typeof value==="number"&&Number.isFinite(value)&&value>=0?money(value):"—";
 
 /** A régua escrevia "1 dias depois do vencimento". Um dia é um dia. */
 const offsetLabel=(days:number)=>{
@@ -55,36 +56,41 @@ function BillingOverview(){
       {isFullBase(summary)
         ? summary.truncated && <Notice tone="warn">A varredura das vencidas parou antes do fim ({count(summary.overdueScanned)} lidas): o valor vencido é parcial.</Notice>
         : <Notice tone="warn" more={`É trava nossa, de homologação.${summary.customersUnavailable>0?` ${summary.customersUnavailable} cadastro(s) não responderam e ficaram de fora da conta.`:""}`}>Recorte da allowlist: {summary.customersConsulted} cadastro(s){data?.allowlistSize&&data.allowlistSize!==summary.customersConsulted?` de ${data.allowlistSize}`:""}. <strong>Não é a carteira inteira.</strong></Notice>}
+      {summary.amountIncomplete&&<Notice tone="warn">Saldos incompletos neste recorte. Somamos apenas saldos em aberto confirmados; valor nominal não substitui saldo desconhecido. “—” significa valor não confirmado, não dívida zero. As contagens e faixas não completam dados ausentes.</Notice>}
+      {summary.excludedInvoices>0&&<Notice tone="warn">{count(summary.excludedInvoices)} registro(s) não puderam contribuir integralmente para os saldos ou faixas de atraso.</Notice>}
+      {!isFullBase(summary)&&summary.paymentsIncomplete&&<Notice tone="warn">Recebimentos incompletos neste recorte. Datas, horários ou valores sem confirmação e páginas não lidas não viram pagamento zero. {summary.excludedPayments>0&&<span>{count(summary.excludedPayments)} registro(s) ficaram fora da janela ou sem confirmação suficiente.</span>}</Notice>}
       <Stats>
-        <Stat label="Vencido" icon="alert" tone={summary.overdueInvoices?"warn":"neutral"} value={money(summary.overdueValue)} hint={isFullBase(summary)&&summary.truncated?`Parcial: ${count(summary.overdueScanned)} de ${count(summary.overdueInvoices)} faturas`:`${count(summary.overdueInvoices)} fatura(s) em atraso`}/>
+        <Stat label="Saldo vencido observado" icon="alert" tone={summary.overdueInvoices?"warn":"neutral"} value={observedMoney(summary.overdueValue)} hint={isFullBase(summary)&&summary.truncated?`Parcial: ${count(summary.overdueScanned)} de ${count(summary.overdueInvoices)} faturas`:`${count(summary.overdueInvoices)} fatura(s) no recorte${summary.amountIncomplete?"; saldo parcial":""}`}/>
         {isFullBase(summary)
-          ? <Stat label="Faturas em aberto" icon="wallet" value={count(summary.openInvoices)} hint="Contagem exata do IXC"/>
-          : <Stat label="A vencer" icon="clock" value={money(summary.upcomingValue)} hint={`${summary.upcomingInvoices} fatura(s) no prazo`}/>}
+          ? <Stat label="Faturas em aberto" icon="wallet" value={count(summary.openInvoices)} hint="Contagem informada pelo IXC"/>
+          : <Stat label="Saldo a vencer observado" icon="clock" value={observedMoney(summary.upcomingValue)} hint={`${summary.upcomingInvoices} fatura(s) no recorte`}/>}
         {isFullBase(summary)
-          ? <Stat label="Ticket médio das vencidas" icon="wallet" value={summary.overdueScanned?money(summary.overdueValue/summary.overdueScanned):"—"} hint="Sobre as faturas lidas"/>
-          : <Stat label={`Recebido em ${PERIOD_NAMES[period]}`} icon="check" tone="ok" value={money(summary.paidInPeriod)} hint={`${summary.paymentsInPeriod} pagamento(s)`}/>}
-        {!isFullBase(summary)&&<Stat label="Total em aberto" icon="wallet" value={money(summary.openValue)} hint={`${summary.openInvoices} fatura(s)`}/>}
+          ? <Stat label="Ticket médio das vencidas" icon="wallet" value={!summary.amountIncomplete&&summary.overdueValue!==null&&summary.overdueScanned?observedMoney(summary.overdueValue/summary.overdueScanned):"—"} hint={summary.amountIncomplete?"Não calculado: saldo incompleto":"Sobre as faturas lidas"}/>
+          : <Stat label={`Recebido observado · ${PERIOD_NAMES[period]}`} icon="check" tone={summary.paymentsIncomplete?"warn":"ok"} value={observedMoney(summary.paidInPeriod)} hint={`${summary.paymentsInPeriod} pagamento(s) confirmados no recorte${summary.paymentsIncomplete?"; leitura parcial":""}`}/>}
+        {!isFullBase(summary)&&<Stat label="Saldo aberto observado" icon="wallet" value={observedMoney(summary.openValue)} hint={`${summary.openInvoices} fatura(s) no recorte`}/>}
       </Stats>
       <div className={isFullBase(summary)?"":"grid-2 even"}>
         <Card title="Faixa de atraso" badge={<Badge>pela data de vencimento</Badge>}>
-          {summary.overdueInvoices===0
+          {summary.overdueInvoices===0&&!summary.amountIncomplete
             ? <Empty icon="check" title="Nenhuma fatura vencida">entre os cadastros consultados.</Empty>
-            : <div className="bars">{summary.aging.map(bucket=><Bar key={bucket.label} label={bucket.label} detail={`${count(bucket.invoices)} fatura(s)`} value={bucket.invoices} max={Math.max(...summary.aging.map(b=>b.invoices))} display={money(bucket.value)}/>)}</div>}
+            : <div className="bars">{summary.aging.map(bucket=><Bar key={bucket.label} label={bucket.label} detail={`${count(bucket.invoices)} fatura(s) lidas`} value={bucket.invoices} max={Math.max(...summary.aging.map(b=>b.invoices))} display={observedMoney(bucket.value)}/>)}</div>}
           {summary.invoicesWithoutDueDate>0&&<p className="hint" style={{marginTop:12}}>{summary.invoicesWithoutDueDate} fatura(s) sem data de vencimento legível ficaram fora das faixas, em vez de serem chutadas para uma.</p>}
         </Card>
-        {!isFullBase(summary)&&<Card title="Como pagaram" badge={<Badge>últimos {PERIOD_NAMES[period]}</Badge>}>
+        {!isFullBase(summary)&&<Card title="Formas dos pagamentos lidos" badge={<Badge>últimos {PERIOD_NAMES[period]}</Badge>}>
           {summary.paymentsInPeriod===0
-            ? <Empty icon="wallet" title="Nenhum pagamento no período"/>
+            ? summary.paymentsIncomplete ? <Notice tone="warn">Nenhum pagamento confirmado neste recorte incompleto. Isso não prova ausência de recebimentos.</Notice> : <Empty icon="wallet" title="Nenhum pagamento no período consultado"/>
             : <div className="bars">{Object.entries(summary.paymentMethods).sort((a,b)=>b[1]-a[1]).map(([method,total])=><Bar key={method} label={method} detail={`${total} pagamento(s)`} value={total} max={summary.paymentsInPeriod} display={`${Math.round(total/summary.paymentsInPeriod*100)}%`}/>)}</div>}
         </Card>}
       </div>
       <Limits items={isFullBase(summary)?[
-        ["Valor total em aberto","São ~74 mil faturas. O IXC devolve a contagem numa consulta, mas não soma valores — só varrendo tudo, o que não cabe numa abertura de tela. Cabe num job noturno."],
+        ["Valor total em aberto","O IXC devolve a contagem numa consulta, mas o saldo total exige conferir todas as faturas. Esta tela não fez essa leitura completa nem estimou o total."],
         ["Pagamentos do período","A tabela de pagamentos se liga à fatura, não ao cliente. Cruzar isso na base inteira tem o mesmo problema de varredura."],
         ["Recuperação por campanha","Nenhuma campanha foi executada; não há o que atribuir."],
+        ["Resultado da cobrança","Promessa e encerramento manual não são recibos. Recebimentos observados não comprovam efeito da cobrança nem cancelamentos evitados."],
       ]:[
         ["Recuperação por campanha","Conversão e ROI dependem de campanha executada — e campanha não está ligada. Sem isso, qualquer número seria invenção."],
         ["Entregues, lidos e contatos elegíveis","Métricas de disparo de campanha e de opt-out, que ainda não existem."],
+        ["Resultado da cobrança","Promessa e encerramento manual não são recibos. Recebimentos observados não comprovam efeito da cobrança nem cancelamentos evitados."],
       ]}/>
     </>}
   </>;
@@ -175,7 +181,7 @@ function PaymentPromisePanel(){
       {state==="error"&&<div className="card-content"><Notice tone="bad">Promessas indisponíveis.</Notice></div>}
       {state==="ready"&&pending.length===0&&<Empty icon="check" title="Nenhuma promessa pendente"/>}
       {state==="ready"&&<div className="list">{pending.map(p=><div className="row" key={p.id}>
-        <div className="row-main"><strong>Fatura {p.invoiceId}</strong><span>Cliente {p.customerId} · promete pagar em {promiseDate(p.promisedFor)}</span></div>
+        <div className="row-main"><strong>Fatura {p.invoiceId}</strong><span>Cliente {p.customerId} · promete pagar em {promiseDate(p.promisedFor)}</span><small>Código da promessa no HUB: <code className="break">{p.id}</code></small></div>
         <div className="row-value"><span className={`status ${PROMISE_STATUS[p.status]?.[1]??""}`}>{PROMISE_STATUS[p.status]?.[0]??p.status}</span></div>
       </div>)}</div>}
     </Card>

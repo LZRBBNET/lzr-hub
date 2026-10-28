@@ -156,7 +156,7 @@ function RecoveryCustomerModal({ row, onClose, onPrepareCase }: { row: RecoveryC
     </Stats>
     <Card title="Histórico de promessas" badge={<Badge>Somente leitura</Badge>}>
       {!row.promises.available ? <Notice tone="warn">Histórico indisponível; não é ausência de promessas.</Notice> : row.promises.rows.length === 0 ? <Empty icon="clock" title="Nenhuma promessa registrada para este cliente" /> : <div className="list">{row.promises.rows.map((promise) => <div className="row" key={promise.id}>
-        <div className="row-main"><strong>Fatura {promise.invoiceId}</strong><span>Prometida para {calendarDate(promise.promisedFor)}</span></div>
+        <div className="row-main"><strong>Fatura {promise.invoiceId}</strong><span>Prometida para {calendarDate(promise.promisedFor)}</span><small>Código da promessa no HUB: <code className="break">{promise.id}</code></small></div>
         <Badge tone={promise.status === "broken" ? "warn" : "neutral"}>{PROMISE_LABEL[promise.status]}</Badge>
       </div>)}</div>}
       {row.promises.truncated && <Notice tone="warn">Mostrando apenas as 20 promessas mais recentes deste cliente.</Notice>}

@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { IxcInvoiceMapper } from "@/lib/integrations/ixc/mappers";
 import { getIxcRuntime } from "@/lib/integrations/ixc/runtime";
 import { businessToday, summarizeBilling, summarizeFullBase } from "@/lib/platform/billing-service";
 import { authorize } from "@/lib/platform/session-guard";
@@ -24,8 +25,8 @@ export async function GET(request: Request) {
     return NextResponse.json({ available: false, detail: "IXC desligado: sem fonte de faturas", period, summary: null });
   }
 
-  // Base inteira: percorrer cadastro por cadastro é impossível (27 mil), então a
-  // posição vem de consultas agregadas nas faturas. Ver summarizeFullBase.
+  // Base inteira: contagens agregadas e uma varredura limitada de faturas.
+  // Valores ausentes ou nominais não provam saldo aberto. Ver summarizeFullBase.
   if (runtime.config.ixcFullBase) {
     const correlationId = crypto.randomUUID();
     const today = new Date();
@@ -35,9 +36,8 @@ export async function GET(request: Request) {
         runtime.provider.countOpenInvoices(correlationId),
       ]);
       const invoices = overdue.rows.map((row) => {
-        const raw = row as Record<string, unknown>;
-        const value = Number(String(raw.valor ?? "").replace(",", "."));
-        return { status: String(raw.status ?? ""), dueAt: String(raw.data_vencimento ?? "") || undefined, value: Number.isFinite(value) ? value : undefined };
+        try { return IxcInvoiceMapper.map(row as Record<string, unknown>); }
+        catch { return { id: "", customerId: "", status: "desconhecido" }; }
       });
       const summary = summarizeFullBase(invoices, { now: today, overdueTotal: overdue.total, openCount, truncated: overdue.truncated });
       return NextResponse.json({ available: true, period, scope: "full-base", summary });
@@ -53,10 +53,11 @@ export async function GET(request: Request) {
     return NextResponse.json({ available: false, detail: "Nenhum cadastro do IXC respondeu", period, summary: null });
   }
 
+  const now = new Date();
   const summary = summarizeBilling(snapshots, {
-    now: new Date(),
+    now,
     unavailable,
-    paymentsSinceIso: new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString(),
+    paymentsSinceIso: new Date(now.getTime() - days * 24 * 60 * 60 * 1000).toISOString(),
   });
   return NextResponse.json({ available: true, period, scope: "allowlist", allowlistSize: runtime.config.ixcAllowlist.length, summary });
 }

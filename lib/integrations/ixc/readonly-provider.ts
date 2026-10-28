@@ -9,7 +9,7 @@ import type { IxcCityDto, IxcCollectionWalletDto, IxcCustomerDto, IxcCustomerPag
 const endpoints:Record<Exclude<IxcReadOperation,"testConnection"|"findCustomer"|"getCustomer"|"listCustomers"|"listOsCatalog"|"listFinanceCatalog">,string>={listContracts:"cliente_contrato",getPlan:"vd_contratos",listInvoices:"fn_areceber",listPayments:"fn_movim_finan",listServiceOrders:"su_oss_chamado",getConnection:"radusuarios",getCity:"cidade",getRecordHistory:"ixc_logs"};
 export interface IxcTrace { event:string; correlationId:string; durationMs:number; status:"success"|"failed"|"cache-hit"|"blocked"; attributes:Record<string,unknown> }
 export interface IxcReadonlyOptions { baseUrl:string; token:string; allowedCustomerIds:string[]; fullBase?:boolean; timeoutMs?:number; retryLimit?:0|1; cacheTtlMs?:number; cityCacheTtlMs?:number; rateLimitPerMinute?:number; fetcher?:typeof fetch; trace?:(event:IxcTrace)=>void; now?:()=>number }
-interface ReadOptions { strictPage?:boolean; oper?:string; page?:number; sortname?:string; sortorder?:"asc"|"desc"; gridParam?:GridFilter[] }
+interface ReadOptions { strictPage?:boolean; strictFinancialPage?:boolean; oper?:string; page?:number; sortname?:string; sortorder?:"asc"|"desc"; gridParam?:GridFilter[] }
 /**
  * Filtro composto do IXC. O trio qtype/query/oper só aceita uma condição; para
  * combinar (ex.: em aberto **e** vencida) o webservice usa `grid_param`.
@@ -158,9 +158,12 @@ export class IxcReadonlyProvider {
    */
   async listOverdueInvoices(todayIso:string,correlationId:string,maxPages=12,pageSize=500){
     const filters:GridFilter[]=[{TB:"fn_areceber.status",OP:"=",P:"A"},{TB:"fn_areceber.data_vencimento",OP:"<",P:todayIso.slice(0,10)}];
-    const rows:Record<string,unknown>[]=[];let total=0;let page=1;
+    const rows:Record<string,unknown>[]=[];const seen=new Set<string>();let total=0;let page=1;
     for(;page<=maxPages;page+=1){
-      const result=await this.readPage("listInvoices",endpoints.listInvoices,"fn_areceber.status","A",correlationId,pageSize,"",{oper:"=",page,sortname:"fn_areceber.data_vencimento",gridParam:filters});
+      const result=await this.readPage("listInvoices",endpoints.listInvoices,"fn_areceber.status","A",correlationId,pageSize,"",{oper:"=",page,sortname:"fn_areceber.data_vencimento",gridParam:filters,strictFinancialPage:true});
+      // A changing count or repeated page cannot prove a complete financial scan.
+      if(page>1&&result.total!==total)throw new IxcReadonlyError("IXC_INCOMPLETE_FINANCIAL_RESPONSE");
+      for(const row of result.records){const id=String(row.id).trim();if(seen.has(id))throw new IxcReadonlyError("IXC_INCOMPLETE_FINANCIAL_RESPONSE");seen.add(id);}
       total=result.total;rows.push(...result.records);
       if(result.records.length<pageSize||rows.length>=total)break;
     }
@@ -440,7 +443,7 @@ export class IxcReadonlyProvider {
   }
   /** Contagem de faturas em aberto na base inteira: uma consulta, sem varrer registro. */
   async countOpenInvoices(correlationId:string){
-    return (await this.readPage("listInvoices",endpoints.listInvoices,"fn_areceber.status","A",correlationId,1,"",{oper:"=",sortname:"fn_areceber.id"})).total;
+    return (await this.readPage("listInvoices",endpoints.listInvoices,"fn_areceber.status","A",correlationId,1,"",{oper:"=",sortname:"fn_areceber.id",strictFinancialPage:true})).total;
   }
   async getSnapshot(customerId:string,correlationId:string,force=false):Promise<IxcCustomerSnapshot>{
     this.guard.assertCustomer(customerId); const cached=!force?this.cache.get(customerId):undefined;if(cached){this.emit("ixc.snapshot",correlationId,0,"cache-hit",{customerId:"[MASKED]"});return{...cached,cache:"hit",metrics:{...cached.metrics,totalLatencyMs:0}};}this.durations.set(correlationId,{});
@@ -523,6 +526,15 @@ export class IxcReadonlyProvider {
     const validRows=Array.isArray(body.registros)&&body.registros.length===records.length&&records.every(row=>(typeof row.id==="string"&&!!row.id.trim())||(typeof row.id==="number"&&Number.isSafeInteger(row.id)&&row.id>0));
     const uniqueIds=new Set(records.map(row=>String(row.id))).size===records.length;
     const firstPage=(options?.page??1)===1&&(body.page===undefined||String(body.page)==="1");
+    if(options?.strictFinancialPage){
+      const page=options.page??1;
+      const pageMatches=body.page===undefined||String(body.page)===String(page);
+      const financialIds=records.map(row=>String(row.id).trim());
+      const validIds=financialIds.every(id=>/^[1-9]\d*$/.test(id))&&new Set(financialIds).size===records.length;
+      const expected=knownTotal===null?-1:Math.min(rp,Math.max(knownTotal-(page-1)*rp,0));
+      if(knownTotal===null||!validRows||!validIds||!pageMatches||records.length!==expected)
+        throw new IxcReadonlyError("IXC_INCOMPLETE_FINANCIAL_RESPONSE");
+    }
     const coverage={read:records.length,total:knownTotal,complete:validRows&&uniqueIds&&firstPage&&knownTotal===records.length&&records.length<=rp,limit:rp};
     const total=Number(rawTotal??records.length);this.breaker.success();this.emit(`ixc.${operation}`,correlationId,this.now()-started,"success",{count:records.length});return{records,total:Number.isFinite(total)?total:records.length,coverage};}catch(error){clearTimeout(timer);last=classifyError(error);if(attempt+1<maxAttempts&&(last as IxcReadonlyError).code==="IXC_TIMEOUT")continue;break;}}
     const failure=classifyError(last);this.breaker.failure();this.emit(`ixc.${operation}`,correlationId,0,"failed",sanitizeTelemetry({error:failure.code}) as Record<string,unknown>);throw failure;
