@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { DEFAULT_REPLY_TEMPLATES } from '../lib/platform/reply-templates-shared.ts';
 import { resolveSupportReply } from '../lib/platform/support-reply.ts';
 const reply = (intent, message, content, history=[]) => resolveSupportReply({intent,message,history,templates:{[intent]:content}});
 const done = 'minha internet está lenta desde ontem, já reiniciei o roteador mas continua lenta';
@@ -47,7 +48,7 @@ test('tentativa conhecida protege qualquer intenção técnica, não apenas rein
   }
 });
 
-test('resolução relatada vence template de repetição; escopo não técnico é preservado', () => {
+test('resolução relatada vence template de repetição; financeiro usa padrão revisado', () => {
   assert.match(reply('technical_slow','a internet voltou e agora está normal','Certo, reinicie de novo.'),/Que bom/);
-  assert.equal(reply('financial_invoice','quero segunda via','Vou verificar a solicitação.'),'Vou verificar a solicitação.');
+  assert.equal(reply('financial_invoice','quero segunda via','Vou verificar a solicitação.'),DEFAULT_REPLY_TEMPLATES.financial_invoice);
 });

@@ -54,12 +54,12 @@ test("resposta editada vale; editada inválida cai no padrão em vez de ir ao cl
 
 test("salvar sobe a versão e devolve o texto anterior para a auditoria", async () => {
   const repository = new MemoryReplyTemplatesRepository();
-  const primeira = await saveTemplate(repository, { intent: "financial_pix", content: "Já envio o PIX para você." }, "ana@bbnet.com.br");
+  const primeira = await saveTemplate(repository, { intent: "technical_wifi", content: "O sinal melhora perto do roteador?" }, "ana@bbnet.com.br");
   assert.equal(primeira.saved.version, 1);
-  assert.equal(primeira.previous, DEFAULT_REPLY_TEMPLATES.financial_pix, "a primeira edição substitui o padrão");
-  const segunda = await saveTemplate(repository, { intent: "financial_pix", content: "Envio o PIX em instantes." }, "bia@bbnet.com.br");
+  assert.equal(primeira.previous, DEFAULT_REPLY_TEMPLATES.technical_wifi, "a primeira edição substitui o padrão");
+  const segunda = await saveTemplate(repository, { intent: "technical_wifi", content: "Em qual cômodo acontece?" }, "bia@bbnet.com.br");
   assert.equal(segunda.saved.version, 2);
-  assert.equal(segunda.previous, "Já envio o PIX para você.");
+  assert.equal(segunda.previous, "O sinal melhora perto do roteador?");
   assert.equal(segunda.saved.updatedBy, "bia@bbnet.com.br");
 });
 

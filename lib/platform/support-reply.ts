@@ -1,7 +1,7 @@
 import { servicePreferences } from "../agent/service-preferences.ts";
 import { asksRestart, troubleshootingContext, supportRequest, supportReportSummary, negatesSupportRequest, pendingSupportRequest } from "../agent/troubleshooting-context.ts";
 import type { ChatMessage, Intent } from "../agent/types.ts";
-import { resolveReply, validateReplyText, type ReplyOverrides } from "./reply-templates-shared.ts";
+import { isProtectedFinancialReply, resolveReply, validateReplyText, type ReplyOverrides } from "./reply-templates-shared.ts";
 
 /**
  * Small, deterministic adaptations of approved replies. This is NOT model
@@ -64,6 +64,10 @@ function resolveSupportReplyContent(input: SupportReplyInput): string {
     if (pending === "ticket") return `Você pediu um chamado. ${summary}Um atendente precisa conferir e continuar; ainda não tenho abertura ou protocolo confirmados.`;
     return `Não vou insistir em testes. ${summary}O próximo passo é um atendente revisar esse contexto; não tenho encaminhamento confirmado.`;
   }
+
+  // No operational receipt is passed here. Saved prose cannot prove a payment,
+  // invoice delivery, agreement, unlock or future handoff/return.
+  if (isProtectedFinancialReply(input.intent)) return resolveReply(input.intent, input.templates);
 
   const context = troubleshootingContext(input.message, input.history);
   // Contextual technical decisions run BEFORE operator copy. A saved template
