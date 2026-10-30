@@ -40,12 +40,12 @@ export const REPLY_INTENTS: Array<{ intent: Intent; label: string }> = [
 ];
 
 export const DEFAULT_REPLY_TEMPLATES: Record<Intent, string> = {
-  technical_no_connection: "Sinto muito pela falta de conexão. Para agilizar: alguma luz do equipamento está vermelha ou apagada? Se ainda não reiniciou, desligue o roteador da tomada por 30 segundos, ligue de novo e me conte se voltou.",
-  technical_slow: "Vamos verificar a lentidão. Ela acontece em todos os aparelhos ou só em um? E é perto do roteador ou em outro cômodo?",
-  technical_wifi: "Entendi, o sinal do Wi-Fi está fraco em alguns pontos. Em qual cômodo ele fica pior?",
-  technical_restart: "Para reiniciar: desligue o roteador e a ONU da tomada, espere 30 segundos e ligue de novo. Leva uns 2 minutos para normalizar. Me avise se voltou.",
+  technical_no_connection: "Vamos por partes: alguma luz do equipamento está vermelha ou apagada?",
+  technical_slow: "A lentidão acontece em todos os aparelhos ou só em um?",
+  technical_wifi: "O problema no Wi-Fi acontece em qual cômodo?",
+  technical_restart: "Para reiniciar o roteador, tire da tomada por 30 segundos e ligue de novo. Não aperte o botão de reset. Depois, me diga se a conexão voltou.",
   technical_ticket: "Certo, vou encaminhar para a equipe técnica abrir o chamado. Um atendente confirma o protocolo com você por aqui.",
-  technical_visit: "Entendi que você precisa de uma visita técnica. Vou passar para a equipe ver os horários disponíveis, e um atendente retorna por aqui para combinar com você.",
+  technical_visit: "A equipe precisa conferir a disponibilidade antes de combinar a visita com você. Não consigo confirmar um horário por aqui.",
   financial_invoice: "Vou pedir para um atendente enviar a segunda via da sua fatura por aqui.",
   financial_pix: "Vou pedir para um atendente enviar o código PIX da sua fatura por aqui.",
   financial_payment: "Obrigado por avisar. Vamos conferir o pagamento e retornamos por aqui. Se tiver o comprovante, pode enviar.",
@@ -53,7 +53,7 @@ export const DEFAULT_REPLY_TEMPLATES: Record<Intent, string> = {
   financial_discount_request: "Desconto e renegociação precisam da aprovação de um atendente. Vou encaminhar seu pedido e retornamos por aqui.",
   complaint: "Sinto muito pela situação. Vou encaminhar seu caso para um atendente responsável, que retorna por aqui.",
   cancellation_risk: "Lamento saber disso. Vou encaminhar para um atendente conversar com você sobre o seu caso.",
-  human_handoff: "Certo, vou chamar um atendente para continuar com você por aqui.",
+  human_handoff: "Certo. O próximo passo é continuar com um atendente, usando o que você já contou aqui.",
   unauthorized_request: "Não consigo ajudar com esse tipo de pedido. Posso ajudar com internet, Wi-Fi, fatura e cadastro.",
   out_of_scope: "Posso ajudar com internet, Wi-Fi, fatura e cadastro na BBNET. Para esse outro assunto, não consigo ajudar.",
   general_information: "Olá! Pode me contar o que você precisa? Por exemplo: internet sem conexão, lentidão, segunda via de fatura ou outro assunto.",

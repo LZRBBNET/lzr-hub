@@ -1,3 +1,4 @@
+import { resolveSupportReply } from "./support-reply.ts";
 import { randomUUID } from "node:crypto";
 import { and, asc, eq, sql } from "drizzle-orm";
 import { auditEvents, channelIdempotencyKeys, channelMessages } from "../../db/schema.ts";
@@ -7,7 +8,7 @@ import { sanitizeHandoffText } from "../agent/handoff.ts";
 import type { ChatMessage } from "../agent/types.ts";
 import { appVersion } from "../runtime/app-version.ts";
 import { traceAgentResult } from "../observability/trace-agent-result.ts";
-import { resolveReply, type ReplyOverrides } from "./reply-templates-shared.ts";
+import { type ReplyOverrides } from "./reply-templates-shared.ts";
 import { AI_SENDER } from "./conversation-state-shared.ts";
 import {
   CSAT_QUESTION,
@@ -243,7 +244,7 @@ export async function processChannelMessage(
   // O pipeline decide intenção, transbordo e desfecho; o **texto** que sai pelo
   // canal é a resposta aprovada da intenção. O do pipeline é de homologação
   // ("preparei a segunda via fictícia") e não pode chegar a um cliente real.
-  const approved = resolveReply(result.intent, options.templates);
+  const approved = resolveSupportReply({ intent: result.intent, message: input.text, history: contextForClassifier(historyRows), handoffReason: result.handoff.reason, templates: options.templates });
 
   // Só pede nota quando a resposta é de fato entregue — não dá para avaliar
   // um atendimento que o cliente não recebeu. E não na primeira resposta pela
