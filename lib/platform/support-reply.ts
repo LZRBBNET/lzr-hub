@@ -51,16 +51,18 @@ export function resolveSupportReply(input: SupportReplyInput): string {
     return summary ? `Certo, sem mais testes por aqui. ${summary}O próximo passo é continuar com um atendente.` : resolveReply("human_handoff");
   }
 
-  // Explicitly published copy stays under the operator's control. It needs its
-  // own review before rollout; changing defaults must not silently rewrite it.
   const context = troubleshootingContext(input.message, input.history);
-  // A published instruction must not re-request a step already reported done.
-  // Other operator text stays intact; this is a narrow anti-repeat guard.
-  const continuingRestart = (context.restarted || context.attemptedWithoutResult)
-    && input.intent.startsWith("technical_") && !asksRestart(input.message)
-    && /^(?:por favor[, ]+)?(?:para reiniciar|reinicie|reinicia|tire da tomada|desligue)\b/i.test(input.templates?.[input.intent]?.trim() ?? "");
+  // Contextual technical decisions run BEFORE operator copy. A saved template
+  // is only a fallback, never a way to repeat completed steps or known questions.
+  // This does not try to prove arbitrary custom prose semantically compatible.
+  // When an attempt/resolution is known, suppress technical custom copy entirely,
+  // except when the customer explicitly asks again how to restart.
+  const technical = input.intent.startsWith("technical_");
+  const technicalTemplates = technical && !asksRestart(input.message)
+    && (context.restarted || context.attemptedWithoutResult || context.resolved)
+    ? undefined : input.templates;
   const edited = input.templates?.[input.intent]?.trim();
-  if (edited && validateReplyText(edited) === null && !continuingRestart) return edited;
+  if (!technical && edited && validateReplyText(edited) === null) return edited;
 
   const current = normalize(input.message);
   const customer = [...context.recent.filter((turn) => turn.role === "customer").map((turn) => turn.content), input.message];
@@ -123,11 +125,11 @@ export function resolveSupportReply(input: SupportReplyInput): string {
     if (cableReport) return `${prefix}Considerando o uso de cabo que você informou, a lentidão acontece em todos os sites e aplicativos ou só em algum específico?`;
     if (cableAsked) return "A equipe técnica precisa continuar a verificação com o que você já contou. Ainda não tenho uma causa confirmada por aqui.";
     if (scopeKnown || scopeAsked) return `${prefix}Isso acontece também em um aparelho conectado por cabo ou só no Wi-Fi?`;
-    return `${prefix}${resolveReply("technical_slow")}`;
+    return `${prefix}${resolveReply("technical_slow", technicalTemplates)}`;
   }
 
   if (input.intent === "general_information" && agents.length > 0) {
     return "Ainda não consegui identificar o que você precisa. Um atendente pode continuar a partir desta conversa, sem começar tudo de novo.";
   }
-  return resolveReply(input.intent, input.templates);
+  return resolveReply(input.intent, technicalTemplates);
 }

@@ -100,9 +100,9 @@ test('terceiro turno real não recomeça atendimento nem repete pergunta respond
   assert.match(answer, /com o que você já contou/);
 });
 
-test('preserva texto editado benigno, mas não reinstrução de tentativa feita', () => {
+test('contexto de tentativa tem prioridade mesmo sobre texto editado benigno', () => {
   const base = { intent: 'technical_restart', message: 'já reiniciei', history: [] };
-  assert.equal(resolveSupportReply({ ...base, templates: { technical_restart: 'Confira o cabo e aguarde nossa equipe.' } }), 'Confira o cabo e aguarde nossa equipe.');
+  assert.notEqual(resolveSupportReply({ ...base, templates: { technical_restart: 'Confira o cabo e aguarde nossa equipe.' } }), 'Confira o cabo e aguarde nossa equipe.');
   assert.doesNotMatch(resolveSupportReply({ ...base, templates: { technical_restart: 'Reinicie o roteador novamente.' } }), /Reinicie o roteador novamente/);
 });
 
@@ -130,10 +130,10 @@ test('negação do funcionamento pelo cabo não vira conexão normal', () => {
 for (const message of ['a internet voltou a falhar', 'a conexão normalizou ontem, mas hoje estou sem internet']) {
   test(`falha atual prevalece sobre recuperação antiga: ${message}`, () => assert.equal(troubleshootingContext(message, history).resolved, false));
 }
-test('tentativa interrogativa não vira falha e template que impede repetição é preservado', () => {
+test('tentativa interrogativa não vira falha e relato feito exige resposta contextual', () => {
   assert.equal(troubleshootingContext('já tentei reiniciar?', []).attemptedWithoutResult, false);
   const text = 'Não precisa reiniciar novamente. A equipe dará continuidade.';
-  assert.equal(resolveSupportReply({ intent: 'technical_restart', message: 'já reiniciei', history: [], templates: { technical_restart: text } }), text);
+  assert.notEqual(resolveSupportReply({ intent: 'technical_restart', message: 'já reiniciei', history: [], templates: { technical_restart: text } }), text);
 });
 
 for (const [message, intent] of [
