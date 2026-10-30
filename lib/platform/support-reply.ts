@@ -1,4 +1,4 @@
-import { asksRestart, troubleshootingContext, supportRequest, supportReportSummary, negatesSupportRequest } from "../agent/troubleshooting-context.ts";
+import { asksRestart, troubleshootingContext, supportRequest, supportReportSummary, negatesSupportRequest, pendingSupportRequest } from "../agent/troubleshooting-context.ts";
 import type { ChatMessage, Intent } from "../agent/types.ts";
 import { resolveReply, validateReplyText, type ReplyOverrides } from "./reply-templates-shared.ts";
 
@@ -49,6 +49,17 @@ export function resolveSupportReply(input: SupportReplyInput): string {
     if (request === "visit") return `Entendi o pedido de avaliação técnica. ${summary}A equipe precisa avaliar a visita e confirmar a disponibilidade; não consigo confirmar um agendamento por aqui.`;
     if (request === "ticket") return `Entendi o pedido de chamado. ${summary}Um atendente precisa conferir e dar continuidade; ainda não tenho abertura ou protocolo confirmados.`;
     return summary ? `Certo, sem mais testes por aqui. ${summary}O próximo passo é continuar com um atendente.` : resolveReply("human_handoff");
+  }
+
+  // An unresolved customer request survives short classifier windows. Do not
+  // carry it into billing/cancellation or an explicitly different topic.
+  const pending = pendingSupportRequest(input.message, input.history);
+  if (pending && (input.intent.startsWith("technical_") || input.intent === "general_information")
+    && !troubleshootingContext(input.message, input.history).resolved) {
+    const summary = supportReportSummary(input.message, input.history);
+    if (pending === "visit") return `Seu pedido de avaliação técnica continua como contexto desta conversa. ${summary}A equipe precisa avaliar a visita e confirmar a disponibilidade; ainda não tenho agendamento confirmado.`;
+    if (pending === "ticket") return `Você pediu um chamado. ${summary}Um atendente precisa conferir e continuar; ainda não tenho abertura ou protocolo confirmados.`;
+    return `Não vou insistir em testes. ${summary}O próximo passo é um atendente revisar esse contexto; não tenho encaminhamento confirmado.`;
   }
 
   const context = troubleshootingContext(input.message, input.history);
@@ -112,10 +123,12 @@ export function resolveSupportReply(input: SupportReplyInput): string {
     const prefix = context.restarted ? "Como você já reiniciou e a lentidão continua, não vamos repetir essa etapa. " : "";
     const reports = customer.map(normalize).filter((text) => !text.includes("?"));
     const combined = reports.join(". ");
-    const cableReport = reports.findLast((text) => /\b(?:via|pelo|no|por) cabo\b/.test(text)
-      && !/\b(?:nao|nem) (?:testei|usei|liguei|conectei)|\bsem cabo\b/.test(text));
+    const latestCable = reports.findLast((text) => /\bcabo\b/.test(text));
+    const cableReport = latestCable && /\b(?:via|pelo|no|por) cabo\b/.test(latestCable)
+      && !/\b(?:nao|nem) (?:testei|usei|liguei|conectei)|\bsem cabo\b/.test(latestCable) ? latestCable : undefined;
     const cableNormal = cableReport && /\bcabo (?:esta |ta |ficou )?(?:normal|bom|boa)\b|\bcabo funciona (?:bem|normalmente)\b/.test(cableReport);
-    const scopeKnown = /\btodos (?:os )?(?:aparelhos|dispositivos)\b|\bso (?:em )?(?:um|no celular|na tv)\b/.test(combined);
+    const latestScope = reports.findLast((text) => /\btodos (?:os )?(?:aparelhos|dispositivos)\b|\bso (?:em )?(?:um|no celular|na tv)\b/.test(text));
+    const scopeKnown = /\btodos (?:os )?(?:aparelhos|dispositivos)\b|\bso (?:em )?(?:um|no celular|na tv)\b/.test(latestScope ?? "");
     const scopeAsked = agents.some((text) => text.includes("todos os aparelhos ou so em um"));
     const cableAsked = agents.some((text) => text.includes("conectado por cabo ou so no wi-fi") || /usando wi-fi ou cabo/.test(text));
     const appsAsked = agents.some((text) => text.includes("todos os sites e aplicativos"));

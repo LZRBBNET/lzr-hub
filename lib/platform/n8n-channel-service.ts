@@ -150,6 +150,17 @@ export function contextForClassifier(rows: ChannelMessageRow[], now = Date.now()
     .map(({ role, content }) => ({ role: role === "agent" ? "agent" : "customer", content }));
 }
 
+/** Support memory is bounded separately from the paid classifier context.
+ * Only recorded conversation turns count; unsent suggestions never consume it.
+ * Unknown timestamps retain the existing compatibility policy, not delivery proof.
+ */
+export function contextForSupport(rows: ChannelMessageRow[], now = Date.now()): ChatMessage[] {
+  return rows.filter((row) => row.role !== SUGGESTION_ROLE)
+    .filter((row) => !row.createdAt || !Number.isFinite(Date.parse(row.createdAt)) || now - Date.parse(row.createdAt) <= LLM_CONTEXT_MAX_AGE_MS)
+    .slice(-MAX_HISTORY)
+    .map(({ role, content }) => ({ role: role === "agent" ? "agent" : "customer", content }));
+}
+
 export interface ChannelRepository {
   findIdempotent(idempotencyKey: string): Promise<ChannelResponse | undefined>;
   getHistory(channel: string, externalConversationId: string): Promise<ChannelMessageRow[]>;
@@ -244,7 +255,7 @@ export async function processChannelMessage(
   // O pipeline decide intenção, transbordo e desfecho; o **texto** que sai pelo
   // canal é a resposta aprovada da intenção. O do pipeline é de homologação
   // ("preparei a segunda via fictícia") e não pode chegar a um cliente real.
-  const approved = resolveSupportReply({ intent: result.intent, message: input.text, history: contextForClassifier(historyRows), handoffReason: result.handoff.reason, templates: options.templates });
+  const approved = resolveSupportReply({ intent: result.intent, message: input.text, history: contextForSupport(historyRows), handoffReason: result.handoff.reason, templates: options.templates });
 
   // Só pede nota quando a resposta é de fato entregue — não dá para avaliar
   // um atendimento que o cliente não recebeu. E não na primeira resposta pela
