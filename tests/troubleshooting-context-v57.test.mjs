@@ -145,7 +145,7 @@ for (const [message, intent] of [
   assert.equal(resolved, intent);
   assert.equal(resolveAgentIntent(message, turns, { intent: "technical_wifi", confidence: 0.99 }).intent, intent);
   const answer = resolveSupportReply({ intent: resolved, message, history: turns });
-  assert.doesNotMatch(answer, /Wi-Fi|cômodo|Olá|já encaminhei|já agendei|vou chamar|vou encaminhar/);
+  assert.doesNotMatch(answer, /sinal.*fraco|cômodo|Olá|já encaminhei|já agendei|vou chamar|vou encaminhar/);
 });
 
 test('seis turnos reais reproduzidos em observação, sem envio nem rede', async () => {
@@ -155,7 +155,7 @@ test('seis turnos reais reproduzidos em observação, sem envio nem rede', async
     ['em partidas online cai , e no instagram trava', /com o que você já contou/],
     ['não prestei atençao, a partida fecha ai perco a partida depois logo e volto pra o jogo normal', /com o que você já contou/],
     ['so diz que desconectou a partida, tem como mandar alguem vim aqui pra resolver ?', /disponibilidade/],
-    ['não to com tempo pra ta conversando, estou no trabalho', /continuar com um atendente/],
+    ['não to com tempo pra ta conversando, estou no trabalho', /atendente revisar esse contexto/],
   ];
   const turns = [];
   const oldFetch = globalThis.fetch;

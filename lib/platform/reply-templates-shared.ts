@@ -44,7 +44,7 @@ export const DEFAULT_REPLY_TEMPLATES: Record<Intent, string> = {
   technical_slow: "A lentidão acontece em todos os aparelhos ou só em um?",
   technical_wifi: "O problema no Wi-Fi acontece em qual cômodo?",
   technical_restart: "Para reiniciar o roteador, tire da tomada por 30 segundos e ligue de novo. Não aperte o botão de reset. Depois, me diga se a conexão voltou.",
-  technical_ticket: "Certo, vou encaminhar para a equipe técnica abrir o chamado. Um atendente confirma o protocolo com você por aqui.",
+  technical_ticket: "A equipe precisa conferir o pedido de chamado. Ainda não tenho abertura ou protocolo confirmados por aqui.",
   technical_visit: "A equipe precisa conferir a disponibilidade antes de combinar a visita com você. Não consigo confirmar um horário por aqui.",
   financial_invoice: "Vou pedir para um atendente enviar a segunda via da sua fatura por aqui.",
   financial_pix: "Vou pedir para um atendente enviar o código PIX da sua fatura por aqui.",

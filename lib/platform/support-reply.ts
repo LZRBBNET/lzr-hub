@@ -1,4 +1,4 @@
-import { asksRestart, troubleshootingContext } from "../agent/troubleshooting-context.ts";
+import { asksRestart, troubleshootingContext, supportRequest, supportReportSummary, negatesSupportRequest } from "../agent/troubleshooting-context.ts";
 import type { ChatMessage, Intent } from "../agent/types.ts";
 import { resolveReply, validateReplyText, type ReplyOverrides } from "./reply-templates-shared.ts";
 
@@ -37,6 +37,18 @@ export function resolveSupportReply(input: SupportReplyInput): string {
     return input.intent === "general_information"
       ? `${identity} Posso ajudar com as primeiras orientações; quando for preciso, o atendimento deve continuar com uma pessoa da equipe.`
       : `${identity} ${resolveReply(input.intent)}`;
+  }
+
+  // Clear requests to stop triage take priority over optional operator copy.
+  // This renders a truthful pending next step, not an executed transfer or OS.
+  const request = supportRequest(input.message);
+  if (!request && negatesSupportRequest(input.message) && input.intent === "general_information") return "Tudo bem. Não vou tratar isso como um pedido de atendimento.";
+  if (["human_handoff", "technical_visit", "technical_ticket"].includes(input.intent) && request) {
+    const summary = supportReportSummary(input.message, input.history);
+    if (request === "pause") return `Tudo bem, não vou insistir em testes agora. ${summary}O próximo passo é um atendente revisar esse contexto.`;
+    if (request === "visit") return `Entendi o pedido de avaliação técnica. ${summary}A equipe precisa avaliar a visita e confirmar a disponibilidade; não consigo confirmar um agendamento por aqui.`;
+    if (request === "ticket") return `Entendi o pedido de chamado. ${summary}Um atendente precisa conferir e dar continuidade; ainda não tenho abertura ou protocolo confirmados.`;
+    return summary ? `Certo, sem mais testes por aqui. ${summary}O próximo passo é continuar com um atendente.` : resolveReply("human_handoff");
   }
 
   // Explicitly published copy stays under the operator's control. It needs its

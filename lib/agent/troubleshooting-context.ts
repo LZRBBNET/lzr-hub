@@ -52,3 +52,38 @@ export function troubleshootingContext(message: string, history: ChatMessage[]) 
   }
   return { restarted: restarted === true, attemptedWithoutResult, recent, resolved: reportsConnectionResolved(message) };
 }
+
+export type SupportRequest = "pause" | "human" | "visit" | "ticket";
+
+/** Explicit operational preferences, never authority to create an OS or visit. */
+export function supportRequest(message: string): SupportRequest | undefined {
+  const text = normal(message);
+  if (/\bnao (?:posso|consigo) (?:ficar )?(?:falar|conversar|responder)(?:\s+agora|\s|$)/.test(text)
+    || /\bnao (?:estou |to |tenho |tenho mais )?(?:com )?tempo\b/.test(text)
+    || /^(?:estou |to )?sem tempo\b/.test(text)) return "pause";
+  let result: SupportRequest | undefined;
+  for (const clause of text.split(/[.!?;,]|\bmas\b|\be (?=(?:quero|preciso|prefiro)\b)/)) {
+    if (/\b(?:nao|nem) (?:quero|preciso|precisa|pode|mande|manda|chame|chama|abra|abre|agende|agendar|tecnico|atendente|chamado|visita)\b/.test(clause)) continue;
+    if (/\b(?:humano|humana|atendente|supervisor|pessoa de verdade)\b/.test(clause)) result = "human";
+    else if (/\b(?:abrir|abre|abra|preciso|quero|pode)\b.{0,35}\b(?:chamado|protocolo tecnico)\b|\bchamado tecnico\b/.test(clause)) result = "ticket";
+    else if (/\b(?:quero|preciso|manda|mandar|envia|enviar|chama|chamar)\b.{0,35}\btecnico\b|\bmandar alguem (?:vir|vim)\b|\bvisita\b|\bagendar\b|\bagenda.{0,30}tecnico\b|\bhorario.{0,30}tecnico\b/.test(clause)) result = "visit";
+  }
+  return result;
+}
+
+export function negatesSupportRequest(message: string): boolean {
+  return /\b(?:nao|nem)\b.{0,45}\b(?:tecnico|atendente|humano|chamado|visita|agendar)\b/.test(normal(message));
+}
+
+/** Small fixed-vocabulary summary: no copied identifiers, diagnoses or action claims. */
+export function supportReportSummary(message: string, history: ChatMessage[]): string {
+  const context = troubleshootingContext(message, history);
+  const reports = [...context.recent.filter((turn) => turn.role === "customer").map((turn) => normal(turn.content)), normal(message)]
+    .filter((text) => !/\?|\b(?:nao|nem|se|caso|talvez|posso|quero|devo|preciso|pretendo|vou|poderia|testar)\b/.test(text));
+  const facts: string[] = [];
+  if (reports.some((text) => /\b(?:lenta|lento|lentidao|trava|travando)\b/.test(text) && !/\bnao (?:esta |ta )?(?:lenta|lento|travando)|\bnao trava\b/.test(text))) facts.push("lentidão relatada");
+  if (context.restarted) facts.push("reinício já tentado");
+  if (reports.some((text) => /\bpartidas? online\b.{0,20}\bcai\b/.test(text) && !/\bnao cai\b/.test(text))) facts.push("quedas em partidas online");
+  if (reports.some((text) => /\b(?:pelo|no|por|via) cabo\b/.test(text) && /wi-?fi/.test(text) && !/\bnao|\bsem cabo/.test(text))) facts.push("uso de cabo e Wi-Fi");
+  return facts.length ? `Pelo que você contou: ${facts.slice(0, 3).join(", ")}. ` : "";
+}
