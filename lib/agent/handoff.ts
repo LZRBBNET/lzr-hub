@@ -1,7 +1,7 @@
+import { servicePreferences } from "./service-preferences.ts";
 import type { ChatMessage, HandoffDecision, Intent, ToolReceipt } from "./types.ts";
 import { isFailedReceipt } from "./tool-engine.ts";
 
-const normalize = (value: string) => value.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
 
 export function sanitizeHandoffText(value: string): string {
   return value
@@ -25,9 +25,13 @@ export function decideHandoff(input: {
   history: ChatMessage[];
   repeatedWithoutResolution: boolean;
 }): HandoffDecision {
-  const text = normalize(input.message);
+  const preference = servicePreferences(input.message, input.history);
   let reason: string | null = null;
-  if (input.intent === "human_handoff") reason = "customer_requested_human";
+  if (preference.directThreat) reason = "explicit_physical_threat";
+  else if (preference.ambiguousThreat) reason = "message_requires_review";
+  else if (preference.persistentInsult) reason = "conversation_requires_review";
+  else if (preference.conditionalCancellation && !preference.nonContractCancellation) reason = "conditional_cancellation_risk";
+  else if (input.intent === "human_handoff") reason = "customer_requested_human";
   else if (input.intent === "complaint") reason = "formal_complaint";
   else if (input.intent === "cancellation_risk") reason = "cancellation_risk";
   else if (input.intent === "unauthorized_request") reason = "unauthorized_request";
@@ -35,7 +39,7 @@ export function decideHandoff(input: {
   else if (input.intent === "financial_discount_request") reason = "sensitive_action";
   else if (input.confidence < 0.6) reason = "low_intent_confidence";
   else if (input.repeatedWithoutResolution) reason = "repetition_without_resolution";
-  else if (/idiota|incompetente|raiva|absurdo|porcaria|processo|anatel/.test(text)) reason = "customer_irritated";
+
   else if (isFailedReceipt(input.tools.find((tool) => tool.outcome === "partial") ?? input.tools.find(isFailedReceipt) ?? ({ status: "completed", outcome: "success" } as ToolReceipt))) {
     const failed = input.tools.find(isFailedReceipt);
     reason = failed?.outcome === "forbidden" ? "action_forbidden" : failed?.outcome === "partial" ? "contradictory_or_partial_data" : "required_tool_failed";

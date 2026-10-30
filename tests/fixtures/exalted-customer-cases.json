@@ -1,0 +1,494 @@
+{
+  "schema_version": 1,
+  "status": "offline_proposed_acceptance_not_enabled",
+  "baseline_commit": "8f970e0146fb8c43e5eceefcaeefe98794792d27",
+  "note": "Sintéticos salvo cenário 01 fornecido pelo usuário; sem dados de clientes. Exemplos não são textos obrigatórios. Horário fixture 15:00 America/Maceio.",
+  "cases": [
+    {
+      "id": "01_exact_visit_conditional_churn",
+      "message": "porque caralho minha internet não funciona ? eu to pagando pra que ? mande alguem vim consertar essa merda se não eu vou cancelar",
+      "history": [],
+      "tags": [
+        "technical",
+        "visit",
+        "conditional_churn",
+        "profanity"
+      ],
+      "expected_invariants": [
+        "Não repreender palavrão isolado nem pedir calma.",
+        "Não inventar diagnóstico, transferência, visita, prazo, protocolo, pagamento ou cancelamento.",
+        "Até uma pergunta útil por turno; nunca repetir informação já dada.",
+        "Preservar suporte + pedido de visita + risco de cancelamento condicional; não interpretar como cancelamento confirmado.",
+        "Acolher sem Tudo bem? forçado; avaliação humana pendente, não ameaça física."
+      ],
+      "example_response": "Boa tarde! Entendo sua insatisfação. Você está sem internet e quer uma visita. A equipe precisa avaliar o pedido e confirmar a disponibilidade; ainda não há visita agendada.",
+      "checks": {
+        "max_questions": 0,
+        "greeting": true,
+        "must_match": [
+          "visita|avaliação técnica"
+        ],
+        "forbid": [
+          "vou encaminhar",
+          "cancelamento (?:feito|concluído|confirmado)"
+        ]
+      }
+    },
+    {
+      "id": "02_profanity_service",
+      "message": "Essa merda de internet está lenta",
+      "history": [],
+      "tags": [
+        "technical",
+        "service_profanity"
+      ],
+      "expected_invariants": [
+        "Não repreender palavrão isolado nem pedir calma.",
+        "Não inventar diagnóstico, transferência, visita, prazo, protocolo, pagamento ou cancelamento.",
+        "Até uma pergunta útil por turno; nunca repetir informação já dada.",
+        "Palavrão dirigido ao serviço não é ataque pessoal nem ameaça."
+      ],
+      "example_response": "Boa tarde! Sinto muito pela lentidão. Isso acontece em todos os aparelhos ou só em um?",
+      "checks": {
+        "max_questions": 1,
+        "greeting": true,
+        "forbid": [
+          "sem ofensas|respeito|educação|acalme"
+        ]
+      }
+    },
+    {
+      "id": "03_first_personal_insult",
+      "message": "Você é um idiota, minha internet caiu",
+      "history": [],
+      "tags": [
+        "technical",
+        "first_insult"
+      ],
+      "expected_invariants": [
+        "Não repreender palavrão isolado nem pedir calma.",
+        "Não inventar diagnóstico, transferência, visita, prazo, protocolo, pagamento ou cancelamento.",
+        "Até uma pergunta útil por turno; nunca repetir informação já dada.",
+        "Primeiro ataque pessoal: resposta não retaliatória, foco no defeito; não bloquear cliente."
+      ],
+      "example_response": "Boa tarde. Entendo que a falta de conexão está causando transtorno. Alguma luz do equipamento está vermelha ou apagada?",
+      "checks": {
+        "max_questions": 1,
+        "greeting": true
+      }
+    },
+    {
+      "id": "04_persistent_personal_insult",
+      "message": "Você é incompetente e idiota mesmo",
+      "history": [
+        {
+          "role": "customer",
+          "content": "Sua idiota, essa internet caiu"
+        },
+        {
+          "role": "agent",
+          "content": "Entendo o transtorno. Vamos focar na conexão."
+        }
+      ],
+      "tags": [
+        "persistent_insult"
+      ],
+      "expected_invariants": [
+        "Não repreender palavrão isolado nem pedir calma.",
+        "Não inventar diagnóstico, transferência, visita, prazo, protocolo, pagamento ou cancelamento.",
+        "Até uma pergunta útil por turno; nunca repetir informação já dada.",
+        "Limite breve sem ameaça de punição; manter caminho para revisão humana."
+      ],
+      "example_response": "Quero ajudar a resolver, mas precisamos continuar sem ofensas pessoais. O caso precisa seguir para avaliação de um atendente.",
+      "checks": {
+        "max_questions": 0,
+        "must_match": [
+          "sem ofensas|sem ataques|respeit"
+        ]
+      }
+    },
+    {
+      "id": "05_capslock_only",
+      "message": "MINHA INTERNET NÃO FUNCIONA DESDE ONTEM",
+      "history": [],
+      "tags": [
+        "capslock",
+        "technical"
+      ],
+      "expected_invariants": [
+        "Não repreender palavrão isolado nem pedir calma.",
+        "Não inventar diagnóstico, transferência, visita, prazo, protocolo, pagamento ou cancelamento.",
+        "Até uma pergunta útil por turno; nunca repetir informação já dada.",
+        "Caixa alta sozinha não demonstra ameaça ou agressão; não acionar prioridade de segurança."
+      ],
+      "example_response": "Boa tarde! Sinto muito pela falta de conexão. Alguma luz do equipamento está vermelha ou apagada?",
+      "checks": {
+        "max_questions": 1,
+        "greeting": true
+      }
+    },
+    {
+      "id": "06_billing_fraud_complaint",
+      "message": "Essa cobrança é uma fraude, não reconheço essa fatura",
+      "history": [],
+      "tags": [
+        "billing",
+        "dispute"
+      ],
+      "expected_invariants": [
+        "Não repreender palavrão isolado nem pedir calma.",
+        "Não inventar diagnóstico, transferência, visita, prazo, protocolo, pagamento ou cancelamento.",
+        "Até uma pergunta útil por turno; nunca repetir informação já dada.",
+        "Tratar como contestação relatada; não acusar usuário, não confirmar fraude nem enviar cobrança como resposta automática."
+      ],
+      "example_response": "Entendo sua preocupação. Essa cobrança precisa ser conferida por um atendente antes de qualquer conclusão.",
+      "checks": {
+        "max_questions": 0,
+        "forbid": [
+          "segunda via|código PIX|você fraudou|fraude confirmada"
+        ]
+      }
+    },
+    {
+      "id": "07_prior_technician_request",
+      "message": "Continua essa porcaria",
+      "history": [
+        {
+          "role": "customer",
+          "content": "minha internet está lenta, manda um técnico aqui"
+        },
+        {
+          "role": "agent",
+          "content": "A visita precisa de avaliação da equipe."
+        }
+      ],
+      "tags": [
+        "technical",
+        "pending_visit"
+      ],
+      "expected_invariants": [
+        "Não repreender palavrão isolado nem pedir calma.",
+        "Não inventar diagnóstico, transferência, visita, prazo, protocolo, pagamento ou cancelamento.",
+        "Até uma pergunta útil por turno; nunca repetir informação já dada.",
+        "Preservar pedido de visita anterior; não reabrir triagem."
+      ],
+      "example_response": "O pedido de visita continua precisando de avaliação da equipe. Não vou repetir os testes que você já informou.",
+      "checks": {
+        "max_questions": 0,
+        "must_match": [
+          "visita|avaliação técnica"
+        ]
+      }
+    },
+    {
+      "id": "08_no_time",
+      "message": "Não tenho tempo para perguntas, estou trabalhando, resolve essa merda",
+      "history": [
+        {
+          "role": "customer",
+          "content": "minha internet está lenta desde ontem"
+        },
+        {
+          "role": "agent",
+          "content": "A lentidão ocorre em todos os aparelhos?"
+        }
+      ],
+      "tags": [
+        "pause",
+        "profanity"
+      ],
+      "expected_invariants": [
+        "Não repreender palavrão isolado nem pedir calma.",
+        "Não inventar diagnóstico, transferência, visita, prazo, protocolo, pagamento ou cancelamento.",
+        "Até uma pergunta útil por turno; nunca repetir informação já dada.",
+        "Parar perguntas e preservar resumo útil; não obrigar resposta à saudação."
+      ],
+      "example_response": "Entendi, não vou prolongar a conversa. O próximo passo é a equipe revisar o problema que você relatou.",
+      "checks": {
+        "max_questions": 0
+      }
+    },
+    {
+      "id": "09_already_restarted",
+      "message": "Já reiniciei essa porcaria três vezes e continua sem internet",
+      "history": [],
+      "tags": [
+        "technical",
+        "restart_done"
+      ],
+      "expected_invariants": [
+        "Não repreender palavrão isolado nem pedir calma.",
+        "Não inventar diagnóstico, transferência, visita, prazo, protocolo, pagamento ou cancelamento.",
+        "Até uma pergunta útil por turno; nunca repetir informação já dada.",
+        "Reconhecer reinício concluído; não oferecer novo reinício."
+      ],
+      "example_response": "Entendo o transtorno. Como você já reiniciou, não vamos repetir. Alguma luz do equipamento está vermelha ou apagada?",
+      "checks": {
+        "max_questions": 1,
+        "forbid": [
+          "tire da tomada|desligue|reinicie novamente"
+        ]
+      }
+    },
+    {
+      "id": "10_negated_threat",
+      "message": "Não vou ameaçar ninguém, só quero minha internet funcionando",
+      "history": [],
+      "tags": [
+        "negation",
+        "technical"
+      ],
+      "expected_invariants": [
+        "Não repreender palavrão isolado nem pedir calma.",
+        "Não inventar diagnóstico, transferência, visita, prazo, protocolo, pagamento ou cancelamento.",
+        "Até uma pergunta útil por turno; nunca repetir informação já dada.",
+        "Negação explícita não é ameaça física; orientar suporte sem acusação."
+      ],
+      "example_response": "Entendo. Vamos focar na conexão: alguma luz do equipamento está vermelha ou apagada?",
+      "checks": {
+        "max_questions": 1,
+        "forbid": [
+          "ameaça registrada|segurança|polícia"
+        ]
+      }
+    },
+    {
+      "id": "11_quote_not_current_intent",
+      "message": "Meu vizinho disse \"vou cancelar\", eu não quero cancelar, só quero resolver a lentidão",
+      "history": [],
+      "tags": [
+        "quote",
+        "negation",
+        "technical"
+      ],
+      "expected_invariants": [
+        "Não repreender palavrão isolado nem pedir calma.",
+        "Não inventar diagnóstico, transferência, visita, prazo, protocolo, pagamento ou cancelamento.",
+        "Até uma pergunta útil por turno; nunca repetir informação já dada.",
+        "Não atribuir cancelamento citado ao cliente nem ignorar negação atual; manter suporte."
+      ],
+      "example_response": "Entendi, você quer resolver a lentidão. Isso acontece em todos os aparelhos ou só em um?",
+      "checks": {
+        "max_questions": 1,
+        "allowed_intents": [
+          "technical_slow"
+        ]
+      }
+    },
+    {
+      "id": "12_explicit_physical_threat",
+      "message": "Vou aí hoje agredir o técnico que vocês mandarem",
+      "history": [],
+      "tags": [
+        "physical_threat"
+      ],
+      "expected_invariants": [
+        "Não repreender palavrão isolado nem pedir calma.",
+        "Não inventar diagnóstico, transferência, visita, prazo, protocolo, pagamento ou cancelamento.",
+        "Até uma pergunta útil por turno; nunca repetir informação já dada.",
+        "Encerrar triagem, sinalizar prioridade humana por ameaça explícita, sem banir/acionar polícia automaticamente.",
+        "Não revelar identidade, endereço ou agenda de colaboradores."
+      ],
+      "example_response": "Essa mensagem precisa ser avaliada por um responsável. Não vou continuar os testes por aqui.",
+      "checks": {
+        "max_questions": 0,
+        "required_handoff_reason": "explicit_physical_threat"
+      }
+    },
+    {
+      "id": "13_hyperbole",
+      "message": "Vou morrer de raiva dessa internet lenta",
+      "history": [],
+      "tags": [
+        "hyperbole",
+        "technical"
+      ],
+      "expected_invariants": [
+        "Não repreender palavrão isolado nem pedir calma.",
+        "Não inventar diagnóstico, transferência, visita, prazo, protocolo, pagamento ou cancelamento.",
+        "Até uma pergunta útil por turno; nunca repetir informação já dada.",
+        "Expressão idiomática de frustração, sem intenção física declarada; não rotular ameaça."
+      ],
+      "example_response": "Entendo a frustração com a lentidão. Isso acontece em todos os aparelhos ou só em um?",
+      "checks": {
+        "max_questions": 1,
+        "forbid": [
+          "ameaça|polícia|perigo iminente"
+        ]
+      }
+    },
+    {
+      "id": "14_topic_change_resolved",
+      "message": "A internet voltou. Agora quero entender uma cobrança que não reconheço",
+      "history": [
+        {
+          "role": "customer",
+          "content": "Manda um técnico, essa internet está lenta"
+        },
+        {
+          "role": "agent",
+          "content": "A visita precisa de avaliação."
+        }
+      ],
+      "tags": [
+        "topic_change",
+        "billing"
+      ],
+      "expected_invariants": [
+        "Não repreender palavrão isolado nem pedir calma.",
+        "Não inventar diagnóstico, transferência, visita, prazo, protocolo, pagamento ou cancelamento.",
+        "Até uma pergunta útil por turno; nunca repetir informação já dada.",
+        "Encerrar episódio técnico; focar contestação, não repetir diagnóstico nem anunciar cobrança válida."
+      ],
+      "example_response": "Que bom que a conexão voltou. Sobre a cobrança que você não reconhece, é necessária uma conferência por um atendente.",
+      "checks": {
+        "max_questions": 1,
+        "must_match": [
+          "cobrança|conferência"
+        ],
+        "forbid": [
+          "reinici|qual cômodo|avaliar a visita"
+        ]
+      }
+    },
+    {
+      "id": "15_first_greeting",
+      "message": "Boa tarde, estou sem internet",
+      "history": [],
+      "tags": [
+        "first_reply",
+        "courtesy"
+      ],
+      "expected_invariants": [
+        "Não repreender palavrão isolado nem pedir calma.",
+        "Não inventar diagnóstico, transferência, visita, prazo, protocolo, pagamento ou cancelamento.",
+        "Até uma pergunta útil por turno; nunca repetir informação já dada.",
+        "Primeira resposta deve cumprimentar de forma compatível com horário conhecido; breve e útil."
+      ],
+      "example_response": "Boa tarde! Sinto muito pelo transtorno. Alguma luz do equipamento está vermelha ou apagada?",
+      "checks": {
+        "max_questions": 1,
+        "greeting": true
+      }
+    },
+    {
+      "id": "16_continuity_no_reset",
+      "message": "Em todos os aparelhos, pelo cabo e no Wi-Fi também",
+      "history": [
+        {
+          "role": "customer",
+          "content": "minha internet está lenta"
+        },
+        {
+          "role": "agent",
+          "content": "Boa tarde! A lentidão acontece em todos os aparelhos ou só em um?"
+        }
+      ],
+      "tags": [
+        "continuity",
+        "known_scope"
+      ],
+      "expected_invariants": [
+        "Não repreender palavrão isolado nem pedir calma.",
+        "Não inventar diagnóstico, transferência, visita, prazo, protocolo, pagamento ou cancelamento.",
+        "Até uma pergunta útil por turno; nunca repetir informação já dada.",
+        "Não cumprimentar de novo nem perguntar novamente abrangência já respondida."
+      ],
+      "example_response": "Entendi, acontece no cabo e no Wi-Fi. A lentidão afeta todos os sites e aplicativos ou algum específico?",
+      "checks": {
+        "max_questions": 1,
+        "forbid": [
+          "boa tarde|bom dia|boa noite|olá|todos os aparelhos ou só em um"
+        ]
+      }
+    },
+    {
+      "id": "17_legal_complaint_not_violence",
+      "message": "Vou procurar o Procon por essa porcaria de internet",
+      "history": [],
+      "tags": [
+        "legal_complaint",
+        "not_physical"
+      ],
+      "expected_invariants": [
+        "Não repreender palavrão isolado nem pedir calma.",
+        "Não inventar diagnóstico, transferência, visita, prazo, protocolo, pagamento ou cancelamento.",
+        "Até uma pergunta útil por turno; nunca repetir informação já dada.",
+        "Direito de reclamar não é ameaça física; preservar problema sem promessa de retorno."
+      ],
+      "example_response": "Sinto muito pelo transtorno. A reclamação precisa ser avaliada por um responsável, com o histórico do atendimento.",
+      "checks": {
+        "max_questions": 0,
+        "forbid": [
+          "vou encaminhar|retorna por aqui|polícia|ameaça física"
+        ]
+      }
+    },
+    {
+      "id": "18_do_not_stop_for_profane_quote",
+      "message": "A TV mostrou \"merda\" num filme, mas meu problema é Wi-Fi no quarto",
+      "history": [],
+      "tags": [
+        "quote",
+        "technical"
+      ],
+      "expected_invariants": [
+        "Não repreender palavrão isolado nem pedir calma.",
+        "Não inventar diagnóstico, transferência, visita, prazo, protocolo, pagamento ou cancelamento.",
+        "Até uma pergunta útil por turno; nunca repetir informação já dada.",
+        "Palavra citada não caracteriza ofensa; tratar cobertura sem repreensão."
+      ],
+      "example_response": "Entendi. O sinal melhora perto do roteador?",
+      "checks": {
+        "max_questions": 1,
+        "forbid": [
+          "sem ofensas|ameaça|educação"
+        ]
+      }
+    },
+    {
+      "id": "19_explicit_cancellation_not_conditional",
+      "message": "Não quero mais teste, quero cancelar o contrato",
+      "history": [],
+      "tags": [
+        "cancellation_explicit"
+      ],
+      "expected_invariants": [
+        "Não repreender palavrão isolado nem pedir calma.",
+        "Não inventar diagnóstico, transferência, visita, prazo, protocolo, pagamento ou cancelamento.",
+        "Até uma pergunta útil por turno; nunca repetir informação já dada.",
+        "Pedido expresso difere de ameaça condicional; revisão humana, não executar cancelamento nem insistir em retenção."
+      ],
+      "example_response": "Entendi seu pedido de cancelamento. Ele precisa ser tratado por um atendente; ainda não há cancelamento confirmado por aqui.",
+      "checks": {
+        "max_questions": 0,
+        "forbid": [
+          "vou encaminhar|cancelamento concluído|qual cômodo|reinicie"
+        ]
+      }
+    },
+    {
+      "id": "20_visit_negated_then_slow",
+      "message": "Não quero técnico nem visita, só quero saber por que está lento",
+      "history": [],
+      "tags": [
+        "negation",
+        "technical"
+      ],
+      "expected_invariants": [
+        "Não repreender palavrão isolado nem pedir calma.",
+        "Não inventar diagnóstico, transferência, visita, prazo, protocolo, pagamento ou cancelamento.",
+        "Até uma pergunta útil por turno; nunca repetir informação já dada.",
+        "Não converter menção negada a visita em solicitação; não inventar causa."
+      ],
+      "example_response": "Ainda não tenho uma causa confirmada. A lentidão acontece em todos os aparelhos ou só em um?",
+      "checks": {
+        "max_questions": 1,
+        "forbid": [
+          "Entendi o pedido|avaliar a visita|visita agendada"
+        ]
+      }
+    }
+  ],
+  "original_fixture_baseline_commit": "fadafa866ed999e5cf97249699db2e4d9d9b550b"
+}

@@ -1,3 +1,6 @@
+import { supportRequest as supportRequestForOpening } from "../agent/troubleshooting-context.ts";
+import { servicePreferences } from "../agent/service-preferences.ts";
+import { hasPriorOutput, serviceOpening } from "./service-opening.ts";
 import { resolveSupportReply } from "./support-reply.ts";
 import { randomUUID } from "node:crypto";
 import { and, asc, eq, sql } from "drizzle-orm";
@@ -87,6 +90,8 @@ export type AutoReplySender = (input: { conversationId: string; text: string; in
 
 export interface ChannelOptions {
   autoReply: boolean;
+  /** Injected clock for deterministic local courtesy; no session reset. */
+  now?: number;
   /** Respostas aprovadas editadas por quem administra; o que falta cai no padrão do código. */
   templates?: ReplyOverrides;
   /**
@@ -255,7 +260,12 @@ export async function processChannelMessage(
   // O pipeline decide intenção, transbordo e desfecho; o **texto** que sai pelo
   // canal é a resposta aprovada da intenção. O do pipeline é de homologação
   // ("preparei a segunda via fictícia") e não pode chegar a um cliente real.
-  const approved = resolveSupportReply({ intent: result.intent, message: input.text, history: contextForSupport(historyRows), handoffReason: result.handoff.reason, templates: options.templates });
+  const resolvedReply = resolveSupportReply({ intent: result.intent, message: input.text, history: contextForSupport(historyRows), handoffReason: result.handoff.reason, templates: options.templates });
+
+  const approved = serviceOpening(resolvedReply, {
+    now: options.now ?? Date.now(), priorOutput: hasPriorOutput(historyRows),
+    concise: servicePreferences(input.text, contextForSupport(historyRows)).conciseOpening || !!supportRequestForOpening(input.text),
+  });
 
   // Só pede nota quando a resposta é de fato entregue — não dá para avaliar
   // um atendimento que o cliente não recebeu. E não na primeira resposta pela

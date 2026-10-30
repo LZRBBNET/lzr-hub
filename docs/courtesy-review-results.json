@@ -1,0 +1,1045 @@
+{
+  "baseline_commit": "8f970e0146fb8c43e5eceefcaeefe98794792d27",
+  "scope": "pure offline simulation and existing resolver; no actual channel, database, model or delivery test",
+  "results": [
+    {
+      "id": "01_exact_visit_conditional_churn",
+      "intent": "technical_visit",
+      "handoff": {
+        "required": true,
+        "reason": "conditional_cancellation_risk",
+        "summary": "Problema: porque caralho minha internet não funciona ? eu to pagando pra que ? mande alguem vim consertar essa merda se não eu vou cancelar. Intenção: technical_visit. Verificações: customer.lookup: simulated, support.available_slots: simulated, support.prepare_visit: requires_human. Motivo: conditional_cancellation_risk. Próxima ação: revisão humana segura."
+      },
+      "simulationOnly": true,
+      "actionExecuted": false,
+      "tools": [
+        {
+          "tool": "customer.lookup",
+          "outcome": "simulated",
+          "simulated": true,
+          "realAction": false
+        },
+        {
+          "tool": "support.available_slots",
+          "outcome": "simulated",
+          "simulated": true,
+          "realAction": false
+        },
+        {
+          "tool": "support.prepare_visit",
+          "outcome": "requires_human",
+          "simulated": false,
+          "realAction": false
+        }
+      ],
+      "actual_reply": "Boa tarde! Sinto muito pelo transtorno. Entendi o pedido de avaliação técnica. A equipe precisa avaliar a visita e confirmar a disponibilidade; não consigo confirmar um agendamento por aqui.",
+      "checks": [
+        {
+          "name": "question_budget",
+          "pass": true
+        },
+        {
+          "name": "no_retaliation_or_calm_down",
+          "pass": true
+        },
+        {
+          "name": "no_unconfirmed_action_promise",
+          "pass": true
+        },
+        {
+          "name": "first_reply_greeting",
+          "pass": true
+        },
+        {
+          "name": "required_content:visita|avaliação técnica",
+          "pass": true
+        },
+        {
+          "name": "forbidden_content:vou encaminhar",
+          "pass": true
+        },
+        {
+          "name": "forbidden_content:cancelamento (?:feito|concluído|confirmado)",
+          "pass": true
+        }
+      ],
+      "failed_checks": [],
+      "semantic_review": "REQUIRED: automated checks do not validate all expected invariants"
+    },
+    {
+      "id": "02_profanity_service",
+      "intent": "technical_slow",
+      "handoff": {
+        "required": false,
+        "reason": null,
+        "summary": null
+      },
+      "simulationOnly": true,
+      "actionExecuted": false,
+      "tools": [
+        {
+          "tool": "customer.lookup",
+          "outcome": "simulated",
+          "simulated": true,
+          "realAction": false
+        },
+        {
+          "tool": "network.onu_status",
+          "outcome": "simulated",
+          "simulated": true,
+          "realAction": false
+        },
+        {
+          "tool": "network.optical_power",
+          "outcome": "simulated",
+          "simulated": true,
+          "realAction": false
+        },
+        {
+          "tool": "network.speed_diagnostics",
+          "outcome": "simulated",
+          "simulated": true,
+          "realAction": false
+        }
+      ],
+      "actual_reply": "Boa tarde! Sinto muito pelo transtorno. A lentidão acontece em todos os aparelhos ou só em um?",
+      "checks": [
+        {
+          "name": "question_budget",
+          "pass": true
+        },
+        {
+          "name": "no_retaliation_or_calm_down",
+          "pass": true
+        },
+        {
+          "name": "no_unconfirmed_action_promise",
+          "pass": true
+        },
+        {
+          "name": "first_reply_greeting",
+          "pass": true
+        },
+        {
+          "name": "forbidden_content:sem ofensas|respeito|educação|acalme",
+          "pass": true
+        }
+      ],
+      "failed_checks": [],
+      "semantic_review": "REQUIRED: automated checks do not validate all expected invariants"
+    },
+    {
+      "id": "03_first_personal_insult",
+      "intent": "technical_no_connection",
+      "handoff": {
+        "required": false,
+        "reason": null,
+        "summary": null
+      },
+      "simulationOnly": true,
+      "actionExecuted": false,
+      "tools": [
+        {
+          "tool": "customer.lookup",
+          "outcome": "simulated",
+          "simulated": true,
+          "realAction": false
+        },
+        {
+          "tool": "network.onu_status",
+          "outcome": "simulated",
+          "simulated": true,
+          "realAction": false
+        },
+        {
+          "tool": "network.pppoe_status",
+          "outcome": "simulated",
+          "simulated": true,
+          "realAction": false
+        },
+        {
+          "tool": "network.optical_power",
+          "outcome": "simulated",
+          "simulated": true,
+          "realAction": false
+        },
+        {
+          "tool": "network.regional_incident",
+          "outcome": "simulated",
+          "simulated": true,
+          "realAction": false
+        }
+      ],
+      "actual_reply": "Boa tarde! Sinto muito pelo transtorno. Vamos por partes: alguma luz do equipamento está vermelha ou apagada?",
+      "checks": [
+        {
+          "name": "question_budget",
+          "pass": true
+        },
+        {
+          "name": "no_retaliation_or_calm_down",
+          "pass": true
+        },
+        {
+          "name": "no_unconfirmed_action_promise",
+          "pass": true
+        },
+        {
+          "name": "first_reply_greeting",
+          "pass": true
+        }
+      ],
+      "failed_checks": [],
+      "semantic_review": "REQUIRED: automated checks do not validate all expected invariants"
+    },
+    {
+      "id": "04_persistent_personal_insult",
+      "intent": "general_information",
+      "handoff": {
+        "required": true,
+        "reason": "conversation_requires_review",
+        "summary": "Problema: Você é incompetente e idiota mesmo. Intenção: general_information. Verificações: knowledge.search: success. Motivo: conversation_requires_review. Próxima ação: revisão humana segura."
+      },
+      "simulationOnly": false,
+      "actionExecuted": false,
+      "tools": [
+        {
+          "tool": "knowledge.search",
+          "outcome": "success",
+          "simulated": false,
+          "realAction": false
+        }
+      ],
+      "actual_reply": "Quero ajudar a resolver, mas precisamos continuar sem ofensas pessoais. O caso precisa da avaliação de um atendente; o atendimento continua disponível.",
+      "checks": [
+        {
+          "name": "question_budget",
+          "pass": true
+        },
+        {
+          "name": "no_retaliation_or_calm_down",
+          "pass": true
+        },
+        {
+          "name": "no_unconfirmed_action_promise",
+          "pass": true
+        },
+        {
+          "name": "required_content:sem ofensas|sem ataques|respeit",
+          "pass": true
+        }
+      ],
+      "failed_checks": [],
+      "semantic_review": "REQUIRED: automated checks do not validate all expected invariants"
+    },
+    {
+      "id": "05_capslock_only",
+      "intent": "technical_no_connection",
+      "handoff": {
+        "required": false,
+        "reason": null,
+        "summary": null
+      },
+      "simulationOnly": true,
+      "actionExecuted": false,
+      "tools": [
+        {
+          "tool": "customer.lookup",
+          "outcome": "simulated",
+          "simulated": true,
+          "realAction": false
+        },
+        {
+          "tool": "network.onu_status",
+          "outcome": "simulated",
+          "simulated": true,
+          "realAction": false
+        },
+        {
+          "tool": "network.pppoe_status",
+          "outcome": "simulated",
+          "simulated": true,
+          "realAction": false
+        },
+        {
+          "tool": "network.optical_power",
+          "outcome": "simulated",
+          "simulated": true,
+          "realAction": false
+        },
+        {
+          "tool": "network.regional_incident",
+          "outcome": "simulated",
+          "simulated": true,
+          "realAction": false
+        }
+      ],
+      "actual_reply": "Boa tarde! Tudo bem? Vamos por partes: alguma luz do equipamento está vermelha ou apagada?",
+      "checks": [
+        {
+          "name": "question_budget",
+          "pass": true
+        },
+        {
+          "name": "no_retaliation_or_calm_down",
+          "pass": true
+        },
+        {
+          "name": "no_unconfirmed_action_promise",
+          "pass": true
+        },
+        {
+          "name": "first_reply_greeting",
+          "pass": true
+        }
+      ],
+      "failed_checks": [],
+      "semantic_review": "REQUIRED: automated checks do not validate all expected invariants"
+    },
+    {
+      "id": "06_billing_fraud_complaint",
+      "intent": "complaint",
+      "handoff": {
+        "required": true,
+        "reason": "formal_complaint",
+        "summary": "Problema: Essa cobrança é uma fraude, não reconheço essa fatura. Intenção: complaint. Verificações: workflow.prepare_handoff: simulated. Motivo: formal_complaint. Próxima ação: revisão humana segura."
+      },
+      "simulationOnly": true,
+      "actionExecuted": false,
+      "tools": [
+        {
+          "tool": "workflow.prepare_handoff",
+          "outcome": "simulated",
+          "simulated": true,
+          "realAction": false
+        }
+      ],
+      "actual_reply": "Boa tarde! Entendo sua preocupação. A cobrança que você não reconhece precisa ser conferida por um atendente antes de qualquer conclusão.",
+      "checks": [
+        {
+          "name": "question_budget",
+          "pass": true
+        },
+        {
+          "name": "no_retaliation_or_calm_down",
+          "pass": true
+        },
+        {
+          "name": "no_unconfirmed_action_promise",
+          "pass": true
+        },
+        {
+          "name": "forbidden_content:segunda via|código PIX|você fraudou|fraude confirmada",
+          "pass": true
+        }
+      ],
+      "failed_checks": [],
+      "semantic_review": "REQUIRED: automated checks do not validate all expected invariants"
+    },
+    {
+      "id": "07_prior_technician_request",
+      "intent": "general_information",
+      "handoff": {
+        "required": true,
+        "reason": "low_intent_confidence",
+        "summary": "Problema: Continua essa porcaria. Intenção: general_information. Verificações: knowledge.search: success. Motivo: low_intent_confidence. Próxima ação: revisão humana segura."
+      },
+      "simulationOnly": false,
+      "actionExecuted": false,
+      "tools": [
+        {
+          "tool": "knowledge.search",
+          "outcome": "success",
+          "simulated": false,
+          "realAction": false
+        }
+      ],
+      "actual_reply": "Seu pedido de avaliação técnica continua como contexto desta conversa. Pelo que você contou: lentidão relatada. A equipe precisa avaliar a visita e confirmar a disponibilidade; ainda não tenho agendamento confirmado.",
+      "checks": [
+        {
+          "name": "question_budget",
+          "pass": true
+        },
+        {
+          "name": "no_retaliation_or_calm_down",
+          "pass": true
+        },
+        {
+          "name": "no_unconfirmed_action_promise",
+          "pass": true
+        },
+        {
+          "name": "required_content:visita|avaliação técnica",
+          "pass": true
+        }
+      ],
+      "failed_checks": [],
+      "semantic_review": "REQUIRED: automated checks do not validate all expected invariants"
+    },
+    {
+      "id": "08_no_time",
+      "intent": "human_handoff",
+      "handoff": {
+        "required": true,
+        "reason": "customer_requested_human",
+        "summary": "Problema: Não tenho tempo para perguntas, estou trabalhando, resolve essa merda. Intenção: human_handoff. Verificações: workflow.prepare_handoff: simulated. Motivo: customer_requested_human. Próxima ação: revisão humana segura."
+      },
+      "simulationOnly": true,
+      "actionExecuted": false,
+      "tools": [
+        {
+          "tool": "workflow.prepare_handoff",
+          "outcome": "simulated",
+          "simulated": true,
+          "realAction": false
+        }
+      ],
+      "actual_reply": "Tudo bem, não vou insistir em testes agora. Pelo que você contou: lentidão relatada. O próximo passo é um atendente revisar esse contexto.",
+      "checks": [
+        {
+          "name": "question_budget",
+          "pass": true
+        },
+        {
+          "name": "no_retaliation_or_calm_down",
+          "pass": true
+        },
+        {
+          "name": "no_unconfirmed_action_promise",
+          "pass": true
+        }
+      ],
+      "failed_checks": [],
+      "semantic_review": "REQUIRED: automated checks do not validate all expected invariants"
+    },
+    {
+      "id": "09_already_restarted",
+      "intent": "technical_no_connection",
+      "handoff": {
+        "required": false,
+        "reason": null,
+        "summary": null
+      },
+      "simulationOnly": true,
+      "actionExecuted": false,
+      "tools": [
+        {
+          "tool": "customer.lookup",
+          "outcome": "simulated",
+          "simulated": true,
+          "realAction": false
+        },
+        {
+          "tool": "network.onu_status",
+          "outcome": "simulated",
+          "simulated": true,
+          "realAction": false
+        },
+        {
+          "tool": "network.pppoe_status",
+          "outcome": "simulated",
+          "simulated": true,
+          "realAction": false
+        },
+        {
+          "tool": "network.optical_power",
+          "outcome": "simulated",
+          "simulated": true,
+          "realAction": false
+        },
+        {
+          "tool": "network.regional_incident",
+          "outcome": "simulated",
+          "simulated": true,
+          "realAction": false
+        },
+        {
+          "tool": "support.open_ticket",
+          "outcome": "simulated",
+          "simulated": true,
+          "realAction": false
+        }
+      ],
+      "actual_reply": "Boa tarde! Sinto muito pelo transtorno. Como você já reiniciou, não vou pedir isso de novo. Alguma luz do equipamento está vermelha ou apagada?",
+      "checks": [
+        {
+          "name": "question_budget",
+          "pass": true
+        },
+        {
+          "name": "no_retaliation_or_calm_down",
+          "pass": true
+        },
+        {
+          "name": "no_unconfirmed_action_promise",
+          "pass": true
+        },
+        {
+          "name": "forbidden_content:tire da tomada|desligue|reinicie novamente",
+          "pass": true
+        }
+      ],
+      "failed_checks": [],
+      "semantic_review": "REQUIRED: automated checks do not validate all expected invariants"
+    },
+    {
+      "id": "10_negated_threat",
+      "intent": "general_information",
+      "handoff": {
+        "required": true,
+        "reason": "low_intent_confidence",
+        "summary": "Problema: Não vou ameaçar ninguém, só quero minha internet funcionando. Intenção: general_information. Verificações: knowledge.search: success. Motivo: low_intent_confidence. Próxima ação: revisão humana segura."
+      },
+      "simulationOnly": false,
+      "actionExecuted": false,
+      "tools": [
+        {
+          "tool": "knowledge.search",
+          "outcome": "success",
+          "simulated": false,
+          "realAction": false
+        }
+      ],
+      "actual_reply": "Boa tarde! Tudo bem? Quero ajudar com a conexão. Qual problema você está percebendo na internet?",
+      "checks": [
+        {
+          "name": "question_budget",
+          "pass": true
+        },
+        {
+          "name": "no_retaliation_or_calm_down",
+          "pass": true
+        },
+        {
+          "name": "no_unconfirmed_action_promise",
+          "pass": true
+        },
+        {
+          "name": "forbidden_content:ameaça registrada|segurança|polícia",
+          "pass": true
+        }
+      ],
+      "failed_checks": [],
+      "semantic_review": "REQUIRED: automated checks do not validate all expected invariants"
+    },
+    {
+      "id": "11_quote_not_current_intent",
+      "intent": "technical_slow",
+      "handoff": {
+        "required": false,
+        "reason": null,
+        "summary": null
+      },
+      "simulationOnly": true,
+      "actionExecuted": false,
+      "tools": [
+        {
+          "tool": "customer.lookup",
+          "outcome": "simulated",
+          "simulated": true,
+          "realAction": false
+        },
+        {
+          "tool": "network.onu_status",
+          "outcome": "simulated",
+          "simulated": true,
+          "realAction": false
+        },
+        {
+          "tool": "network.optical_power",
+          "outcome": "simulated",
+          "simulated": true,
+          "realAction": false
+        },
+        {
+          "tool": "network.speed_diagnostics",
+          "outcome": "simulated",
+          "simulated": true,
+          "realAction": false
+        }
+      ],
+      "actual_reply": "Boa tarde! Tudo bem? A lentidão acontece em todos os aparelhos ou só em um?",
+      "checks": [
+        {
+          "name": "question_budget",
+          "pass": true
+        },
+        {
+          "name": "no_retaliation_or_calm_down",
+          "pass": true
+        },
+        {
+          "name": "no_unconfirmed_action_promise",
+          "pass": true
+        },
+        {
+          "name": "intent_preserves_context",
+          "pass": true
+        }
+      ],
+      "failed_checks": [],
+      "semantic_review": "REQUIRED: automated checks do not validate all expected invariants"
+    },
+    {
+      "id": "12_explicit_physical_threat",
+      "intent": "human_handoff",
+      "handoff": {
+        "required": true,
+        "reason": "explicit_physical_threat",
+        "summary": "Problema: Vou aí hoje agredir o técnico que vocês mandarem. Intenção: human_handoff. Verificações: workflow.prepare_handoff: simulated. Motivo: explicit_physical_threat. Próxima ação: revisão humana segura."
+      },
+      "simulationOnly": true,
+      "actionExecuted": false,
+      "tools": [
+        {
+          "tool": "workflow.prepare_handoff",
+          "outcome": "simulated",
+          "simulated": true,
+          "realAction": false
+        }
+      ],
+      "actual_reply": "Boa tarde! Essa mensagem precisa da avaliação de um responsável. O atendimento pode continuar com a equipe, sem prolongar os testes por aqui.",
+      "checks": [
+        {
+          "name": "question_budget",
+          "pass": true
+        },
+        {
+          "name": "no_retaliation_or_calm_down",
+          "pass": true
+        },
+        {
+          "name": "no_unconfirmed_action_promise",
+          "pass": true
+        },
+        {
+          "name": "explicit_threat_priority_signal",
+          "pass": true
+        }
+      ],
+      "failed_checks": [],
+      "semantic_review": "REQUIRED: automated checks do not validate all expected invariants"
+    },
+    {
+      "id": "13_hyperbole",
+      "intent": "technical_slow",
+      "handoff": {
+        "required": false,
+        "reason": null,
+        "summary": null
+      },
+      "simulationOnly": true,
+      "actionExecuted": false,
+      "tools": [
+        {
+          "tool": "customer.lookup",
+          "outcome": "simulated",
+          "simulated": true,
+          "realAction": false
+        },
+        {
+          "tool": "network.onu_status",
+          "outcome": "simulated",
+          "simulated": true,
+          "realAction": false
+        },
+        {
+          "tool": "network.optical_power",
+          "outcome": "simulated",
+          "simulated": true,
+          "realAction": false
+        },
+        {
+          "tool": "network.speed_diagnostics",
+          "outcome": "simulated",
+          "simulated": true,
+          "realAction": false
+        }
+      ],
+      "actual_reply": "Boa tarde! Sinto muito pelo transtorno. A lentidão acontece em todos os aparelhos ou só em um?",
+      "checks": [
+        {
+          "name": "question_budget",
+          "pass": true
+        },
+        {
+          "name": "no_retaliation_or_calm_down",
+          "pass": true
+        },
+        {
+          "name": "no_unconfirmed_action_promise",
+          "pass": true
+        },
+        {
+          "name": "forbidden_content:ameaça|polícia|perigo iminente",
+          "pass": true
+        }
+      ],
+      "failed_checks": [],
+      "semantic_review": "REQUIRED: automated checks do not validate all expected invariants"
+    },
+    {
+      "id": "14_topic_change_resolved",
+      "intent": "complaint",
+      "handoff": {
+        "required": true,
+        "reason": "formal_complaint",
+        "summary": "Problema: A internet voltou. Agora quero entender uma cobrança que não reconheço. Intenção: complaint. Verificações: workflow.prepare_handoff: simulated. Motivo: formal_complaint. Próxima ação: revisão humana segura."
+      },
+      "simulationOnly": true,
+      "actionExecuted": false,
+      "tools": [
+        {
+          "tool": "workflow.prepare_handoff",
+          "outcome": "simulated",
+          "simulated": true,
+          "realAction": false
+        }
+      ],
+      "actual_reply": "Entendo sua preocupação. A cobrança que você não reconhece precisa ser conferida por um atendente antes de qualquer conclusão.",
+      "checks": [
+        {
+          "name": "question_budget",
+          "pass": true
+        },
+        {
+          "name": "no_retaliation_or_calm_down",
+          "pass": true
+        },
+        {
+          "name": "no_unconfirmed_action_promise",
+          "pass": true
+        },
+        {
+          "name": "required_content:cobrança|conferência",
+          "pass": true
+        },
+        {
+          "name": "forbidden_content:reinici|qual cômodo|avaliar a visita",
+          "pass": true
+        }
+      ],
+      "failed_checks": [],
+      "semantic_review": "REQUIRED: automated checks do not validate all expected invariants"
+    },
+    {
+      "id": "15_first_greeting",
+      "intent": "technical_no_connection",
+      "handoff": {
+        "required": false,
+        "reason": null,
+        "summary": null
+      },
+      "simulationOnly": true,
+      "actionExecuted": false,
+      "tools": [
+        {
+          "tool": "customer.lookup",
+          "outcome": "simulated",
+          "simulated": true,
+          "realAction": false
+        },
+        {
+          "tool": "network.onu_status",
+          "outcome": "simulated",
+          "simulated": true,
+          "realAction": false
+        },
+        {
+          "tool": "network.pppoe_status",
+          "outcome": "simulated",
+          "simulated": true,
+          "realAction": false
+        },
+        {
+          "tool": "network.optical_power",
+          "outcome": "simulated",
+          "simulated": true,
+          "realAction": false
+        },
+        {
+          "tool": "network.regional_incident",
+          "outcome": "simulated",
+          "simulated": true,
+          "realAction": false
+        }
+      ],
+      "actual_reply": "Boa tarde! Tudo bem? Vamos por partes: alguma luz do equipamento está vermelha ou apagada?",
+      "checks": [
+        {
+          "name": "question_budget",
+          "pass": true
+        },
+        {
+          "name": "no_retaliation_or_calm_down",
+          "pass": true
+        },
+        {
+          "name": "no_unconfirmed_action_promise",
+          "pass": true
+        },
+        {
+          "name": "first_reply_greeting",
+          "pass": true
+        }
+      ],
+      "failed_checks": [],
+      "semantic_review": "REQUIRED: automated checks do not validate all expected invariants"
+    },
+    {
+      "id": "16_continuity_no_reset",
+      "intent": "technical_slow",
+      "handoff": {
+        "required": false,
+        "reason": null,
+        "summary": null
+      },
+      "simulationOnly": true,
+      "actionExecuted": false,
+      "tools": [
+        {
+          "tool": "customer.lookup",
+          "outcome": "simulated",
+          "simulated": true,
+          "realAction": false
+        },
+        {
+          "tool": "network.onu_status",
+          "outcome": "simulated",
+          "simulated": true,
+          "realAction": false
+        },
+        {
+          "tool": "network.optical_power",
+          "outcome": "simulated",
+          "simulated": true,
+          "realAction": false
+        },
+        {
+          "tool": "network.speed_diagnostics",
+          "outcome": "simulated",
+          "simulated": true,
+          "realAction": false
+        }
+      ],
+      "actual_reply": "Considerando o uso de cabo que você informou, a lentidão acontece em todos os sites e aplicativos ou só em algum específico?",
+      "checks": [
+        {
+          "name": "question_budget",
+          "pass": true
+        },
+        {
+          "name": "no_retaliation_or_calm_down",
+          "pass": true
+        },
+        {
+          "name": "no_unconfirmed_action_promise",
+          "pass": true
+        },
+        {
+          "name": "forbidden_content:boa tarde|bom dia|boa noite|olá|todos os aparelhos ou só em um",
+          "pass": true
+        }
+      ],
+      "failed_checks": [],
+      "semantic_review": "REQUIRED: automated checks do not validate all expected invariants"
+    },
+    {
+      "id": "17_legal_complaint_not_violence",
+      "intent": "complaint",
+      "handoff": {
+        "required": true,
+        "reason": "formal_complaint",
+        "summary": "Problema: Vou procurar o Procon por essa porcaria de internet. Intenção: complaint. Verificações: workflow.prepare_handoff: simulated. Motivo: formal_complaint. Próxima ação: revisão humana segura."
+      },
+      "simulationOnly": true,
+      "actionExecuted": false,
+      "tools": [
+        {
+          "tool": "workflow.prepare_handoff",
+          "outcome": "simulated",
+          "simulated": true,
+          "realAction": false
+        }
+      ],
+      "actual_reply": "Boa tarde! Sinto muito pela situação. Seu caso precisa ser avaliado por um atendente responsável, com o histórico desta conversa.",
+      "checks": [
+        {
+          "name": "question_budget",
+          "pass": true
+        },
+        {
+          "name": "no_retaliation_or_calm_down",
+          "pass": true
+        },
+        {
+          "name": "no_unconfirmed_action_promise",
+          "pass": true
+        },
+        {
+          "name": "forbidden_content:vou encaminhar|retorna por aqui|polícia|ameaça física",
+          "pass": true
+        }
+      ],
+      "failed_checks": [],
+      "semantic_review": "REQUIRED: automated checks do not validate all expected invariants"
+    },
+    {
+      "id": "18_do_not_stop_for_profane_quote",
+      "intent": "technical_wifi",
+      "handoff": {
+        "required": false,
+        "reason": null,
+        "summary": null
+      },
+      "simulationOnly": true,
+      "actionExecuted": false,
+      "tools": [
+        {
+          "tool": "customer.lookup",
+          "outcome": "simulated",
+          "simulated": true,
+          "realAction": false
+        },
+        {
+          "tool": "network.cpe_status",
+          "outcome": "simulated",
+          "simulated": true,
+          "realAction": false
+        },
+        {
+          "tool": "network.wifi_diagnostics",
+          "outcome": "simulated",
+          "simulated": true,
+          "realAction": false
+        }
+      ],
+      "actual_reply": "Boa tarde! Tudo bem? O sinal melhora perto do roteador?",
+      "checks": [
+        {
+          "name": "question_budget",
+          "pass": true
+        },
+        {
+          "name": "no_retaliation_or_calm_down",
+          "pass": true
+        },
+        {
+          "name": "no_unconfirmed_action_promise",
+          "pass": true
+        },
+        {
+          "name": "forbidden_content:sem ofensas|ameaça|educação",
+          "pass": true
+        }
+      ],
+      "failed_checks": [],
+      "semantic_review": "REQUIRED: automated checks do not validate all expected invariants"
+    },
+    {
+      "id": "19_explicit_cancellation_not_conditional",
+      "intent": "cancellation_risk",
+      "handoff": {
+        "required": true,
+        "reason": "cancellation_risk",
+        "summary": "Problema: Não quero mais teste, quero cancelar o contrato. Intenção: cancellation_risk. Verificações: workflow.prepare_handoff: simulated. Motivo: cancellation_risk. Próxima ação: revisão humana segura."
+      },
+      "simulationOnly": true,
+      "actionExecuted": false,
+      "tools": [
+        {
+          "tool": "workflow.prepare_handoff",
+          "outcome": "simulated",
+          "simulated": true,
+          "realAction": false
+        }
+      ],
+      "actual_reply": "Boa tarde! Entendi seu pedido de cancelamento. Ele precisa ser tratado por um atendente; ainda não há cancelamento confirmado por aqui.",
+      "checks": [
+        {
+          "name": "question_budget",
+          "pass": true
+        },
+        {
+          "name": "no_retaliation_or_calm_down",
+          "pass": true
+        },
+        {
+          "name": "no_unconfirmed_action_promise",
+          "pass": true
+        },
+        {
+          "name": "forbidden_content:vou encaminhar|cancelamento concluído|qual cômodo|reinicie",
+          "pass": true
+        }
+      ],
+      "failed_checks": [],
+      "semantic_review": "REQUIRED: automated checks do not validate all expected invariants"
+    },
+    {
+      "id": "20_visit_negated_then_slow",
+      "intent": "technical_slow",
+      "handoff": {
+        "required": false,
+        "reason": null,
+        "summary": null
+      },
+      "simulationOnly": true,
+      "actionExecuted": false,
+      "tools": [
+        {
+          "tool": "customer.lookup",
+          "outcome": "simulated",
+          "simulated": true,
+          "realAction": false
+        },
+        {
+          "tool": "network.onu_status",
+          "outcome": "simulated",
+          "simulated": true,
+          "realAction": false
+        },
+        {
+          "tool": "network.optical_power",
+          "outcome": "simulated",
+          "simulated": true,
+          "realAction": false
+        },
+        {
+          "tool": "network.speed_diagnostics",
+          "outcome": "simulated",
+          "simulated": true,
+          "realAction": false
+        }
+      ],
+      "actual_reply": "Boa tarde! Tudo bem? A lentidão acontece em todos os aparelhos ou só em um?",
+      "checks": [
+        {
+          "name": "question_budget",
+          "pass": true
+        },
+        {
+          "name": "no_retaliation_or_calm_down",
+          "pass": true
+        },
+        {
+          "name": "no_unconfirmed_action_promise",
+          "pass": true
+        },
+        {
+          "name": "forbidden_content:Entendi o pedido|avaliar a visita|visita agendada",
+          "pass": true
+        }
+      ],
+      "failed_checks": [],
+      "semantic_review": "REQUIRED: automated checks do not validate all expected invariants"
+    }
+  ],
+  "summary": {
+    "cases": 20,
+    "cases_with_automated_gaps": 0,
+    "automated_checks_passed": 84,
+    "automated_checks_failed": 0,
+    "semantic_acceptance": "NOT established"
+  }
+}

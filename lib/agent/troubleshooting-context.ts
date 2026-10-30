@@ -5,7 +5,7 @@ const normal = (value: string) => value.normalize("NFD").replace(/[\u0300-\u036f
 /** Customer reports only; these are not verified equipment actions or authority. */
 export function restartReport(message: string): "done" | "not_done" | undefined {
   let report: "done" | "not_done" | undefined;
-  for (let clause of normal(message).split(/[.!;]|\bmas\b|\bporem\b/)) {
+  for (let clause of normal(message).split(/(?<=\?)|[.!;]|\bmas\b|\bporem\b/)) {
     clause = clause.replace(/,?\s+(?:o que (?:eu )?(?:faco|fazer)|e agora|como (?:eu )?(?:procedo|resolvo))\s*\?$/, "");
     if (/\?|\b(?:se|caso|talvez|acho que)\b/.test(clause)) continue;
     const action = /\b(?:reiniciei|reiniciamos)\b|\bdesliguei\b.{0,40}\bliguei\b/.exec(clause);
@@ -58,17 +58,18 @@ export type SupportRequest = "pause" | "human" | "visit" | "ticket";
 /** Explicit operational preferences, never authority to create an OS or visit. */
 export function supportRequest(message: string): SupportRequest | undefined {
   const text = normal(message);
-  if (/\bnao (?:posso|consigo) (?:ficar )?(?:falar|conversar|responder)(?:\s+agora|\s|$)/.test(text)
+  const paused = /\bnao (?:posso|consigo) (?:ficar )?(?:falar|conversar|conversando|responder)(?:\s+agora|\s|$)/.test(text)
     || /\bnao (?:estou |to |tenho |tenho mais )?(?:com )?tempo\b/.test(text)
-    || /^(?:estou |to )?sem tempo\b/.test(text)) return "pause";
+    || /^(?:estou |to )?sem tempo\b/.test(text)
+    || /\bnao (?:me )?(?:faca|mande) (?:mais )?perguntas\b/.test(text);
   let result: SupportRequest | undefined;
   for (const clause of text.split(/[.!?;,]|\bmas\b|\be (?=(?:quero|preciso|prefiro)\b)/)) {
     if (/\b(?:nao|nem) (?:quero|preciso|precisa|pode|mande|manda|chame|chama|abra|abre|agende|agendar|tecnico|atendente|chamado|visita)\b/.test(clause)) continue;
     if (/\b(?:humano|humana|atendente|supervisor|pessoa de verdade)\b/.test(clause)) result = "human";
     else if (/\b(?:abrir|abre|abra|preciso|quero|pode)\b.{0,35}\b(?:chamado|protocolo tecnico)\b|\bchamado tecnico\b/.test(clause)) result = "ticket";
-    else if (/\b(?:quero|preciso|manda|mandar|envia|enviar|chama|chamar)\b.{0,35}\btecnico\b|\bmandar alguem (?:vir|vim)\b|\bvisita\b|\bagendar\b|\bagenda.{0,30}tecnico\b|\bhorario.{0,30}tecnico\b/.test(clause)) result = "visit";
+    else if (/\b(?:quero|preciso|mande|manda|mandar|envie|envia|enviar|chama|chamar)\b.{0,35}\btecnico\b|\b(?:mandar|mande|manda|envie) alguem (?:vir|vim)\b|\bvisita\b|\bagendar\b|\bagenda.{0,30}tecnico\b|\bhorario.{0,30}tecnico\b/.test(clause)) result = "visit";
   }
-  return result;
+  return result ?? (paused ? "pause" : undefined);
 }
 
 export function negatesSupportRequest(message: string): boolean {

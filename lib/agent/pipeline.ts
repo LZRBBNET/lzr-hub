@@ -1,3 +1,4 @@
+import { servicePreferences } from "./service-preferences.ts";
 import { asksRestart, restartReport, reportsConnectionResolved, supportRequest, negatesSupportRequest } from "./troubleshooting-context.ts";
 import { hasUnsafeSuccessClaim, simulationIsDisclosed, validEvidence } from "./evidence.ts";
 import { decideHandoff } from "./handoff.ts";
@@ -22,9 +23,19 @@ export function analyzeIntent(message: string): {
 } {
   const text = normalized(message);
   if (/ignore.*regra|revele.*prompt|dados de outro cliente|cpf de outro|acesse outro cliente|execute.*sem permissao|acao nao autorizada/.test(text)) return { intent: "unauthorized_request", confidence: 0.99, goal: "Bloquear solicitação não autorizada" };
+  const preference = servicePreferences(message);
+  if (preference.directThreat || preference.ambiguousThreat) return { intent: "human_handoff", confidence: 0.9, goal: "Revisão responsável da mensagem, sem ação automática" };
+  if (preference.nonContractCancellation) return { intent: "human_handoff", confidence: 0.8, goal: "Conferir item solicitado sem presumir cancelamento do contrato" };
+  if (preference.dispute) return { intent: "complaint", confidence: 0.98, goal: "Conferir contestação relatada" };
+  if (preference.explicitCancellation) return { intent: "cancellation_risk", confidence: 0.97, goal: "Revisar pedido expresso sem executar cancelamento" };
   const request = supportRequest(message);
   if (request === "pause" || request === "human") return { intent: "human_handoff", confidence: 0.99, goal: "Respeitar preferência do cliente e preservar contexto" };
-  if (/cancelar|cancelo|vou cancelar/.test(text)) return { intent: "cancellation_risk", confidence: 0.97, goal: "Preservar cliente e transferir com contexto" };
+  if (preference.cancellationMention && !preference.explicitCancellation) {
+    if (request === "visit") return { intent: "technical_visit", confidence: 0.96, goal: "Avaliar pedido de visita; risco condicional não é cancelamento" };
+    if (request === "ticket") return { intent: "technical_ticket", confidence: 0.96, goal: "Avaliar pedido técnico" };
+    if (preference.technicalText !== text) return analyzeIntent(preference.technicalText);
+    return { intent: "human_handoff", confidence: 0.6, goal: "Revisar menção ambígua sem presumir cancelamento" };
+  }
   if (/reclamacao formal|reclamação formal|anatel|processo|procon/.test(text)) return { intent: "complaint", confidence: 0.98, goal: "Registrar reclamação para revisão humana" };
   if (asksRestart(message)) return { intent: "technical_restart", confidence: 0.96, goal: "Avaliar reinicialização segura" };
   if (request === "ticket") return { intent: "technical_ticket", confidence: 0.97, goal: "Preparar chamado técnico" };
@@ -61,6 +72,8 @@ function resolveIntent(message: string, history: ChatMessage[], override?: Agent
     : analyzeIntent(message);
   // A model label cannot turn a completed/negated step into a new command.
   const local = analyzeIntent(message);
+  const preference = servicePreferences(message, history);
+  if (analysis.intent !== "unauthorized_request" && (preference.cancellationMention || preference.dispute || preference.directThreat || preference.ambiguousThreat)) analysis = local;
   const request = supportRequest(message);
   const negatedRequest = negatesSupportRequest(message) && !request;
   if (negatedRequest && ["human_handoff", "technical_visit", "technical_ticket"].includes(analysis.intent)) analysis = local;

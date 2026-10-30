@@ -1,3 +1,4 @@
+import { servicePreferences } from "../agent/service-preferences.ts";
 import { asksRestart, troubleshootingContext, supportRequest, supportReportSummary, negatesSupportRequest, pendingSupportRequest } from "../agent/troubleshooting-context.ts";
 import type { ChatMessage, Intent } from "../agent/types.ts";
 import { resolveReply, validateReplyText, type ReplyOverrides } from "./reply-templates-shared.ts";
@@ -30,13 +31,15 @@ export interface SupportReplyInput {
   templates?: ReplyOverrides;
 }
 
-export function resolveSupportReply(input: SupportReplyInput): string {
-  if (asksAiIdentity(input.message)) {
-    const identity = "Sou a assistente virtual da BBNET, uma IA.";
-    // Identity does not erase an explicit request or an unsafe request's refusal.
-    return input.intent === "general_information"
-      ? `${identity} Posso ajudar com as primeiras orientações; quando for preciso, o atendimento deve continuar com uma pessoa da equipe.`
-      : `${identity} ${resolveReply(input.intent)}`;
+function resolveSupportReplyContent(input: SupportReplyInput): string {
+
+  const preference = servicePreferences(input.message, troubleshootingContext(input.message, input.history).recent);
+  if (input.intent !== "unauthorized_request") {
+    if (preference.directThreat || preference.ambiguousThreat) return "Essa mensagem precisa da avaliação de um responsável. O atendimento pode continuar com a equipe, sem prolongar os testes por aqui.";
+    if (preference.nonContractCancellation) return "A menção a esse pedido ou item precisa ser conferida por um atendente, sem presumir que você deseja cancelá-lo. Não há alteração confirmada por aqui.";
+    if (preference.dispute) return "Entendo sua preocupação. A cobrança que você não reconhece precisa ser conferida por um atendente antes de qualquer conclusão.";
+    if (preference.explicitCancellation) return "Entendi seu pedido de cancelamento. Ele precisa ser tratado por um atendente; ainda não há cancelamento confirmado por aqui.";
+    if (preference.persistentInsult) return "Quero ajudar a resolver, mas precisamos continuar sem ofensas pessoais. O caso precisa da avaliação de um atendente; o atendimento continua disponível.";
   }
 
   // Clear requests to stop triage take priority over optional operator copy.
@@ -46,7 +49,7 @@ export function resolveSupportReply(input: SupportReplyInput): string {
   if (["human_handoff", "technical_visit", "technical_ticket"].includes(input.intent) && request) {
     const summary = supportReportSummary(input.message, input.history);
     if (request === "pause") return `Tudo bem, não vou insistir em testes agora. ${summary}O próximo passo é um atendente revisar esse contexto.`;
-    if (request === "visit") return `Entendi o pedido de avaliação técnica. ${summary}A equipe precisa avaliar a visita e confirmar a disponibilidade; não consigo confirmar um agendamento por aqui.`;
+    if (request === "visit") return `Sinto muito pelo transtorno. Entendi o pedido de avaliação técnica. ${summary}A equipe precisa avaliar a visita e confirmar a disponibilidade; não consigo confirmar um agendamento por aqui.`;
     if (request === "ticket") return `Entendi o pedido de chamado. ${summary}Um atendente precisa conferir e dar continuidade; ainda não tenho abertura ou protocolo confirmados.`;
     return summary ? `Certo, sem mais testes por aqui. ${summary}O próximo passo é continuar com um atendente.` : resolveReply("human_handoff");
   }
@@ -87,9 +90,7 @@ export function resolveSupportReply(input: SupportReplyInput): string {
     return "Que bom que você relata que a conexão voltou a funcionar. Se o problema reaparecer, conte por aqui o que aconteceu.";
   }
 
-  if (input.handoffReason === "customer_irritated" || expressesFrustration(input.message)) {
-    return "Entendo sua frustração. Esse caso precisa da atenção de um atendente, usando o que você já contou aqui.";
-  }
+
   // The simulation pipeline's similarity heuristic can flag short menu choices
   // as repetition. Only use the copy when a substantive customer report repeats.
   if (input.handoffReason === "repetition_without_resolution" && current.length > 15
@@ -141,8 +142,17 @@ export function resolveSupportReply(input: SupportReplyInput): string {
     return `${prefix}${resolveReply("technical_slow", technicalTemplates)}`;
   }
 
+  if (input.intent === "general_information" && /\binternet|\bconexao\b/.test(current) && agents.length === 0) {
+    return "Quero ajudar com a conexão. Qual problema você está percebendo na internet?";
+  }
   if (input.intent === "general_information" && agents.length > 0) {
     return "Ainda não consegui identificar o que você precisa. Um atendente pode continuar a partir desta conversa, sem começar tudo de novo.";
   }
   return resolveReply(input.intent, technicalTemplates);
+}
+
+/** Identity disclosure must not erase completed tests, visit requests or refusal. */
+export function resolveSupportReply(input: SupportReplyInput): string {
+  const body = resolveSupportReplyContent(input);
+  return asksAiIdentity(input.message) ? `Sou a assistente virtual da BBNET, uma IA. ${body}` : body;
 }
