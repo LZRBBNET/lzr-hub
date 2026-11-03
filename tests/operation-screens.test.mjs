@@ -47,7 +47,7 @@ test("métricas contam conversas por intenção detectada", async () => {
 });
 
 const snapshotOf = (id) => ({
-  customer: { id, name:"WENDEL MENDONCA SANTOS", document:"123.456.789-00", phone:"(79) 90000-0000", email:"não informado", city:"Campo do Brito", neighborhood:"Centro", address:"Rua A, 10", status:"A" },
+  customer: { id, name:"Cliente sintético", document:"DOC-SYNTHETIC", phone:"(00) 00000-0000", email:"não informado", city:"Cidade sintética", neighborhood:"Centro", address:"Rua A, 10", status:"A" },
   contracts: [{ id:"48882", customerId:id, planName:"FIBRA 1,2GB", status:"A" }],
   plan: null, invoices: [], payments: [], serviceOrders: [], connection: null,
   partialSources: [], metrics:{ totalLatencyMs:10, blockLatencies:{} }, fetchedAt:new Date().toISOString(), mode:"staging-readonly", cache:"miss",
@@ -59,10 +59,10 @@ test("lista de clientes traz o cadastro real do IXC, não um rótulo genérico",
   const result = await service.list();
 
   assert.equal(result.mode, "staging-readonly");
-  assert.equal(result.items[0].name, "WENDEL MENDONCA SANTOS");
-  assert.equal(result.items[0].maskedDocument, "123.456.789-00");
-  assert.equal(result.items[0].plan, "FIBRA 1,2GB");
-  assert.equal(result.items[0].city, "Campo do Brito");
+  assert.equal(result.items[0].name, "Cliente sintético");
+  assert.equal(result.items[0].maskedDocument, "DOC-SYNTHETIC");
+  assert.equal(result.items[0].plan, "Abrir para consultar", "sem cobertura confirmada não seleciona contrato automaticamente");
+  assert.equal(result.items[0].city, "Cidade sintética");
 });
 
 test("cadastro que falha aparece como indisponível, nunca com nome inventado", async () => {
@@ -78,7 +78,7 @@ test("busca na lista do IXC filtra pelo dado real, inclusive por CPF", async () 
   const provider = { getSnapshot: async (id) => snapshotOf(id) };
   const service = new Customer360Service(undefined, provider, ["21857"]);
 
-  assert.equal((await service.list("wendel")).items.length, 1);
-  assert.equal((await service.list("123.456")).items.length, 1);
+  assert.equal((await service.list("sintético")).items.length, 1);
+  assert.equal((await service.list("DOC-SYNTHETIC")).items.length, 1);
   assert.equal((await service.list("cliente autorizado")).items.length, 0, "o rótulo genérico antigo não existe mais");
 });

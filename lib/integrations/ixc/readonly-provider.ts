@@ -2,7 +2,7 @@ import { IxcConnectionMapper, IxcContractMapper, IxcCustomerMapper, IxcInvoiceMa
 import { sanitizeTelemetry } from "./masking.ts";
 import { ReadonlyIxcGuard } from "./guard.ts";
 import { CircuitBreaker, SlidingWindowRateLimiter, TtlCache } from "./resilience.ts";
-import type { IxcCityDto, IxcCollectionWalletDto, IxcCustomerDto, IxcCustomerPage, IxcCustomerSnapshot, IxcListResponse, IxcOsSubjectDto, IxcPaymentTermDto, IxcReadOperation, IxcSectorDto, IxcUfDto } from "./types.ts";
+import type { IxcCityDto, IxcCollectionWalletDto, IxcCustomerDto, IxcCustomerPage, IxcCustomerSnapshot, IxcSnapshotCoverage, IxcListResponse, IxcOsSubjectDto, IxcPaymentTermDto, IxcReadOperation, IxcSectorDto, IxcUfDto } from "./types.ts";
 
 // `listOsCatalog` fica de fora porque não tem um endpoint só: a mesma operação
 // lê `su_oss_assunto` e `empresa_setor`, e o recurso vai explícito na chamada.
@@ -452,33 +452,45 @@ export class IxcReadonlyProvider {
     const started=this.now();
     try{
       const customerRows=await this.read("getCustomer","cliente","id",customerId,correlationId,1);if(!customerRows[0])throw new Error("IXC_CUSTOMER_NOT_FOUND");
+      if(customerRows.length!==1||String(customerRows[0].id??"")!==customerId)throw new Error("IXC_CUSTOMER_SCOPE_MISMATCH");
       const settled=await Promise.allSettled([
-        this.read("listContracts",endpoints.listContracts,"id_cliente",customerId,correlationId),
-        this.read("listInvoices",endpoints.listInvoices,"id_cliente",customerId,correlationId),
-        this.read("listServiceOrders",endpoints.listServiceOrders,"id_cliente",customerId,correlationId),
-        this.read("getConnection",endpoints.getConnection,"id_cliente",customerId,correlationId),
+        this.readPage("listContracts",endpoints.listContracts,"id_cliente",customerId,correlationId),
+        this.readPage("listInvoices",endpoints.listInvoices,"id_cliente",customerId,correlationId),
+        this.readPage("listServiceOrders",endpoints.listServiceOrders,"id_cliente",customerId,correlationId),
+        this.readPage("getConnection",endpoints.getConnection,"id_cliente",customerId,correlationId),
       ]);
-      const rows=(index:number)=>settled[index].status==="fulfilled"?settled[index].value:[];
-      const sourceNames=["contracts","invoices","serviceOrders","connection"];const contracts=rows(0).map(IxcContractMapper.map);let plan=null;let planFailed=false;
-      if(contracts[0]?.planId){try{const planRows=await this.read("getPlan",endpoints.getPlan,"id",contracts[0].planId,correlationId,1,customerId);plan=planRows[0]?IxcPlanMapper.map(planRows[0]):null;if(plan&&contracts[0])contracts[0]={...contracts[0],planName:plan.name,monthlyValue:plan.value};}catch{planFailed=true;}}
+      const rows=(index:number)=>settled[index].status==="fulfilled"?settled[index].value.records.slice(0,20):[];
+      const sourceNames=["contracts","invoices","serviceOrders","connection"] as const;
+      const coverage:IxcCustomerSnapshot["coverage"]={};
+      for(const [index,name] of sourceNames.entries()){
+        const result=settled[index];
+        coverage[name]=result.status==="fulfilled"?{...result.value.coverage,read:rows(index).length,
+          complete:result.value.coverage.complete&&rows(index).every(row=>String(row.id_cliente??"")===customerId)}:{read:0,total:null,complete:false,limit:20};
+      }
+      const contracts=rows(0).map(IxcContractMapper.map);let plan=null;let planFailed=false;
+      if(contracts[0]?.planId&&contracts[0].customerId===customerId){try{const planRows=await this.read("getPlan",endpoints.getPlan,"id",contracts[0].planId,correlationId,1,customerId);if(planRows.length!==1||String(planRows[0].id??"")!==contracts[0].planId)throw new Error("IXC_PLAN_SCOPE_MISMATCH");plan=IxcPlanMapper.map(planRows[0]);contracts[0]={...contracts[0],planName:plan.name,monthlyValue:plan.value};}catch{planFailed=true;}}
       // `fn_movim_finan` (pagamentos) não tem coluna id_cliente -- filtrar por ela sempre
       // devolvia página de erro do próprio IXC, nunca um problema de rede. O vínculo real é
       // por fatura (id_receber), então busca-se por fatura já sabidamente do cliente
-      // (confirmada pela consulta de faturas acima). Limitado às 10 faturas mais recentes
+      // (confirmada pela consulta de faturas acima). Limitado às primeiras 10 faturas lidas
       // para não disparar uma fatura de chamadas por atendimento.
       const invoiceRows=rows(1);let payments:ReturnType<typeof IxcPaymentMapper.map>[]=[];let paymentsFailed=false;
-      if(invoiceRows.length>0){
-        const paymentSettled=await Promise.allSettled(invoiceRows.slice(0,10).map((invoice)=>{
+      const paymentInvoices=invoiceRows.filter(invoice=>String(invoice.id_cliente??"")===customerId&&String(invoice.id??"").trim()&&invoiceRows.filter(other=>String(other.id)===String(invoice.id)).length===1).slice(0,10);
+      coverage.payments={read:0,total:coverage.invoices?.complete&&invoiceRows.length===0?0:null,complete:coverage.invoices?.complete===true&&invoiceRows.length===0,limit:100};
+      if(paymentInvoices.length>0){
+        const paymentSettled=await Promise.allSettled(paymentInvoices.map((invoice)=>{
           const invoiceId=String((invoice as Record<string,unknown>).id??"");
-          return this.read("listPayments",endpoints.listPayments,"id_receber",invoiceId,correlationId,10,customerId);
+          return this.readPage("listPayments",endpoints.listPayments,"id_receber",invoiceId,correlationId,10,customerId);
         }));
-        payments=paymentSettled.flatMap((item)=>item.status==="fulfilled"?item.value.map((row)=>IxcPaymentMapper.map(row,customerId)):[]);
+        payments=paymentSettled.flatMap((item,index)=>item.status==="fulfilled"?item.value.records.slice(0,10).filter(row=>String(row.id_receber??row.id_fatura??"")===String(paymentInvoices[index].id)).map((row)=>IxcPaymentMapper.map(row,customerId)):[]);
         paymentsFailed=paymentSettled.some((item)=>item.status==="rejected");
+        const complete=coverage.invoices?.complete===true&&invoiceRows.length<=10&&paymentInvoices.length===invoiceRows.length&&paymentSettled.every((item,index)=>item.status==="fulfilled"&&item.value.coverage.complete&&item.value.records.every(row=>String(row.id_receber??row.id_fatura??"")===String(paymentInvoices[index].id)));
+        coverage.payments={read:payments.length,total:complete?payments.length:null,complete,limit:100};
       }
       let customer=IxcCustomerMapper.map(customerRows[0]);
       const cityCode=String(customerRows[0].cidade??"").trim();
       if(cityCode){const cityName=await this.resolveCityName(cityCode,correlationId,customerId);if(cityName)customer={...customer,city:cityName};}
-      const snapshot:IxcCustomerSnapshot={customer,contracts,plan,invoices:invoiceRows.map(IxcInvoiceMapper.map),payments,serviceOrders:rows(2).map(IxcServiceOrderMapper.map),connection:rows(3)[0]?IxcConnectionMapper.map(rows(3)[0]):null,partialSources:[...settled.flatMap((item,index)=>item.status==="rejected"?[sourceNames[index]]:[]),...(planFailed?["plan"]:[]),...(paymentsFailed?["payments"]:[])],metrics:{totalLatencyMs:this.now()-started,blockLatencies:{...(this.durations.get(correlationId)??{})}},fetchedAt:new Date(this.now()).toISOString(),mode:"staging-readonly",cache:"miss"};
+      const snapshot:IxcCustomerSnapshot={customer,contracts,plan,invoices:invoiceRows.map(IxcInvoiceMapper.map),payments,serviceOrders:rows(2).map(IxcServiceOrderMapper.map),connection:rows(3)[0]?IxcConnectionMapper.map(rows(3)[0]):null,coverage,partialSources:[...settled.flatMap((item,index)=>item.status==="rejected"?[sourceNames[index]]:[]),...(planFailed?["plan"]:[]),...(paymentsFailed?["payments"]:[])],metrics:{totalLatencyMs:this.now()-started,blockLatencies:{...(this.durations.get(correlationId)??{})}},fetchedAt:new Date(this.now()).toISOString(),mode:"staging-readonly",cache:"miss"};
       this.cache.set(customerId,snapshot);this.emit("ixc.snapshot",correlationId,this.now()-started,"success",{partial:settled.some((item)=>item.status==="rejected")});return snapshot;
     }catch(error){this.emit("ixc.snapshot",correlationId,this.now()-started,"failed",{error:error instanceof Error?error.name:"unknown"});throw error;}
   }
@@ -497,12 +509,20 @@ export class IxcReadonlyProvider {
   private async read(operation:IxcReadOperation,resource:string,qtype:string,query:string,correlationId:string,rp=20,authorizedCustomerId=query,options?:ReadOptions):Promise<Record<string,unknown>[]>{
     return (await this.readPage(operation,resource,qtype,query,correlationId,rp,authorizedCustomerId,options)).records;
   }
-  private async readPage(operation:IxcReadOperation,resource:string,qtype:string,query:string,correlationId:string,rp=20,authorizedCustomerId=query,options?:ReadOptions):Promise<{records:Record<string,unknown>[];total:number}>{
+  private async readPage(operation:IxcReadOperation,resource:string,qtype:string,query:string,correlationId:string,rp=20,authorizedCustomerId=query,options?:ReadOptions):Promise<{records:Record<string,unknown>[];total:number;coverage:IxcSnapshotCoverage}>{
     this.guard.assertOperation(operation);if(!GLOBAL_SCOPE_OPERATIONS.has(operation))this.guard.assertCustomer(authorizedCustomerId);if(!this.breaker.canRequest())throw new Error("IXC_CIRCUIT_OPEN");this.limiter.assert();
     const url=`${this.options.baseUrl.replace(/\/$/,"")}/webservice/v1/${resource}`;let last:unknown;
     const payload:Record<string,string>={qtype,query,oper:options?.oper??"=",page:String(options?.page??1),rp:String(rp),sortname:options?.sortname??"id",sortorder:options?.sortorder??"asc"};
     if(options?.gridParam?.length)payload.grid_param=JSON.stringify(options.gridParam);
-    const maxAttempts=1+(this.options.retryLimit??1);for(let attempt=0;attempt<maxAttempts;attempt+=1){const controller=new AbortController();const timer=setTimeout(()=>controller.abort(),this.timeoutMs);const started=this.now();try{const response=await this.fetcher(url,{method:"POST",headers:{Authorization:`Basic ${basicCredential(this.options.token)}`,"Content-Type":"application/json","ixcsoft":"listar","x-correlation-id":correlationId},body:JSON.stringify(payload),signal:controller.signal});clearTimeout(timer);if(!response.ok){const retry=response.status===429||response.status>=500;if(retry&&attempt+1<maxAttempts){last=new IxcReadonlyError(`IXC_HTTP_${response.status}`);continue}throw new IxcReadonlyError(`IXC_HTTP_${response.status}`)}const body=await response.json() as IxcListResponse;const contractError=apiError(body);if(contractError)throw contractError;const records=Array.isArray(body.registros)?body.registros.filter((item):item is Record<string,unknown>=>!!item&&typeof item==="object"):[];const total=Number((body as {total?:unknown}).total??records.length);this.breaker.success();this.emit(`ixc.${operation}`,correlationId,this.now()-started,"success",{count:records.length});return{records,total:Number.isFinite(total)?total:records.length};}catch(error){clearTimeout(timer);last=classifyError(error);if(attempt+1<maxAttempts&&(last as IxcReadonlyError).code==="IXC_TIMEOUT")continue;break;}}
+    const maxAttempts=1+(this.options.retryLimit??1);for(let attempt=0;attempt<maxAttempts;attempt+=1){const controller=new AbortController();const timer=setTimeout(()=>controller.abort(),this.timeoutMs);const started=this.now();try{const response=await this.fetcher(url,{method:"POST",headers:{Authorization:`Basic ${basicCredential(this.options.token)}`,"Content-Type":"application/json","ixcsoft":"listar","x-correlation-id":correlationId},body:JSON.stringify(payload),signal:controller.signal});clearTimeout(timer);if(!response.ok){const retry=response.status===429||response.status>=500;if(retry&&attempt+1<maxAttempts){last=new IxcReadonlyError(`IXC_HTTP_${response.status}`);continue}throw new IxcReadonlyError(`IXC_HTTP_${response.status}`)}const body=await response.json() as IxcListResponse;const contractError=apiError(body);if(contractError)throw contractError;
+    const records=Array.isArray(body.registros)?body.registros.filter((item):item is Record<string,unknown>=>!!item&&typeof item==="object"&&!Array.isArray(item)):[];
+    const rawTotal=body.total;
+    const knownTotal=(typeof rawTotal==="number"||(typeof rawTotal==="string"&&/^\d+$/.test(rawTotal)))&&Number.isSafeInteger(Number(rawTotal))&&Number(rawTotal)>=records.length?Number(rawTotal):null;
+    const validRows=Array.isArray(body.registros)&&body.registros.length===records.length&&records.every(row=>(typeof row.id==="string"&&!!row.id.trim())||(typeof row.id==="number"&&Number.isSafeInteger(row.id)&&row.id>0));
+    const uniqueIds=new Set(records.map(row=>String(row.id))).size===records.length;
+    const firstPage=(options?.page??1)===1&&(body.page===undefined||String(body.page)==="1");
+    const coverage={read:records.length,total:knownTotal,complete:validRows&&uniqueIds&&firstPage&&knownTotal===records.length&&records.length<=rp,limit:rp};
+    const total=Number(rawTotal??records.length);this.breaker.success();this.emit(`ixc.${operation}`,correlationId,this.now()-started,"success",{count:records.length});return{records,total:Number.isFinite(total)?total:records.length,coverage};}catch(error){clearTimeout(timer);last=classifyError(error);if(attempt+1<maxAttempts&&(last as IxcReadonlyError).code==="IXC_TIMEOUT")continue;break;}}
     const failure=classifyError(last);this.breaker.failure();this.emit(`ixc.${operation}`,correlationId,0,"failed",sanitizeTelemetry({error:failure.code}) as Record<string,unknown>);throw failure;
   }
   private emit(event:string,correlationId:string,durationMs:number,status:IxcTrace["status"],attributes:Record<string,unknown>){if(event.startsWith("ixc.")&&event!=="ixc.snapshot"){const key=event.slice(4);this.durations.set(correlationId,{...(this.durations.get(correlationId)??{}),[key]:durationMs});}this.options.trace?.({event,correlationId,durationMs,status,attributes:sanitizeTelemetry(attributes) as Record<string,unknown>});}
