@@ -1,7 +1,7 @@
 "use client";
 import type { PromiseReviewBatchResult } from "@/lib/platform/payment-promise-service";
 import { formatPromisedDate } from "@/lib/platform/payment-promise-date";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { RULE_CHANNELS, type RuleStepInput } from "@/lib/platform/collection-rules-shared";
 import { Icon, type IconKey } from "@/components/ui/icons";
 import { Badge, Bar, Card, Empty, Limits, Loading, Notice, PERIODS_SHORT, Segmented, Stat, Stats, Toolbar, count, money, useToast } from "@/components/ui/kit";
@@ -366,7 +366,7 @@ function RuleBuilder(){
   if(state==="loading")return <Loading rows={4}/>;
   if(state==="error")return <Notice tone="bad">Régua indisponível: sem banco não há o que ler nem onde salvar.</Notice>;
   return <>
-    <Toolbar actions={<>
+    <div className="rule-toolbar"><Toolbar actions={<>
       <button className="button secondary" onClick={()=>{setSteps(c=>[...c,{...EMPTY_STEP}]);setDirty(true)}}><Icon name="plus" size={16}/>Adicionar etapa</button>
       <button className="button" disabled={saving||steps.length===0||!dirty} onClick={()=>void save()}>{saving?"Salvando…":"Salvar nova versão"}</button>
     </>}>
@@ -374,7 +374,7 @@ function RuleBuilder(){
         <input value={name} aria-label="Nome da régua" onChange={e=>{setName(e.target.value);setDirty(true)}}/>
         <span>{meta?`Versão ${meta.version} · ${meta.authorId} · ${new Date(meta.updatedAt).toLocaleString("pt-BR")}`:"Nenhuma versão salva ainda"}{dirty?" · alterações não salvas":""}</span>
       </div>
-    </Toolbar>
+    </Toolbar></div>
     {error&&<Notice tone="bad">{error}</Notice>}
     <Notice tone="neutral">Salvar a régua não envia nada a ninguém: ela define as etapas. O disparo é o passo abaixo.</Notice>
     <Card flush>
@@ -404,6 +404,12 @@ function RuleBuilder(){
 type DispatchPreview={available:boolean;detail?:string;period:string;scope?:"allowlist"|"unavailable";today:{scheduledFor:string;candidates:number}|null;indicators:{total:number;byStep:Record<string,number>}|null};
 type DispatchRun={scheduledFor:string;businessHour:boolean;candidates:number;recorded:number;duplicates:number;enqueued:number;queueEnabled:boolean};
 
+async function readDispatchPreview(signal:AbortSignal):Promise<DispatchPreview>{
+  const response=await fetch("/api/billing/collections/dispatch?period=30d",{signal,cache:"no-store"});
+  if(!response.ok)throw new Error("Preview indisponível");
+  return response.json();
+}
+
 /**
  * Disparo real (issue #15), no limite do que existe hoje: calcula quem
  * receberia contato agora, revalidando pagamento, sem duplicar — e registra
@@ -415,40 +421,67 @@ function DispatchPanel({hasRule}:{hasRule:boolean}){
   const [running,setRunning]=useState(false);
   const [result,setResult]=useState<DispatchRun|null>(null);
   const [runError,setRunError]=useState<string|null>(null);
+  const operation=useRef<AbortController|null>(null);
 
-  useEffect(()=>{let active=true;
-    fetch("/api/billing/collections/dispatch?period=30d").then(r=>r.ok?r.json():Promise.reject(new Error("falhou")))
-      .then((payload:DispatchPreview)=>{if(active){setPreview(payload);setState("ready")}})
-      .catch(()=>{if(active)setState("error")});
-    return()=>{active=false}},[]);
+  useEffect(()=>{const controller=new AbortController();
+    readDispatchPreview(controller.signal)
+      .then(payload=>{if(!controller.signal.aborted){setPreview(payload);setState("ready")}})
+      .catch(()=>{if(!controller.signal.aborted)setState("error")});
+    return()=>{controller.abort();operation.current?.abort()}},[]);
+
+  async function refreshPreview(controller:AbortController){
+    try{
+      const payload=await readDispatchPreview(controller.signal);
+      if(!controller.signal.aborted){setPreview(payload);setState("ready")}
+    }catch{
+      if(!controller.signal.aborted){setPreview(null);setState("error")}
+    }
+  }
+
+  async function retryPreview(){
+    if(operation.current)return;
+    const controller=new AbortController();operation.current=controller;setState("loading");
+    try{await refreshPreview(controller)}
+    finally{if(operation.current===controller)operation.current=null}
+  }
 
   async function run(){
-    setRunning(true);setRunError(null);
-    const response=await fetch("/api/billing/collections/dispatch",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({action:"run"})});
-    const payload=await response.json();
-    if(response.ok)setResult(payload);else setRunError(payload.error??"Não foi possível rodar o disparo.");
-    setRunning(false);
+    if(operation.current)return;
+    const controller=new AbortController();operation.current=controller;
+    setRunning(true);setRunError(null);setResult(null);
+    try{
+      const response=await fetch("/api/billing/collections/dispatch",{method:"POST",signal:controller.signal,headers:{"content-type":"application/json"},body:JSON.stringify({action:"run"})});
+      const payload=await response.json();
+      if(controller.signal.aborted)return;
+      if(response.ok){setResult(payload);await refreshPreview(controller)}
+      else setRunError(payload.error??"Não foi possível confirmar o disparo. Consulte os indicadores antes de tentar novamente.");
+    }catch{
+      if(!controller.signal.aborted)setRunError("Não foi possível confirmar o resultado do disparo. Consulte os indicadores antes de tentar novamente.");
+    }finally{
+      if(operation.current===controller)operation.current=null;
+      if(!controller.signal.aborted)setRunning(false);
+    }
   }
 
   if(!hasRule)return null;
   return <Card title="Disparo de hoje" badge={<Badge>fica na auditoria</Badge>}
     actions={state==="ready"&&preview?.available&&<><a className="button secondary small" href="/api/billing/collections/dispatch?format=csv" download><Icon name="download" size={14}/>CSV</a><button className="button small" disabled={running} onClick={()=>void run()}>{running?"Rodando…":"Rodar disparo"}</button></>}>
     {state==="loading"&&<Loading rows={1} stats={0}/>}
-    {state==="error"&&<Notice tone="bad">Não foi possível consultar o disparo.</Notice>}
-    {state==="ready"&&preview&&!preview.available&&<Notice tone="bad">{preview.detail}.</Notice>}
+    {state==="error"&&<Notice tone="bad">{result?"Disparo confirmado, mas não foi possível atualizar os indicadores.":"Não foi possível consultar o disparo."} <button className="link-button" onClick={()=>void retryPreview()}>Atualizar indicadores</button></Notice>}
+    {state==="ready"&&preview&&!preview.available&&<Notice tone="bad">{preview.detail}. <button className="link-button" onClick={()=>void retryPreview()}>Atualizar indicadores</button></Notice>}
     {state==="ready"&&preview?.available&&<div className="stack">
       <Stats>
         <Stat label={`Faturas para hoje (${preview.today?.scheduledFor??"—"})`} value={count(preview.today?.candidates??0)} hint="Casam com alguma etapa ativa; quem já pagou não entra"/>
         <Stat label={`Disparos registrados (${preview.period})`} value={count(preview.indicators?.total??0)} hint="No ledger"/>
       </Stats>
-      {runError&&<p className="form-error">{runError}</p>}
-      {result&&<div className="dispatch-result">
+    </div>}
+    {runError&&<p className="form-error">{runError} {state==="ready"&&<button className="link-button" disabled={running} onClick={()=>void retryPreview()}>Atualizar indicadores</button>}</p>}
+    {result&&<div className="dispatch-result">
         {result.businessHour
           ? <>Rodado: {result.candidates} candidato(s), <strong>{result.recorded}</strong> novo(s) registrado(s){result.duplicates>0?`, ${result.duplicates} já tinha(m) sido registrado(s) hoje`:""}.
               {result.queueEnabled?` ${result.enqueued} enfileirado(s) para envio.`:" A fila de envio está desligada (FEATURE_QUEUES) — ficou registrado, mas nada foi enfileirado."}</>
           : <>Fora do horário comercial: {result.candidates} candidato(s) seriam contatados, mas nada foi registrado. Rode entre 8h e 20h, em dia de semana.</>}
-      </div>}
-      <p className="hint">Sem ponte de envio ligada ao WhatsApp, o registro prova a decisão — não a entrega. Quando o worker de fila mandar a mensagem de verdade, ele consome o que fica enfileirado aqui.</p>
     </div>}
+    <p className="hint">Sem ponte de envio ligada ao WhatsApp, o registro prova a decisão — não a entrega. Quando o worker de fila mandar a mensagem de verdade, ele consome o que fica enfileirado aqui.</p>
   </Card>;
 }
