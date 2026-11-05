@@ -71,14 +71,14 @@ test("BullMQ processa, faz retry, envia à DLQ, reprocessa e deduplica", { skip:
     assert.equal(executions.get(normal.job.id), 1);
 
     const retrying = await enqueue(runtime, {
-      queue: "billing-reminders",
+      queue: "ai-evaluations",
       name: "retry-success",
       idempotencyKey: "retry-001",
       correlationId: "correlation-retry-001",
       payload: { simulateFailures: 2 },
       maxAttempts: 3,
     });
-    await waitFor(async () => (await runtime.queue("billing-reminders").getJob(retrying.job.id))?.isCompleted());
+    await waitFor(async () => (await runtime.queue("ai-evaluations").getJob(retrying.job.id))?.isCompleted());
     assert.equal(executions.get(retrying.job.id), 3);
 
     const failing = await enqueue(runtime, {
