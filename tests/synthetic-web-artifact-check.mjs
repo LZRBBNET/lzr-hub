@@ -37,11 +37,11 @@ test('artefato Node: acesso anônimo bloqueado antes do HTML/API, login público
     assert.deepEqual(await me.json(), { authenticated: false, authRequired: true });
     assert.equal((await fetch(request('/api/auth/login', { method: 'POST', headers: { origin: flags.SYNTHETIC_DEMO_ORIGIN, 'content-type': 'application/json' }, body: '{}' }))).status, 400);
     assert.equal((await fetch(request('/api/auth/login', { method: 'POST', body: '{}' }))).status, 403);
-    const initKeys=['SYNTHETIC_INIT_ENABLED','SYNTHETIC_INIT_CAPABILITY_SHA256','SYNTHETIC_INIT_DATABASE_HOST','DATABASE_URL'];
+    const initKeys=['SYNTHETIC_INIT_EXPIRES_AT','SYNTHETIC_INIT_ENABLED','SYNTHETIC_INIT_CAPABILITY_SHA256','SYNTHETIC_INIT_DATABASE_HOST','DATABASE_URL'];
     const initSaved=Object.fromEntries(initKeys.map(k=>[k,process.env[k]]));
     try {
       const token='c'.repeat(64);
-      process.env.SYNTHETIC_INIT_ENABLED='true';process.env.SYNTHETIC_INIT_CAPABILITY_SHA256=createHash('sha256').update(token).digest('hex');
+      process.env.SYNTHETIC_INIT_EXPIRES_AT=new Date(Date.now()+15*60*1000).toISOString();process.env.SYNTHETIC_INIT_ENABLED='true';process.env.SYNTHETIC_INIT_CAPABILITY_SHA256=createHash('sha256').update(token).digest('hex');
       delete process.env.DATABASE_URL; // Invalid target must refuse before connect.
       const refused=await fetch(request('/api/demo/initialize',{headers:{'x-synthetic-init-capability':token}}));
       assert.equal(refused.status,400);
