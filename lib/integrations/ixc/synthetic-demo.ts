@@ -47,7 +47,13 @@ export function createSyntheticInvoiceDemo(source: () => Record<string, string |
     const value = Reflect.get(target, key);
     return typeof value === 'function' ? (...args: unknown[]) => { assertSyntheticDemo(source()); return value.apply(target, args); } : value;
   } });
-  return { provider: guarded, markPaid() { assertSyntheticDemo(source()); paid = true; provider.invalidate('10'); return { synthetic: true, invoiceId: '901', status: 'R', delivered: false }; } };
+  return { provider: guarded, reset(confirmation: string) {
+    assertSyntheticDemo(source());
+    if (confirmation !== 'RESET_SYNTHETIC_INVOICE_901') throw new Error('SYNTHETIC_RESET_CONFIRMATION_REQUIRED');
+    paid = false; provider.invalidate('10');
+    return { synthetic: true, invoiceId: '901', status: 'A', databaseReset: false, delivered: false,
+      warning: 'Somente a fatura em memória foi reaberta; promessas e histórico persistidos permanecem.' };
+  }, markPaid() { assertSyntheticDemo(source()); paid = true; provider.invalidate('10'); return { synthetic: true, invoiceId: '901', status: 'R', delivered: false }; } };
 }
 
 let demo: ReturnType<typeof createSyntheticInvoiceDemo> | undefined;
