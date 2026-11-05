@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { and, eq, inArray, sql } from "drizzle-orm";
+import { and, eq, inArray, isNull, sql } from "drizzle-orm";
 import { auditEvents, channelMessages, conversationStates } from "../../db/schema.ts";
 import { isNonCustomerConversation } from "./conversation-scope.ts";
 import { STATE_ACTIONS, botMayReply, effectiveState, type ConversationStateRow, type EffectiveState, type StateAction } from "./conversation-state-shared.ts";
@@ -19,6 +19,8 @@ export interface ConversationStateRepository {
   get(channel: string, conversationId: string): Promise<ConversationStateRow | undefined>;
   getMany(conversationIds: string[]): Promise<Map<string, ConversationStateRow>>;
   save(channel: string, conversationId: string, row: ConversationStateRow): Promise<void>;
+  /** Atomic write only if the persisted state still matches the read. No retry. */
+  saveIfCurrent(channel: string, conversationId: string, expected: ConversationStateRow | undefined, next: ConversationStateRow): Promise<boolean>;
   /** `undefined` = a conversa não existe; `null` = existe, mas o cliente nunca escreveu. */
   lastCustomerAt(channel: string, conversationId: string): Promise<string | null | undefined>;
   audit(entry: { action: string; entity: string; reason: string; actor: StateActor }): Promise<void>;
@@ -73,7 +75,9 @@ export async function changeConversationState(
     reason = `Reabriu a conversa${current.resolvedBy ? ` (resolvida por ${current.resolvedBy})` : ""}`;
   }
 
-  await repository.save(input.channel, conversationId, next);
+  if (!await repository.saveIfCurrent(input.channel, conversationId, row, next)) {
+    return { ok: false, status: 409, reason: "A conversa mudou durante a ação. Atualize antes de tentar novamente." };
+  }
   // A auditoria não derruba a ação: o estado já mudou e a tela precisa saber.
   await repository.audit({ action: `conversation.${action}`, entity, reason, actor }).catch(() => undefined);
   return { ok: true, state: effectiveState(next, lastCustomerAt), changed: true };
@@ -104,6 +108,8 @@ export async function botMayReplyNow(repository: ConversationStateRepository, ch
   catch { return false; }
 }
 
+const STATE_FIELDS = ["status","assigneeId","assigneeName","assignedAt","resolvedAt","resolvedBy"] as const;
+
 type Row = { channel: string; externalConversationId: string; status: string; assigneeId: string | null; assigneeName: string | null; assignedAt: string | null; resolvedAt: string | null; resolvedBy: string | null };
 const toState = (row: Row): ConversationStateRow => ({
   status: row.status === "resolved" ? "resolved" : "open",
@@ -131,6 +137,24 @@ export class DbConversationStateRepository implements ConversationStateRepositor
     const values = { ...row, updatedAt: new Date().toISOString() };
     await this.db.insert(conversationStates).values({ channel, externalConversationId: conversationId, ...values })
       .onConflictDoUpdate({ target: [conversationStates.channel, conversationStates.externalConversationId], set: values });
+  }
+
+  async saveIfCurrent(channel: string, conversationId: string, expected: ConversationStateRow | undefined, next: ConversationStateRow) {
+    const values = { ...next, updatedAt: new Date().toISOString() };
+    if (!expected) {
+      const inserted = await this.db.insert(conversationStates).values({ channel, externalConversationId: conversationId, ...values })
+        .onConflictDoNothing({ target: [conversationStates.channel, conversationStates.externalConversationId] })
+        .returning({ id: conversationStates.externalConversationId });
+      return inserted.length === 1;
+    }
+    const unchanged = STATE_FIELDS.map(key => {
+      const value = expected[key];
+      return value === null ? isNull(conversationStates[key]) : eq(conversationStates[key], value);
+    });
+    const updated = await this.db.update(conversationStates).set(values)
+      .where(and(eq(conversationStates.channel, channel), eq(conversationStates.externalConversationId, conversationId), ...unchanged))
+      .returning({ id: conversationStates.externalConversationId });
+    return updated.length === 1;
   }
 
   async lastCustomerAt(channel: string, conversationId: string) {
@@ -166,6 +190,12 @@ export class MemoryConversationStateRepository implements ConversationStateRepos
     return new Map([...this.states].filter(([key]) => conversationIds.some((id) => key.endsWith(`:${id}`))));
   }
   async save(channel: string, conversationId: string, row: ConversationStateRow) { this.states.set(stateKey(channel, conversationId), row); }
+  async saveIfCurrent(channel: string, conversationId: string, expected: ConversationStateRow | undefined, next: ConversationStateRow) {
+    const key = stateKey(channel, conversationId), current = this.states.get(key);
+    if ((!current) !== (!expected) || (current && expected && STATE_FIELDS.some(field => current[field] !== expected[field]))) return false;
+    this.states.set(key, { ...next });
+    return true;
+  }
   async lastCustomerAt(channel: string, conversationId: string) {
     const key = stateKey(channel, conversationId);
     return this.conversations.has(key) ? this.conversations.get(key) ?? null : undefined;

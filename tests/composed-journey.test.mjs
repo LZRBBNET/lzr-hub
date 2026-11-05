@@ -375,7 +375,7 @@ test('composição: Cliente 360 → humano responsável → promessa → pagamen
       readEvidence: async (context, options) => {
         evidenceReads++;
         assert.equal(options.requestedAt, NOW.toISOString());
-        const invoice = await provider.getInvoiceForCustomer(context.customerId, context.invoiceId, 'synthetic-worker-read');
+        const invoice = await provider.getInvoiceBalanceForCustomer(context.customerId, context.invoiceId, 'synthetic-worker-read');
         const step = rule.steps.find(item => item.id === context.stepId);
         const decision = ledger.rows.find(item => item.invoiceId === context.invoiceId && item.stepId === context.stepId && item.scheduledFor === context.scheduledFor);
         assert.ok(step); assert.ok(decision);

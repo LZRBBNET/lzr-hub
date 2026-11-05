@@ -105,7 +105,8 @@ export function CustomerDetail({data,loading,error,refreshing,onRefresh,onClose,
   if(loading||!data)return <><button type="button" className="button ghost small" onClick={onClose}>Fechar</button><Loading rows={6}/></>;
   // A situação do cadastro, a mesma da lista: o contrato pode estar encerrado com o cliente ativo em outro.
   const [statusText,statusTone]=statusOf(data.customer.status);
-  const live=data.mode==="staging-readonly";
+  const ixc=data.mode==="staging-readonly";
+  const consulted=ixc||Boolean(data.reading);
   const reading=data.reading;
   const currency=(value:number|null)=>value===null?"Não confirmado":`R$ ${value.toFixed(2).replace(".",",")}`;
   const coverageState=(c:NonNullable<Customer360["reading"]>["coverage"]["contracts"]|undefined)=>{
@@ -116,35 +117,35 @@ export function CustomerDetail({data,loading,error,refreshing,onRefresh,onClose,
   const coverageKeys={"IXC contratos":"contracts","IXC financeiro":"invoices","IXC pagamentos":"payments","IXC ordens de serviço":"serviceOrders"} as const;
   const sourcePresentation=(source:Customer360["sources"][number])=>{
     if(source.state!=="ready")return {label:"indisponível",tone:"warn"};
-    if(!live)return {label:source.cache==="hit"?"cache":"ok",tone:"ok"};
-    const key=coverageKeys[source.provider as keyof typeof coverageKeys];
+    if(!consulted)return {label:source.cache==="hit"?"cache":"ok",tone:"ok"};
+    const key=source.coverageKey??coverageKeys[source.provider as keyof typeof coverageKeys];
     const c=key?reading?.coverage[key]:undefined;
     const {valid,complete}=coverageState(c);
     const label=!key?"consulta ok":complete?"leitura completa":valid&&c!.complete===false?"parcial":"cobertura não confirmada";
     return {label:label+(source.cache==="hit"?" · cache":""),tone:key&&!complete?"warn":"ok"};
   };
-  const incompleteReading=live&&(!reading||data.sources.some(source=>sourcePresentation(source).tone==="warn"));
+  const incompleteReading=consulted&&(!reading||data.sources.some(source=>sourcePresentation(source).tone==="warn"));
   const observedAt=reading?.observedAt??data.sources[0]?.updatedAt;
   const observed=observedAt&&Number.isFinite(new Date(observedAt).getTime())?new Date(observedAt).toLocaleString("pt-BR",{timeZone:"America/Sao_Paulo"}):"Horário não confirmado";
   return <>
     <div className={embedded?"details-head customer-embedded-head":"details-head"}>
       <Avatar size="lg" name={data.customer.name}/>
       <h2>{data.customer.name}</h2><p>Código {data.customer.id} · {data.customer.maskedDocument}</p>
-      <div className="chips" style={{justifyContent:"center",marginTop:6}}><Badge tone={statusTone==="ok"?"ok":statusTone==="bad"?"bad":"warn"}>{live?"Cadastro: ":""}{statusText}</Badge><Badge tone={live?"info":"neutral"}>{live?"IXC":"Demonstração"}</Badge></div>
+      <div className="chips" style={{justifyContent:"center",marginTop:6}}><Badge tone={statusTone==="ok"?"ok":statusTone==="bad"?"bad":"warn"}>{consulted?"Cadastro: ":""}{statusText}</Badge><Badge tone={ixc?"info":"neutral"}>{ixc?"IXC":"Demonstração"}</Badge></div>
       {!embedded&&<button type="button" className="icon-button details-close" onClick={onClose} aria-label="Fechar"><Icon name="x"/></button>}
     </div>
     <div className="details-body">
       {(data.partial||incompleteReading)&&<Notice tone="warn">Leitura parcial ou com dados não confirmados. Os recortes abaixo não representam necessariamente todo o histórico.</Notice>}
       <Section title="Contato" rows={[["Telefone",data.contact.phone],["E-mail",data.contact.email],["Endereço",data.contact.address],["Cliente desde",data.contact.customerSince]]}/>
-      {(!live||reading?.contractSelection==="single")&&<Section title={live?"Contrato único na leitura":"Contrato"} rows={[["Código",data.contract.id],["Situação do contrato",statusOf(data.contract.status)[0]],["Plano",data.contract.plan],["Mensalidade",currency(data.contract.monthlyValue)],["Vencimento",data.contract.dueDay?`Dia ${data.contract.dueDay}`:"Indisponível"]]}/>}
-      {live&&reading?.contractSelection!=="single"&&<section className="details-section">
+      {(!consulted||reading?.contractSelection==="single")&&<Section title={consulted?"Contrato único na leitura":"Contrato"} rows={[["Código",data.contract.id],["Situação do contrato",statusOf(data.contract.status)[0]],["Plano",data.contract.plan],["Mensalidade",currency(data.contract.monthlyValue)],["Vencimento",data.contract.dueDay?`Dia ${data.contract.dueDay}`:"Indisponível"]]}/>}
+      {consulted&&reading?.contractSelection!=="single"&&<section className="details-section">
         <h3>Contratos consultados</h3>
         <p className="hint">{reading?.contractSelection==="none"?"Nenhum contrato encontrado na leitura completa.":reading?.contractSelection==="unavailable"?"Fonte de contratos indisponível.":"Nenhum contrato escolhido automaticamente como atual. Situação do cadastro e do contrato são informações diferentes."}</p>
         {reading?.contracts.map(contract=><p className="small" key={contract.id}>Contrato {contract.id} · {statusOf(contract.status)[0]} · {contract.plan}</p>)}
       </section>}
-      {live&&<p className="hint">Contratos: {coverageLabel("contracts")}</p>}
-      <Section title="Financeiro consultado" rows={[[live?(reading?.financeComplete?"Saldo vencido na leitura":"Subtotal vencido conhecido (parcial)"):"Em atraso",currency(data.finance.overdueAmount)],[live?"Data de pagamento mais recente no recorte":"Último pagamento",data.finance.lastPayment]]}/>
-      {live&&<section className="details-section">
+      {consulted&&<p className="hint">Contratos: {coverageLabel("contracts")}</p>}
+      <Section title="Financeiro consultado" rows={[[consulted?(reading?.financeComplete?"Saldo vencido na leitura":"Subtotal vencido conhecido (parcial)"):"Em atraso",currency(data.finance.overdueAmount)],[consulted?"Data de pagamento mais recente no recorte":"Último pagamento",data.finance.lastPayment]]}/>
+      {consulted&&<section className="details-section">
         <p className="hint">Faturas: {coverageLabel("invoices")}. Referência de vencimento: {reading?.referenceDate??"não confirmada"} (Brasília).</p>
         {reading&&!reading.financeAvailable&&<Notice tone="bad">Fonte financeira indisponível. Nenhum saldo foi confirmado.</Notice>}
         {reading&&!reading.financeComplete&&<Notice tone="warn">Não é o saldo total confirmado do cliente. Valor ausente ou parcial não significa ausência de dívida.</Notice>}
@@ -152,7 +153,7 @@ export function CustomerDetail({data,loading,error,refreshing,onRefresh,onClose,
         {!!reading?.nominalValueInvoices&&<p className="hint">{reading.nominalValueInvoices} valor(es) nominal(is) ou sem origem confirmada excluído(s) do subtotal; pagamentos parciais podem não estar descontados.</p>}
         <p className="hint">Pagamentos: {coverageLabel("payments")}. Consulta limitada a até 10 faturas; não afirma qual foi o último pagamento do cliente.</p>
       </section>}
-      {live&&reading&&<>
+      {consulted&&reading&&<>
         <section className="details-section"><h3>Faturas do recorte</h3>
           <p className="hint">Identificadores de contrato apenas quando confirmados nesta leitura. Valores nominais não são saldo em aberto.</p>
           {reading.invoices===undefined?<p className="hint">Detalhamento indisponível nesta resposta.</p>:reading.invoices.length===0?<p className="hint">Nenhuma fatura neste recorte; consulte a cobertura acima.</p>:<ul className="customer-record-list" role="list">{reading.invoices.map(i=><li key={i.id}><strong>Fatura {i.id} · {i.contractId?`Contrato ${i.contractId}`:"Contrato não confirmado"}</strong><span>Status na fonte: {i.status} · Vencimento: {i.dueAt??"não confirmado"}</span><small>Saldo em aberto: {currency(i.openBalance)} · Origem do valor: {i.valueSource}</small></li>)}</ul>}
@@ -162,20 +163,20 @@ export function CustomerDetail({data,loading,error,refreshing,onRefresh,onClose,
           {reading.payments===undefined?<p className="hint">Detalhamento indisponível nesta resposta.</p>:reading.payments.length===0?<p className="hint">Nenhum pagamento neste recorte.</p>:<ul className="customer-record-list" role="list">{reading.payments.map(p=><li key={p.id}><strong>Pagamento {p.id} · Fatura {p.invoiceId}</strong><span>{p.paidOn} · {currency(p.value)}</span><small>Forma: {p.method||"não informada"}</small></li>)}</ul>}
         </section>
         <section className="details-section"><h3>Ordens de serviço do recorte</h3>
-          <p className="hint">Origem IXC. A execução técnica acontece no SeeNet; esta leitura não confirma atualização nem completude da integração SeeNet.</p>
+          <p className="hint">{ixc?"Origem IXC. A execução técnica acontece no SeeNet; esta leitura não confirma atualização nem completude da integração SeeNet.":"Origem sintética; ordens de serviço fictícias da demonstração."}</p>
           {reading.serviceOrders===undefined?<p className="hint">Detalhamento indisponível nesta resposta.</p>:reading.serviceOrders.length===0?<p className="hint">Nenhuma OS neste recorte; ausência de registro não comprova ausência de atendimento.</p>:<ul className="customer-record-list" role="list">{reading.serviceOrders.map(o=><li key={o.id}><strong>OS {o.id} · {o.subject||"Assunto não informado"}</strong><span>Status na fonte: {o.status} · Abertura: {o.openedAt??"não confirmada"}</span></li>)}</ul>}
         </section>
       </>}
-      {live&&<p className="hint">Conexão do cadastro: a fonte não identifica o contrato deste login. Não associe automaticamente a uma das faturas.</p>}
+      {consulted&&<p className="hint">Conexão do cadastro: a fonte não identifica o contrato deste login. Não associe automaticamente a uma das faturas.</p>}
       <Section title="Conexão" rows={[["Status",data.network.onuStatus],["PPPoE (login)",data.network.pppoe],["Equipamento/OLT",data.network.equipmentDescriptor],["Tipo de conexão",data.network.connectionType],["ONU",data.network.onu],["Potência",data.network.opticalPower],["Última conexão",data.network.uptime]]}/>
-      {data.details&&<Section title={live?"Registros consultados (não totais históricos)":"Histórico"} rows={[["Contratos",String(data.details.contracts)],["Faturas",String(data.details.invoices)],["Pagamentos",String(data.details.payments)],["Ordens de serviço",String(data.details.serviceOrders)]]}/>}
-      {live&&<p className="hint">Ordens de serviço: {coverageLabel("serviceOrders")}</p>}
+      {data.details&&<Section title={consulted?"Registros consultados (não totais históricos)":"Histórico"} rows={[["Contratos",String(data.details.contracts)],["Faturas",String(data.details.invoices)],["Pagamentos",String(data.details.payments)],["Ordens de serviço",String(data.details.serviceOrders)]]}/>}
+      {consulted&&<p className="hint">Ordens de serviço: {coverageLabel("serviceOrders")}</p>}
       {/* Saúde e risco só existem na demonstração: com o IXC real nada os calcula, e a seção seria quatro linhas de "não calculado". */}
-      {!live&&<Section title="Inteligência (demonstração)" rows={[["Saúde",data.intelligence.health?`${data.intelligence.health}/100`:"Não calculada"],["Risco",data.intelligence.churnRisk],["Upgrade",data.intelligence.upgradeEligible?data.intelligence.recommendedPlan:"Não elegível"],["Motivo",data.intelligence.reason]]}/>}
+      {!consulted&&<Section title="Inteligência (demonstração)" rows={[["Saúde",data.intelligence.health?`${data.intelligence.health}/100`:"Não calculada"],["Risco",data.intelligence.churnRisk],["Upgrade",data.intelligence.upgradeEligible?data.intelligence.recommendedPlan:"Não elegível"],["Motivo",data.intelligence.reason]]}/>}
       <section className="details-section">
         <h3>Fontes {typeof data.totalLatencyMs==="number"&&<span className="muted" style={{fontWeight:400}}>· {data.totalLatencyMs} ms</span>}{onRefresh&&<button className="button ghost small" style={{marginLeft:"auto"}} disabled={refreshing} onClick={onRefresh}><Icon name="refresh" size={14}/>{refreshing?"Atualizando…":"Ler de novo"}</button>}</h3>
-        {live&&<p className="hint">Leitura em {observed} (Brasília). {data.sources.some(s=>s.cache==="hit")?"Dados em cache; a hora é da consulta original.":"Consulta ao IXC, sem cache indicado."}</p>}
-        <div className="chips">{data.sources.map((s,i)=>{const presentation=sourcePresentation(s);return <span key={i} className={`chip ${presentation.tone}`} title={`${s.masked?"mascarado":"real"} · ${s.latencyMs??0} ms`}>{s.provider} · {presentation.label}</span>;})}</div>
+        {consulted&&<p className="hint">Leitura em {observed} (Brasília). {data.sources.some(s=>s.cache==="hit")?"Dados em cache; a hora é da consulta original.":ixc?"Consulta ao IXC, sem cache indicado.":"Leitura sintética em memória, sem consulta externa."}</p>}
+        <div className="chips">{data.sources.map((s,i)=>{const presentation=sourcePresentation(s);return <span key={i} className={`chip ${presentation.tone}`} title={`${s.mode==="demo"?"sintético":s.masked?"mascarado":"real"} · ${s.latencyMs??0} ms`}>{s.provider} · {presentation.label}</span>;})}</div>
       </section>
     </div>
   </>;

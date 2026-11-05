@@ -51,3 +51,11 @@ O teste cobre processamento normal, retry automático, DLQ, reprocessamento manu
 - Execute pelo menos um processo `queue-worker` continuamente.
 - Mantenha `FEATURE_QUEUES=false` até Redis, API, worker, segredo e URL estarem configurados.
 - O processador desta entrega confirma o pipeline assíncrono, mas não realiza escrita no IXC, envio de WhatsApp ou cobrança externa.
+
+## Saldo confirmado antes do lembrete
+
+O guard de `billing-reminders` exige na evidência fresca `invoice.valueSource = "open-balance"` e `invoice.value` numérico, finito, positivo e representável em centavos seguros. Status aberto, valor nominal, saldo zero/ausente ou origem desconhecida não autorizam a continuação. O payload antigo do job não fornece essa comprovação.
+
+O adaptador confiável pode usar `getInvoiceBalanceForCustomer` para consulta exata e fresca por cliente/fatura. Essa leitura retorna somente identidade, status, vencimento, saldo e origem do valor; não retorna código de pagamento. `getInvoiceForCustomer` conserva seu contrato mínimo anterior para reconciliação de promessas. Não há adaptador ou remetente real habilitado por esta mudança; o worker padrão segue bloqueado sem dependências explícitas.
+
+Essa proteção ocorre no processamento, inclusive para intenção preparada antes de o saldo zerar. Não altera a prévia/ledger da régua nem transforma saldo zero em confirmação de pagamento ou promessa cumprida: a reconciliação continua exigindo o status confirmado. Testes usam somente fontes em memória e continuação fictícia, sem Redis, PostgreSQL, IXC ou envio real. Leituras e decisões podem mudar depois da conferência; um futuro remetente precisa de revisão própria de atomicidade/idempotência e não está autorizado por esse guard.

@@ -448,7 +448,7 @@ export class IxcReadonlyProvider {
    * do cliente. Consulta `fn_areceber` com os dois filtros e revalida o retorno.
    * Não usa o cache/snapshot nem filtra por status: recebidas também importam.
    */
-  async getInvoiceForCustomer(customerId:string,invoiceId:string,correlationId:string):Promise<{id:string;customerId:string;status:string}|undefined>{
+  private async readExactInvoice(customerId:string,invoiceId:string,correlationId:string){
     if(!/^[1-9]\d{0,31}$/.test(customerId)||!/^[1-9]\d{0,31}$/.test(invoiceId))throw new IxcReadonlyError("IXC_INVALID_INVOICE_REFERENCE");
     const {records,total,coverage}=await this.readPage("listInvoices",endpoints.listInvoices,"fn_areceber.id",invoiceId,correlationId,2,customerId,{
       oper:"=",page:1,sortname:"fn_areceber.id",
@@ -460,7 +460,18 @@ export class IxcReadonlyProvider {
     const row=records[0];
     const id=(value:unknown)=>typeof value==="string"?value:typeof value==="number"&&Number.isSafeInteger(value)?String(value):"";
     if(id(row.id)!==invoiceId||id(row.id_cliente)!==customerId)throw new IxcReadonlyError("IXC_INVOICE_SCOPE_MISMATCH");
-    return{id:invoiceId,customerId,status:typeof row.status==="string"?row.status:""};
+    return row;
+  }
+  async getInvoiceForCustomer(customerId:string,invoiceId:string,correlationId:string):Promise<{id:string;customerId:string;status:string}|undefined>{
+    const row=await this.readExactInvoice(customerId,invoiceId,correlationId);
+    return row?{id:invoiceId,customerId,status:typeof row.status==="string"?row.status:""}:undefined;
+  }
+  /** Exact fresh balance evidence, without payment code or unrelated invoice fields. */
+  async getInvoiceBalanceForCustomer(customerId:string,invoiceId:string,correlationId:string):Promise<Pick<IxcInvoiceDto,"id"|"customerId"|"status"|"dueAt"|"value"|"valueSource">|undefined>{
+    const row=await this.readExactInvoice(customerId,invoiceId,correlationId);
+    if(!row)return undefined;
+    const invoice=IxcInvoiceMapper.map(row);
+    return{id:invoice.id,customerId:invoice.customerId,status:invoice.status,dueAt:invoice.dueAt,value:invoice.value,valueSource:invoice.valueSource};
   }
   /** Uma leitura fresca somente de faturas abertas; não carrega pagamentos, contratos ou conexão. */
   async getOpenInvoicesForDispatch(customerId:string,correlationId:string):Promise<IxcInvoiceDto[]>{
