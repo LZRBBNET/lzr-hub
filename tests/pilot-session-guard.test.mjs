@@ -146,3 +146,14 @@ for(const role of ['Supervisor','Somente leitura'])test(`handler real de troca d
   assert.equal(changed.status,200);assert.equal((await changed.json()).changed,true);
   assert.equal((await f.create()).status,role==='Supervisor'?201:403);assert.equal((await f.claim()).status,role==='Supervisor'?200:403);
 });
+
+for(const cookie of ['', 'lzr_session=%ZZ', 'lzr_session=synthetic-unknown'])test(`troca de senha recusa sessão ausente/ilegível sem exceção: ${cookie}`,async t=>{
+  const f=fixture(t,{flag:'true',cookie});
+  const route=compile('../app/api/auth/password/route.ts',{
+    'next/server':require('next/server'),'@/db':{async getDb(){assert.fail('No business DB on invalid session');}},
+    '@/lib/platform/auth':auth,'@/lib/platform/session-guard':f.guard,
+    '@/lib/platform/audit-log':{async logUnauthenticatedAction(){assert.fail('No success audit');}},
+  });
+  const response=await route.POST(f.request({currentPassword:'synthetic',newPassword:'synthetic-replacement'}));
+  assert.equal(response.status,401);assert.doesNotMatch(await response.text(),/URIError|URI malformed|synthetic-unknown|%ZZ/);noBusiness(f);
+});
