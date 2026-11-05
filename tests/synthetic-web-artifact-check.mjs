@@ -2,6 +2,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readdir, readFile } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
 import { stagingDemoRequirements } from '../lib/runtime/staging-demo.ts';
 
 test('artefato Node: acesso anônimo bloqueado antes do HTML/API, login público e drift recusado', async () => {
@@ -36,6 +37,16 @@ test('artefato Node: acesso anônimo bloqueado antes do HTML/API, login público
     assert.deepEqual(await me.json(), { authenticated: false, authRequired: true });
     assert.equal((await fetch(request('/api/auth/login', { method: 'POST', headers: { origin: flags.SYNTHETIC_DEMO_ORIGIN, 'content-type': 'application/json' }, body: '{}' }))).status, 400);
     assert.equal((await fetch(request('/api/auth/login', { method: 'POST', body: '{}' }))).status, 403);
+    const initKeys=['SYNTHETIC_INIT_ENABLED','SYNTHETIC_INIT_CAPABILITY_SHA256','SYNTHETIC_INIT_DATABASE_HOST','DATABASE_URL'];
+    const initSaved=Object.fromEntries(initKeys.map(k=>[k,process.env[k]]));
+    try {
+      const token='c'.repeat(64);
+      process.env.SYNTHETIC_INIT_ENABLED='true';process.env.SYNTHETIC_INIT_CAPABILITY_SHA256=createHash('sha256').update(token).digest('hex');
+      delete process.env.DATABASE_URL; // Invalid target must refuse before connect.
+      const refused=await fetch(request('/api/demo/initialize',{headers:{'x-synthetic-init-capability':token}}));
+      assert.equal(refused.status,400);
+      assert.equal((await fetch(request('/api/customers',{headers:{'x-synthetic-init-capability':token}}))).status,503);
+    } finally {for(const [k,v] of Object.entries(initSaved)){if(v===undefined)delete process.env[k];else process.env[k]=v;}}
     process.env.FEATURE_AUTH = 'false';
     assert.equal((await fetch(request('/login'))).status, 503);
     for (const key of Object.keys(flags)) if (key !== 'NODE_ENV') delete process.env[key];

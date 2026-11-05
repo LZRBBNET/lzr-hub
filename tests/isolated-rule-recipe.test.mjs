@@ -1,0 +1,32 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import { parseRuleInput, MemoryCollectionRulesRepository } from '../lib/platform/collection-rules-service.ts';
+import { createSyntheticInvoiceDemo } from '../lib/integrations/ixc/synthetic-demo.ts';
+import { loadFreshDispatchInvoices } from '../lib/platform/collection-dispatch-source.ts';
+import { MemoryCollectionDispatchRepository, resolveTodayCandidates, runTodayDispatch, isBusinessHour } from '../lib/platform/collection-dispatch-service.ts';
+import { stagingDemoRequirements } from '../lib/runtime/staging-demo.ts';
+
+test('receita de régua usa fluxo existente, registra sem envio e exclui pagamento sintético',async t=>{
+  const previous=process.env.FEATURE_QUEUES;process.env.FEATURE_QUEUES='false';t.after(()=>{if(previous===undefined)delete process.env.FEATURE_QUEUES;else process.env.FEATURE_QUEUES=previous;});
+  const recipe=JSON.parse(readFileSync(new URL('../docs/demo/isolated-rule-recipe.json',import.meta.url),'utf8'));
+  const repository=new MemoryCollectionRulesRepository();
+  assert.equal(await repository.getLatest(),undefined);
+  const saved=await repository.saveVersion(parseRuleInput(recipe),'operator@example.invalid');
+  assert.equal(saved.version,1);assert.equal(saved.status,'draft');assert.equal(saved.steps.length,1);
+  const demo=createSyntheticInvoiceDemo(()=>({...stagingDemoRequirements,FEATURE_AUTH:'true',FEATURE_IXC_FULL_BASE:'false',FEATURE_SYNTHETIC_INVOICES:'true',DEMO_DATASET:'isolated-invoices-v1'}));
+  const open=await loadFreshDispatchInvoices(demo.provider,['10']);
+  const invoice=open[0];
+  const clock=new Date(`${invoice.dueAt}T15:00:00-03:00`);clock.setUTCDate(clock.getUTCDate()+1);
+  assert.equal(resolveTodayCandidates(saved,open,clock).length,1);
+  const ledger=new MemoryCollectionDispatchRepository();
+  const first=await runTodayDispatch(saved,open,ledger,clock,'synthetic-recipe');
+  assert.equal(first.enqueued,0);assert.equal(first.queueEnabled,false);
+  assert.equal(first.recorded,isBusinessHour(clock)?1:0);
+  const repeated=await runTodayDispatch(saved,open,ledger,clock,'synthetic-recipe-repeat');
+  assert.equal(repeated.recorded,0);assert.equal(repeated.enqueued,0);assert.equal(ledger.rows.length,isBusinessHour(clock)?1:0);
+  demo.markPaid();
+  const paid=await loadFreshDispatchInvoices(demo.provider,['10']);
+  assert.equal(resolveTodayCandidates(saved,paid,clock).length,0);
+  assert.equal((await runTodayDispatch(saved,paid,ledger,clock,'synthetic-paid')).candidates,0);
+});

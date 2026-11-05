@@ -14,7 +14,8 @@ export async function runSyntheticWeb(command) {
     await mkdir(root, { recursive: true });
     // A separate Node application root avoids Wrangler target auto-detection.
     // Copy only application source, never hosting identity, dotenv, .git or data.
-    for (const name of ['app', 'components', 'lib', 'db', 'types', 'public', 'proxy.ts', 'tsconfig.json', 'package.json', 'next.config.ts']) {
+    await mkdir(new URL('scripts/', root), { recursive: true });
+    for (const name of ['app', 'components', 'lib', 'db', 'types', 'public', 'drizzle', 'scripts/prepare-synthetic-initialization.mjs', 'proxy.ts', 'tsconfig.json', 'package.json', 'next.config.ts']) {
       await cp(new URL(`../${name}`, import.meta.url), new URL(name, root), { recursive: true,
         filter: path => !path.split('/').some(part => part.startsWith('.env')) });
     }

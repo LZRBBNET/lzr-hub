@@ -10,6 +10,9 @@ export async function POST(request: Request) {
   const guard = await authorize(request, 'billing.write-demo');
   if (!guard.allowed) return NextResponse.json({ error: guard.error }, { status: guard.status });
   const body = await request.json().catch(() => null);
+  if (body?.action === 'reset_fixture' && body?.invoiceId === '901' && body?.confirmation === 'RESET_SYNTHETIC_INVOICE_901') {
+    return NextResponse.json(demo.reset(body.confirmation), { headers: { 'cache-control': 'no-store' } });
+  }
   if (body?.action !== 'simulate_payment' || body?.invoiceId !== '901') return NextResponse.json({ error: 'Ação sintética inválida' }, { status: 400 });
   return NextResponse.json(demo.markPaid(), { headers: { 'cache-control': 'no-store' } });
 }

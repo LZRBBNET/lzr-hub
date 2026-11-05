@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
+import { createHash } from 'node:crypto';
 import { transformSync } from 'esbuild';
 import * as auth from '../lib/platform/auth.ts';
 import * as rbac from '../lib/platform/rbac.ts';
@@ -9,6 +10,7 @@ import * as diagnostics from '../lib/platform/session-diagnostics.ts';
 import * as web from '../lib/runtime/synthetic-web.ts';
 import { stagingDemoRequirements } from '../lib/runtime/staging-demo.ts';
 import { runSyntheticWeb } from '../scripts/synthetic-web.mjs';
+import { initializationAccess } from '../lib/platform/synthetic-initialization-access.ts';
 
 const require = createRequire(import.meta.url);
 const { executeMiddleware } = await import(new URL('./server/middleware-runtime.js', import.meta.resolve('vinext')));
@@ -55,7 +57,8 @@ test('proxy executado pelo runtime vinext verifica sessão real e fecha páginas
     './auth.ts': { ...auth, DbAuthRepository: class { constructor() { return repository; } } },
     './rbac.ts': rbac, './session-diagnostics.ts': diagnostics,
   });
-  const proxyModule = compile('../proxy.ts', { 'next/server': require('next/server'), './lib/platform/session-guard.ts': guard, './lib/runtime/synthetic-web.ts': web });
+  const proxyModule = compile('../proxy.ts', { 'next/server': require('next/server'), './lib/platform/session-guard.ts': guard, './lib/runtime/synthetic-web.ts': web,
+    './lib/platform/synthetic-initialization-access.ts': { initializationAccess } });
   const request = (path, options = {}) => new Request(`https://demo.example.invalid${path}`, options);
   const sessionHeaders = { cookie: `lzr_session=${token}`, origin: values.SYNTHETIC_DEMO_ORIGIN };
   const run = (path, options) => executeMiddleware({ module: proxyModule, isProxy: true, request: request(path, options) });
@@ -129,6 +132,20 @@ test('proxy executado pelo runtime vinext verifica sessão real e fecha páginas
     process.env.LZR_ENV = 'production';
     const result = await run('/api/customers'); assert.equal(result.continue, true); assert.equal(reads, before);
     Object.assign(process.env, values);
+  });
+  await t.test('capability de inicialização só libera rota exata quando opt-in, sem conceder acesso ao negócio', async () => {
+    const keys=['SYNTHETIC_INIT_ENABLED','SYNTHETIC_INIT_CAPABILITY_SHA256'];
+    const saved=Object.fromEntries(keys.map(k=>[k,process.env[k]]));
+    const token='c'.repeat(64),headers={'x-synthetic-init-capability':token,origin:values.SYNTHETIC_DEMO_ORIGIN};
+    try {
+      process.env.SYNTHETIC_INIT_ENABLED='true';process.env.SYNTHETIC_INIT_CAPABILITY_SHA256=createHash('sha256').update(token).digest('hex');
+      assert.equal((await run('/api/demo/initialize',{headers})).continue,true);
+      assert.equal((await run('/api/demo/initialize',{method:'POST',headers})).continue,true);
+      for(const path of ['/api/customers','/api/demo/initialize/extra','/login','/api/auth/me'])assert.equal((await run(path,{headers})).response.status,503);
+      assert.equal((await run('/api/auth/login',{method:'POST',headers})).response.status,503);
+      delete process.env.SYNTHETIC_INIT_ENABLED;
+      assert.equal((await run('/api/demo/initialize',{headers})).response.status,401);
+    } finally {for(const [k,v] of Object.entries(saved)){if(v===undefined)delete process.env[k];else process.env[k]=v;}}
   });
   // The launcher check never opens DB/listen; missing DB also blocks start before imports.
   await runSyntheticWeb('check');

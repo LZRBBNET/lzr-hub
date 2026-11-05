@@ -26,6 +26,10 @@ export const HANDOFF_REASONS = [
   "required_tool_failed",
   "contradictory_or_partial_data",
   "repetition_without_resolution",
+  "explicit_physical_threat",
+  "message_requires_review",
+  "conversation_requires_review",
+  "conditional_cancellation_risk",
 ] as const;
 export type HandoffReason = typeof HANDOFF_REASONS[number];
 
@@ -42,6 +46,10 @@ export const REASON_LABELS: Record<string, [string, string]> = {
   required_tool_failed: ["Ferramenta falhou", "Uma consulta necessária não respondeu"],
   contradictory_or_partial_data: ["Dado contraditório ou parcial", "As fontes discordam ou faltou informação"],
   repetition_without_resolution: ["Repetiu sem resolver", "A conversa girou sem progresso"],
+  explicit_physical_threat: ["Ameaça física explícita", "A mensagem requer avaliação humana de segurança"],
+  message_requires_review: ["Mensagem requer revisão", "O sentido da mensagem exige conferência humana"],
+  conversation_requires_review: ["Conversa requer revisão", "Insultos persistentes exigem intervenção humana"],
+  conditional_cancellation_risk: ["Risco condicional de cancelamento", "Cliente condicionou a continuidade do serviço à solução do problema"],
 };
 export const reasonLabel = (key: string): string => REASON_LABELS[key]?.[0] ?? key;
 export const reasonHint = (key: string): string => REASON_LABELS[key]?.[1] ?? "Motivo registrado pelo pipeline";

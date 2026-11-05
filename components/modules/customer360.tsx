@@ -1,5 +1,5 @@
 "use client";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { Customer360 } from "@/lib/platform/customer360-service";
 import type { CustomerSummary } from "@/lib/platform/types";
 import { Icon } from "@/components/ui/icons";
@@ -26,6 +26,9 @@ export function Customer360Module(){
   const [scope,setScope]=useState<"allowlist"|"full-base">("allowlist"); const [mode,setMode]=useState<"demo"|"staging-readonly">("demo");
   const [selectedId,setSelectedId]=useState<string|null>(null); const [selected,setSelected]=useState<Customer360|null>(null); const [detailError,setDetailError]=useState(false);
   const [loadedKey,setLoadedKey]=useState<string|null>(null); const [failed,setFailed]=useState(false); const [refreshing,setRefreshing]=useState(false);
+  // A resposta pertence à seleção que iniciou a leitura, não à tela que estiver aberta depois.
+  const detailRequest=useRef(0);
+  useEffect(()=>()=>{detailRequest.current++},[]);
   const wide=useMediaQuery("(min-width: 1101px)");
   // Com a base inteira liberada, cada tecla digitada seria uma consulta ao IXC.
   // O termo só vira busca depois que a pessoa para de digitar.
@@ -36,16 +39,26 @@ export function Customer360Module(){
       .then(data=>{if(active){setItems(data.items);setTotal(data.total??data.items.length);setPageSize(data.pageSize??10);setScope(data.scope??"allowlist");setMode(data.mode);setFailed(false);setLoadedKey(`${term}|${risk}|${page}`)}})
       .catch(()=>{if(active){setFailed(true);setLoadedKey(`${term}|${risk}|${page}`)}});
     return()=>{active=false}},[term,risk,page]);
+  function closeDetail(){detailRequest.current++;setSelectedId(null);setSelected(null);setRefreshing(false);setDetailError(false)}
   async function open(id:string){
-    setSelectedId(id);setSelected(null);setDetailError(false);
-    const response=await fetch(`/api/customers?id=${id}`);
-    if(response.ok)setSelected(await response.json());else setDetailError(true);
+    const request=++detailRequest.current;
+    setSelectedId(id);setSelected(null);setDetailError(false);setRefreshing(false);
+    try{
+      const response=await fetch(`/api/customers?id=${encodeURIComponent(id)}`);
+      if(!response.ok)throw new Error("indisponível");
+      const payload=await response.json() as Customer360;
+      if(request===detailRequest.current){if(payload.customer.id!==id)throw new Error("cadastro incorreto");setSelected(payload)}
+    }catch{if(request===detailRequest.current)setDetailError(true)}
   }
   async function refresh(){
-    if(!selected)return;setRefreshing(true);
-    const response=await fetch("/api/customers",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({action:"refresh",id:selected.customer.id})});
-    if(response.ok)setSelected(await response.json());
-    setRefreshing(false);
+    if(!selected)return;const id=selected.customer.id;const request=++detailRequest.current;setRefreshing(true);
+    try{
+      const response=await fetch("/api/customers",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({action:"refresh",id})});
+      if(!response.ok)throw new Error("indisponível");
+      const payload=await response.json() as Customer360;
+      if(request===detailRequest.current){if(payload.customer.id!==id)throw new Error("cadastro incorreto");setSelected(payload);setDetailError(false)}
+    }catch{if(request===detailRequest.current){setSelected(null);setDetailError(true)}}
+    finally{if(request===detailRequest.current)setRefreshing(false)}
   }
   const live=mode==="staging-readonly";
   const loading=loadedKey!==key;
@@ -54,7 +67,7 @@ export function Customer360Module(){
   // Na listagem do IXC o plano não vem — todas as linhas diriam "Abrir para consultar". Coluna repetida é ruído.
   const showPlan=items.some(c=>c.plan&&!/abrir para consultar/i.test(c.plan));
   const cols=showPlan?"minmax(0,2fr) minmax(0,1.3fr) 110px minmax(0,.9fr)":"minmax(0,2.4fr) 120px minmax(0,1fr)";
-  const detail=<CustomerDetail data={selected} loading={!!selectedId&&!selected&&!detailError} error={detailError} refreshing={refreshing} onRefresh={live?()=>void refresh():undefined} onClose={()=>{setSelectedId(null);setSelected(null)}}/>;
+  const detail=<CustomerDetail data={selected} loading={!!selectedId&&!selected&&!detailError} error={detailError} refreshing={refreshing} onRefresh={live?()=>void refresh():undefined} onClose={closeDetail}/>;
 
   return <>
     <Toolbar>
@@ -83,7 +96,7 @@ export function Customer360Module(){
       </Card>
       {selectedId&&wide&&<aside className="card customer-detail">{detail}</aside>}
     </div>
-    {!wide&&<Modal side open={!!selectedId} title="Cliente" onClose={()=>{setSelectedId(null);setSelected(null)}}>{detail}</Modal>}
+    {!wide&&<Modal side open={!!selectedId} title="Cliente" onClose={closeDetail}>{detail}</Modal>}
   </>;
 }
 
@@ -142,15 +155,15 @@ export function CustomerDetail({data,loading,error,refreshing,onRefresh,onClose,
       {live&&reading&&<>
         <section className="details-section"><h3>Faturas do recorte</h3>
           <p className="hint">Identificadores de contrato apenas quando confirmados nesta leitura. Valores nominais não são saldo em aberto.</p>
-          {reading.invoices===undefined?<p className="hint">Detalhamento indisponível nesta resposta.</p>:reading.invoices.length===0?<p className="hint">Nenhuma fatura neste recorte; consulte a cobertura acima.</p>:<ul className="customer-record-list">{reading.invoices.map(i=><li key={i.id}><strong>Fatura {i.id} · {i.contractId?`Contrato ${i.contractId}`:"Contrato não confirmado"}</strong><span>Status na fonte: {i.status} · Vencimento: {i.dueAt??"não confirmado"}</span><small>Saldo em aberto: {currency(i.openBalance)} · Origem do valor: {i.valueSource}</small></li>)}</ul>}
+          {reading.invoices===undefined?<p className="hint">Detalhamento indisponível nesta resposta.</p>:reading.invoices.length===0?<p className="hint">Nenhuma fatura neste recorte; consulte a cobertura acima.</p>:<ul className="customer-record-list" role="list">{reading.invoices.map(i=><li key={i.id}><strong>Fatura {i.id} · {i.contractId?`Contrato ${i.contractId}`:"Contrato não confirmado"}</strong><span>Status na fonte: {i.status} · Vencimento: {i.dueAt??"não confirmado"}</span><small>Saldo em aberto: {currency(i.openBalance)} · Origem do valor: {i.valueSource}</small></li>)}</ul>}
         </section>
         <section className="details-section"><h3>Pagamentos do recorte</h3>
           <p className="hint">Somente pagamentos vinculados às faturas consultadas; não representam necessariamente todo o histórico.</p>
-          {reading.payments===undefined?<p className="hint">Detalhamento indisponível nesta resposta.</p>:reading.payments.length===0?<p className="hint">Nenhum pagamento neste recorte.</p>:<ul className="customer-record-list">{reading.payments.map(p=><li key={p.id}><strong>Pagamento {p.id} · Fatura {p.invoiceId}</strong><span>{p.paidOn} · {currency(p.value)}</span><small>Forma: {p.method||"não informada"}</small></li>)}</ul>}
+          {reading.payments===undefined?<p className="hint">Detalhamento indisponível nesta resposta.</p>:reading.payments.length===0?<p className="hint">Nenhum pagamento neste recorte.</p>:<ul className="customer-record-list" role="list">{reading.payments.map(p=><li key={p.id}><strong>Pagamento {p.id} · Fatura {p.invoiceId}</strong><span>{p.paidOn} · {currency(p.value)}</span><small>Forma: {p.method||"não informada"}</small></li>)}</ul>}
         </section>
         <section className="details-section"><h3>Ordens de serviço do recorte</h3>
           <p className="hint">Origem IXC. A execução técnica acontece no SeeNet; esta leitura não confirma atualização nem completude da integração SeeNet.</p>
-          {reading.serviceOrders===undefined?<p className="hint">Detalhamento indisponível nesta resposta.</p>:reading.serviceOrders.length===0?<p className="hint">Nenhuma OS neste recorte; ausência de registro não comprova ausência de atendimento.</p>:<ul className="customer-record-list">{reading.serviceOrders.map(o=><li key={o.id}><strong>OS {o.id} · {o.subject||"Assunto não informado"}</strong><span>Status na fonte: {o.status} · Abertura: {o.openedAt??"não confirmada"}</span></li>)}</ul>}
+          {reading.serviceOrders===undefined?<p className="hint">Detalhamento indisponível nesta resposta.</p>:reading.serviceOrders.length===0?<p className="hint">Nenhuma OS neste recorte; ausência de registro não comprova ausência de atendimento.</p>:<ul className="customer-record-list" role="list">{reading.serviceOrders.map(o=><li key={o.id}><strong>OS {o.id} · {o.subject||"Assunto não informado"}</strong><span>Status na fonte: {o.status} · Abertura: {o.openedAt??"não confirmada"}</span></li>)}</ul>}
         </section>
       </>}
       {live&&<p className="hint">Conexão do cadastro: a fonte não identifica o contrato deste login. Não associe automaticamente a uma das faturas.</p>}
