@@ -30,7 +30,7 @@ function fixture(t, options = {}) {
   t.after(() => { for (const [key, value] of Object.entries(previous)) { if (value === undefined) delete process.env[key]; else process.env[key] = value; } });
   const calls = { sessionDb: 0, businessDb: 0, provider: 0, audits: [] };
   const repository = new auth.MemoryAuthRepository();
-  const user = { id: options.userId ?? 'synthetic-user', name: 'Operador sintético', email: 'operator@example.invalid', role: options.role ?? 'Supervisor', active: options.active ?? true, passwordHash: 'unused', passwordSalt: 'unused' };
+  const user = { id: options.userId ?? 'synthetic-user', name: 'Operador sintético', email: 'operator@example.invalid', role: options.role ?? 'Supervisor', active: options.active ?? true, mustChangePassword: options.mustChangePassword ?? false, passwordHash: 'unused', passwordSalt: 'unused' };
   repository.users.push(user);
   const token = 'synthetic-session-only';
   repository.sessions.set(auth.hashToken(token), { userId: user.id, expiresAt: options.expired ? '2000-01-01T00:00:00Z' : '2099-01-01T00:00:00Z' });
@@ -60,7 +60,7 @@ function fixture(t, options = {}) {
   const request = (body, cookie = options.cookie === undefined ? `${auth.SESSION_COOKIE}=${token}` : options.cookie) => new Request('https://synthetic.invalid/api/test', {
     method: body ? 'POST' : 'GET', headers: { 'content-type': 'application/json', ...(cookie ? { cookie } : {}) }, ...(body ? { body: JSON.stringify(body) } : {}),
   });
-  return { guard, calls, request, promiseRepo, stateRepo, promiseRoute, stateRoute,
+  return { guard, calls, request, repository, promiseRepo, stateRepo, promiseRoute, stateRoute,
     create: () => promiseRoute.POST(request({ action: 'create', invoiceId: '901', customerId: '10', promisedFor: businessToday(new Date()), actor: { role: 'Administrador' } })),
     claim: () => stateRoute.POST(request({ action: 'claim', conversationId: 'synthetic-conversation', actor: { id: 'forged-user', role: 'Administrador' } })),
   };
@@ -113,4 +113,36 @@ for (const mode of [null, 'disabled']) test(`demo sem piloto mantém contrato an
 test('fora do piloto FEATURE_AUTH=true ainda exige sessão', async t => {
   const f = fixture(t, { mode: 'disabled', flag: 'true', cookie: '' });
   assert.equal((await f.create()).status, 401); noBusiness(f);
+});
+
+
+test('senha provisória bloqueia leitura/mutações pelo guard até troca confirmada no repositório',async t=>{
+  const f=fixture(t,{flag:'true',mustChangePassword:true});
+  const user=await f.guard.currentUser(f.request());
+  assert.equal(user.mustChangePassword,true);
+  assert.equal((await f.create()).status,403);assert.equal((await f.claim()).status,403);
+  assert.equal((await f.promiseRoute.GET(f.request())).status,403);noBusiness(f);
+  // Password endpoint uses currentUser, not authorize, so identity remains available.
+  assert.equal(user.id,'synthetic-user');
+  f.repository.users[0].mustChangePassword=false;
+  assert.equal((await f.create()).status,201);assert.equal((await f.claim()).status,200);
+});
+
+for(const role of ['Supervisor','Somente leitura'])test(`handler real de troca de senha permanece acessível: ${role}`,async t=>{
+  const f=fixture(t,{flag:'true'});f.repository.users.length=0;
+  const password='synthetic-password-only-123';const replacement='synthetic-replacement-only-456';
+  const user=await f.repository.addUser('password-test@example.invalid',password,role,'DEMO Password',true,true);
+  f.repository.sessions.set(auth.hashToken('synthetic-session-only'),{userId:user.id,expiresAt:'2099-01-01T00:00:00Z'});
+  process.env.PILOT_ALLOWED_USER_IDS=`${user.id},synthetic-other`;
+  assert.equal((await f.create()).status,403);noBusiness(f);
+  const route=compile('../app/api/auth/password/route.ts',{
+    'next/server':require('next/server'),'@/db':{async getDb(){return {};}},
+    '@/lib/platform/auth':{...auth,DbAuthRepository:class{constructor(){return f.repository;}}},
+    '@/lib/platform/session-guard':f.guard,'@/lib/platform/audit-log':{async logUnauthenticatedAction(){}},
+  });
+  assert.equal((await route.POST(f.request({currentPassword:'wrong',newPassword:replacement}))).status,400);
+  assert.equal((await f.create()).status,403);noBusiness(f);
+  const changed=await route.POST(f.request({currentPassword:password,newPassword:replacement}));
+  assert.equal(changed.status,200);assert.equal((await changed.json()).changed,true);
+  assert.equal((await f.create()).status,role==='Supervisor'?201:403);assert.equal((await f.claim()).status,role==='Supervisor'?200:403);
 });

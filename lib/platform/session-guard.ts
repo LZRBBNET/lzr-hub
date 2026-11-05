@@ -48,6 +48,7 @@ export async function authorize(request: Request, permission: string): Promise<G
 
   const user = await currentUser(request);
   if (!user) return { allowed: false, status: 401, error: "Sessão inválida ou expirada" };
+  if (user.mustChangePassword === true) return { allowed: false, status: 403, error: "Troque sua senha provisória antes de acessar a operação" };
   const pilotMode = process.env.PILOT_MODE ?? "disabled";
   if (pilotMode !== "disabled") {
     const participants = [...new Set((process.env.PILOT_ALLOWED_USER_IDS ?? "").split(",").map(id => id.trim()).filter(Boolean))];
