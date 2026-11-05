@@ -2,6 +2,7 @@ import { assertSyntheticDemo } from '../integrations/ixc/synthetic-demo.ts';
 import { getIxcRuntime } from "../integrations/ixc/runtime.ts";
 import { Customer360Service } from "./customer360-service";
 
+const coverageKeys={"IXC contratos":"contracts","IXC financeiro":"invoices","IXC pagamentos":"payments","IXC ordens de serviço":"serviceOrders"} as const;
 let service:Customer360Service|undefined;
 export function getCustomer360Service(){
   if(process.env.FEATURE_SYNTHETIC_INVOICES!==undefined&&process.env.FEATURE_SYNTHETIC_INVOICES!=="false"){
@@ -16,7 +17,7 @@ export function getCustomer360Service(){
         const result=await value.apply(target,args);
         if(result){
           result.mode="demo";
-          if(result.sources)result.sources=result.sources.map((source:Record<string,unknown>)=>({...source,provider:"Fonte sintética",mode:"demo",detail:"Dados fictícios; sem consulta ao IXC"}));
+          if(result.sources)result.sources=result.sources.map((source:Record<string,unknown>)=>({...source,coverageKey:coverageKeys[source.provider as keyof typeof coverageKeys],provider:"Fonte sintética",mode:"demo",detail:"Dados fictícios; sem consulta ao IXC"}));
           if(result.items)result.items=result.items.map((item:Record<string,unknown>)=>({...item,tags:["DEMO sintética"]}));
         }
         return result;
