@@ -6,7 +6,7 @@ Dependências reaproveitadas: #34→#37→#38→#39/#40 e #46 para cobrança/dat
 
 ## Inicialização explicitamente inativa
 
-Blueprint deploy/render/render.synthetic-review.yaml mantém exatamente web Node e PostgreSQL com plan: free, mesma região, ipAllowList: [] no banco e DATABASE_URL por fromDatabase/connectionString interna. Declara SYNTHETIC_INIT_ENABLED=false; não contém capability/hash/salt de login, senha de operador, generateValue ou hook de seed/migração. Chaves de integração/envio/filas/LLM desligadas. Origem HTTPS é entrada manual não secreta (sync:false), nunca adivinhada/interpolada.
+Blueprint deploy/render/render.synthetic-review.yaml mantém exatamente web Node e PostgreSQL com plan: free, mesma região, ipAllowList: [] no banco e DATABASE_URL por fromDatabase/connectionString interna. Declara SYNTHETIC_INIT_ENABLED=false; não contém capability/hash/salt de login, senha de operador, generateValue ou hook de seed/migração. Chaves de integração/envio/filas/LLM desligadas. Origem HTTPS usa fromService do próprio web/envVarKey RENDER_EXTERNAL_URL, disponível no build e runtime; sem entrada manual, interpolação ou fallback. Ver render-origin-reference-20261105.md.
 
 AutoDeployTrigger: off, previews globais off e previews independentes do serviço ausentes, que desativa sua geração em recursos novos conforme a referência. Não usa o campo deprecated pullRequestPreviewsEnabled. Branch é review/render-synthetic-initialization-package-20261105, exclusivamente de draft. Nenhuma configuração YAML gera autorização para aplicar recursos. Startup só serve artefato Node validado e não inicializa schema/dados. Blueprint permanece sem parâmetros necessários para habilitar a rota privilegiada.
 

@@ -71,7 +71,8 @@ def validate(doc):
     require(set(env) == set(FLAGS) | {"SYNTHETIC_DEMO_ORIGIN", "DATABASE_URL"})
     for key, value in FLAGS.items():
         require(env[key] == {"key": key, "value": value})
-    require(env["SYNTHETIC_DEMO_ORIGIN"] == {"key": "SYNTHETIC_DEMO_ORIGIN", "sync": False})
+    require(env["SYNTHETIC_DEMO_ORIGIN"] == {"key": "SYNTHETIC_DEMO_ORIGIN", "fromService": {
+        "type": "web", "name": service["name"], "envVarKey": "RENDER_EXTERNAL_URL"}})
     require(env["DATABASE_URL"] == {"key": "DATABASE_URL", "fromDatabase": {
         "name": database["name"], "property": "connectionString"}})
     return {"validLocalPolicy": True, "officialApiValidated": False, "provisioningAuthorized": False,

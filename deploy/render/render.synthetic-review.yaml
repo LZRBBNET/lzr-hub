@@ -76,8 +76,12 @@ services:
     value: 'false'
   - key: FEATURE_AGENT_HOMOLOGATION_PROFILES
     value: 'false'
+  # Alias of this service default URL; available during build and runtime.
   - key: SYNTHETIC_DEMO_ORIGIN
-    sync: false
+    fromService:
+      type: web
+      name: lzr-synthetic-review-web-20261105
+      envVarKey: RENDER_EXTERNAL_URL
   - key: DATABASE_URL
     fromDatabase:
       name: lzr-synthetic-review-db-20261105
