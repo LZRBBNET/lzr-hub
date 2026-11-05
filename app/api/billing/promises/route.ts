@@ -30,14 +30,6 @@ export async function GET(request: Request) {
   }
 }
 
-async function loadInvoiceStatusByCustomer(customerId: string, correlationId: string): Promise<Map<string, string>> {
-  let runtime;
-  try { runtime = getIxcRuntime(); } catch { runtime = undefined; }
-  if (!runtime?.provider) return new Map();
-  const snapshot = await runtime.provider.getSnapshot(customerId, correlationId).catch(() => null);
-  return new Map((snapshot?.invoices ?? []).map((invoice) => [invoice.id, invoice.status]));
-}
-
 export async function POST(request: Request) {
   const guard = await authorize(request, "billing.write-demo");
   if (!guard.allowed) return NextResponse.json({ error: guard.error }, { status: guard.status });
@@ -47,18 +39,29 @@ export async function POST(request: Request) {
   const correlationId = randomUUID();
 
   if (body.action === "create") {
-    const invoiceId = typeof body.invoiceId === "string" ? body.invoiceId.trim() : "";
-    const customerId = typeof body.customerId === "string" ? body.customerId.trim() : "";
+    const invoiceId = typeof body.invoiceId === "string" ? body.invoiceId : "";
+    const customerId = typeof body.customerId === "string" ? body.customerId : "";
     const promisedForRaw = typeof body.promisedFor === "string" ? body.promisedFor.trim() : "";
     if (!invoiceId || !customerId || !promisedForRaw) {
       return NextResponse.json({ error: "Campos obrigatórios: invoiceId, customerId, promisedFor" }, { status: 400 });
     }
+    if (!/^[1-9]\d{0,31}$/.test(invoiceId) || !/^[1-9]\d{0,31}$/.test(customerId)) {
+      return NextResponse.json({ error: "Referência de fatura ou cliente inválida" }, { status: 400 });
+    }
     try {
       const promisedFor = parsePromisedFor(promisedForRaw, new Date());
-      // Revalida contra o IXC: promessa para fatura que não existe ou já não
-      // está aberta não é registrada — não há dívida para prometer pagar.
-      const statusByInvoice = await loadInvoiceStatusByCustomer(customerId, correlationId);
-      if (!statusByInvoice.has(invoiceId)) return NextResponse.json({ error: "Fatura não encontrada no cadastro informado" }, { status: 404 });
+      // Uma consulta fresca e exata, sem cache nem limite de 20 do snapshot.
+      // O adaptador exige cobertura completa e vínculo cliente/fatura; aqui
+      // ambos são revalidados antes de acessar o banco ou auditar sucesso.
+      const { provider } = getIxcRuntime();
+      if (!provider) throw new Error("IXC_INVOICE_UNVERIFIED");
+      const invoice = await provider.getInvoiceForCustomer(customerId, invoiceId, correlationId);
+      if (!invoice) return NextResponse.json({ error: "Fatura não encontrada no cadastro informado" }, { status: 404 });
+      if (invoice.id !== invoiceId || invoice.customerId !== customerId) throw new Error("IXC_INVOICE_SCOPE_MISMATCH");
+      if (invoice.status === "R" || invoice.status === "C") {
+        return NextResponse.json({ error: "A fatura não está aberta para registrar uma promessa" }, { status: 409 });
+      }
+      if (invoice.status !== "A") throw new Error("IXC_INVOICE_STATUS_UNVERIFIED");
 
       const created = await new DbPaymentPromiseRepository(await getDb()).create({
         invoiceId, customerId, promisedFor, registeredBy: guard.user?.email ?? "não identificado", correlationId,
