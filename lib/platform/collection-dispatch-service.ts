@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { desc, gte } from "drizzle-orm";
 import { collectionDispatches } from "../../db/schema.ts";
 import { executeQueueAction } from "./queue-service.ts";
-import { businessToday, isOpenInvoice } from "./billing-service.ts";
+import { businessToday } from "./billing-service.ts";
 import type { CollectionRuleRow } from "./collection-rules-shared.ts";
 
 /**
@@ -66,16 +66,26 @@ export function isBusinessHour(now: Date): boolean {
   return isWeekday && hour >= 8 && hour < 20;
 }
 
-function addDays(dateStr: string, days: number): string {
-  const base = new Date(`${dateStr.slice(0, 10)}T00:00:00Z`);
+/** Cobrança exige evidência positiva de abertura, nunca a ausência de "pago". */
+function isConfirmedOpenInvoice(status: string): boolean {
+  return /^(?:a|abert[ao]|em aberto)$/i.test(status.trim());
+}
+
+/** O IXC fornece uma data de calendário; datas impossíveis não podem avançar para outro mês. */
+function addDays(dateStr: string, days: number): string | undefined {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) return undefined;
+  if (!Number.isInteger(days) || days < -30 || days > 180) return undefined;
+  const base = new Date(`${dateStr}T00:00:00Z`);
+  if (Number.isNaN(base.getTime()) || base.toISOString().slice(0, 10) !== dateStr) return undefined;
   base.setUTCDate(base.getUTCDate() + days);
   return base.toISOString().slice(0, 10);
 }
 
 /**
  * Quem a régua contataria hoje, revalidando pagamento na hora: fatura que já
- * saiu de "aberta" (`isOpenInvoice`) nunca entra, mesmo que tenha entrado
- * ontem. Função pura — não toca fila nem banco, por isso é fácil provar com
+ * saiu de "aberta" nunca entra, mesmo que tenha entrado ontem. Status sem
+ * confirmação e vencimentos inválidos também ficam fora. Função pura — não
+ * toca fila nem banco, por isso é fácil provar com
  * teste que a data certa gera a lista certa.
  */
 export function resolveTodayCandidates(rule: CollectionRuleRow, invoices: DispatchInvoiceInput[], now: Date): DispatchCandidate[] {
@@ -84,7 +94,7 @@ export function resolveTodayCandidates(rule: CollectionRuleRow, invoices: Dispat
   for (const step of rule.steps) {
     if (!step.active) continue;
     for (const invoice of invoices) {
-      if (!invoice.dueAt || !isOpenInvoice(invoice.status)) continue;
+      if (!invoice.dueAt || !isConfirmedOpenInvoice(invoice.status)) continue;
       if (addDays(invoice.dueAt, step.offsetDays) !== today) continue;
       candidates.push({
         invoiceId: invoice.id, customerId: invoice.customerId, ruleId: rule.id, stepId: step.id,
