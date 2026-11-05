@@ -1,3 +1,4 @@
+import { inspectSyntheticInitialization } from './synthetic-initialization-status.ts';
 import { initializationTarget } from './synthetic-initialization-target.ts';
 import { initializationAccess } from './synthetic-initialization-access.ts';
 import { createSyntheticInitializer, IDENTITY_SQL, EMPTY_SQL, type InitializationClient } from './synthetic-initialization.ts';
@@ -84,6 +85,22 @@ export function createInitializationController(deps: Dependencies) {
     if (!initializationAccess(request, source)) return reply({ available: false }, 404);
     try { initializationTarget(source); } catch { return reply({ available: false }, 400); }
     if (!['GET','POST'].includes(request.method)) return reply({ error: 'Método não permitido' }, 405);
+    const url = new URL(request.url);
+    const statusRead = request.method === 'GET' && url.searchParams.get('status') === '1';
+    if (statusRead) {
+      if (busy) return reply({ status: 'blocked', retryAllowed: false }, 409);
+      if ([...url.searchParams.keys()].sort().join(',') !== 'attempt,databaseOid,status' ||
+          !/^[1-9]\d{0,9}$/.test(url.searchParams.get('databaseOid') ?? '') ||
+          !/^synthetic-init-[a-z0-9-]{8,64}$/.test(url.searchParams.get('attempt') ?? '')) return reply({ status: 'refused', retryAllowed: false }, 400);
+      busy = true;
+      try {
+        const client = await deps.connect(source);
+        const result = await inspectSyntheticInitialization(client, { databaseOid: url.searchParams.get('databaseOid')!, attempt: url.searchParams.get('attempt')! });
+        return reply({ ...result, targetHostMatches: true }, 200);
+      } catch { return reply({ state: 'unknown', retryAllowed: false, credentialsVerified: false }, 503); }
+      finally { busy = false; }
+    }
+    if (url.search) return reply({ status: 'refused', retryAllowed: false }, 400);
     if (busy || consumed) return reply({ status: 'blocked', retryAllowed: false }, 409);
     busy = true; // Acquire synchronously, before request.text/connect/any await.
     try { return await accepted(request, source); } finally { busy = false; }
