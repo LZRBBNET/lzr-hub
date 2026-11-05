@@ -1,6 +1,9 @@
 import { getDb } from "../../db/index.ts";
 import { DbAuthRepository, SESSION_COOKIE, resolveSession, type AuthenticatedUser } from "./auth.ts";
 import { can } from "./rbac.ts";
+import { createSessionFailureReporter, resolveObservedSession } from "./session-diagnostics.ts";
+
+const reportSessionFailure = createSessionFailureReporter(message => console.warn(message));
 
 /**
  * A exigência de login é ligada por FEATURE_AUTH.
@@ -24,12 +27,11 @@ export function readSessionToken(request: Request): string | undefined {
 }
 
 export async function currentUser(request: Request): Promise<AuthenticatedUser | undefined> {
-  try {
-    return await resolveSession(new DbAuthRepository(await getDb()), readSessionToken(request));
-  } catch {
-    // Sem banco disponível não há sessão para resolver; quem chama decide o que fazer.
-    return undefined;
-  }
+  return resolveObservedSession(
+    () => readSessionToken(request),
+    async token => resolveSession(new DbAuthRepository(await getDb()), token),
+    reportSessionFailure,
+  );
 }
 
 export type GuardResult =
@@ -48,3 +50,4 @@ export async function authorize(request: Request, permission: string): Promise<G
   if (!can(user.role, permission)) return { allowed: false, status: 403, error: "Seu perfil não permite esta ação" };
   return { allowed: true, user };
 }
+
