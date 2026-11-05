@@ -6,14 +6,15 @@ import { createSessionFailureReporter, resolveObservedSession } from "./session-
 const reportSessionFailure = createSessionFailureReporter(message => console.warn(message));
 
 /**
- * A exigência de login é ligada por FEATURE_AUTH.
+ * FEATURE_AUTH liga o login na demo. Piloto declarado sempre exige sessão,
+ * mesmo com a flag desligada; modo inválido não pode reabrir a demo.
  *
  * Ela nasce desligada de propósito: o ambiente de demonstração publicado é
  * mock-only, sem dado real, e passaria a responder 401 em tudo no instante em
  * que isso subisse. Precisa estar ligada antes de qualquer dado real (M4).
  */
 export function authEnforced(): boolean {
-  return process.env.FEATURE_AUTH === "true";
+  return process.env.FEATURE_AUTH === "true" || (process.env.PILOT_MODE ?? "disabled") !== "disabled";
 }
 
 export function readSessionToken(request: Request): string | undefined {
@@ -39,14 +40,21 @@ export type GuardResult =
   | { allowed: false; status: 401 | 403; error: string };
 
 /**
- * Autoriza a ação. Com FEATURE_AUTH desligada libera e devolve `user: undefined`
- * (a auditoria registra como não identificado, como já fazia).
+ * A demo sem piloto mantém o contrato anterior. No piloto, sessão, participação
+ * na allowlist e permissão são requisitos independentes, resolvidos no servidor.
  */
 export async function authorize(request: Request, permission: string): Promise<GuardResult> {
   if (!authEnforced()) return { allowed: true };
 
   const user = await currentUser(request);
   if (!user) return { allowed: false, status: 401, error: "Sessão inválida ou expirada" };
+  const pilotMode = process.env.PILOT_MODE ?? "disabled";
+  if (pilotMode !== "disabled") {
+    const participants = [...new Set((process.env.PILOT_ALLOWED_USER_IDS ?? "").split(",").map(id => id.trim()).filter(Boolean))];
+    if (pilotMode !== "internal" || participants.length < 2 || participants.length > 3 || !participants.includes(user.id)) {
+      return { allowed: false, status: 403, error: "Acesso ao piloto não autorizado" };
+    }
+  }
   if (!can(user.role, permission)) return { allowed: false, status: 403, error: "Seu perfil não permite esta ação" };
   return { allowed: true, user };
 }
