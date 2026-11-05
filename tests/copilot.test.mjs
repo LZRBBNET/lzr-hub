@@ -160,16 +160,17 @@ test("resumo é montado dos fatos gravados", () => {
   assert.match(summary, /Cliente abriu com: "minha internet caiu ontem"/);
   assert.match(summary, /Última fala do cliente: "e hoje continua sem nada"/);
   assert.match(summary, /sem conexão/);
-  assert.match(summary, /transbordou para humano/);
+  assert.match(summary, /encaminhamento humano recomendado/);
 });
 
-test("o resumo diz quando a IA não enviou nada ao cliente", () => {
+test("o resumo distingue sugestão de resposta registrada", () => {
   const summary = summarizeConversation({
     externalConversationId: "5579998307232",
     messages: [msg("customer", "oi", "2026-08-10T12:00:00.000Z"), msg("suggestion", "olá", "2026-08-10T12:01:00.000Z")],
   });
   // Sugestão parece resposta dada — é o engano mais provável de quem pega o caso.
-  assert.match(summary, /não enviou nada ao cliente/);
+  assert.match(summary, /Nenhuma resposta enviada está registrada neste histórico/);
+  assert.match(summary, /Sugestões não enviadas: 1/);
   assert.match(summary, /Nenhum desfecho registrado/);
 });
 
