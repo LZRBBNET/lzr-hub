@@ -1,4 +1,5 @@
-import { and, desc, eq, ilike, inArray, like, notLike, sql } from "drizzle-orm";
+import { and, desc, eq, exists, ilike, inArray, like, notLike, or, sql } from "drizzle-orm";
+import type { AnyPgColumn } from "drizzle-orm/pg-core";
 import { NON_CUSTOMER_LIKE, isNonCustomerConversation } from "./conversation-scope.ts";
 import { channelContacts, channelMessages, conversationOutcomes, conversationStates, users } from "../../db/schema.ts";
 import { AI_SENDER, AI_SENDER_NAME, awaitingSinceFrom, effectiveState, type ConversationStateRow, type EffectiveState } from "./conversation-state-shared.ts";
@@ -95,6 +96,9 @@ export function searchTerm(raw?: string | null): { kind: "digits" | "name"; valu
   return value.length >= 2 ? { kind: "name", value } : undefined;
 }
 
+// JSON tuple avoids collisions if either component contains a separator.
+const conversationKey = (channel: string, id: string) => JSON.stringify([channel, id]);
+
 const escapeLike = (value: string) => value.replace(/[\\%_]/g, (char) => `\\${char}`);
 
 /**
@@ -155,9 +159,12 @@ export class DbConversationsRepository implements ConversationsRepository {
     const term = searchTerm(search);
     if (term?.kind === "digits") filters.push(like(channelMessages.externalConversationId, `%${term.value}%`));
     if (term?.kind === "name") {
-      filters.push(inArray(
-        channelMessages.externalConversationId,
-        this.db.select({ id: channelContacts.externalConversationId }).from(channelContacts).where(ilike(channelContacts.displayName, `%${escapeLike(term.value)}%`)),
+      filters.push(exists(
+        this.db.select({ id: channelContacts.externalConversationId }).from(channelContacts).where(and(
+          eq(channelContacts.channel, channelMessages.channel),
+          eq(channelContacts.externalConversationId, channelMessages.externalConversationId),
+          ilike(channelContacts.displayName, `%${escapeLike(term.value)}%`),
+        )),
       ));
     }
 
@@ -173,60 +180,71 @@ export class DbConversationsRepository implements ConversationsRepository {
       .limit(limit);
     if (grouped.length === 0) return [];
 
-    const ids = grouped.map((row: { externalConversationId: string }) => row.externalConversationId);
-    // Mensagens, desfechos e nomes de todas as conversas da página em três
-    // consultas só — a redução por conversa acontece aqui, não dentro do laço.
+    // A identidade da conversa é canal + ID externo, também nas consultas em lote.
+    // Um mesmo ID em outro canal não pode trazer contexto nem reabrir este caso.
+    const scope = (table: { channel: AnyPgColumn; externalConversationId: AnyPgColumn }) => or(
+      ...grouped.map((row: { channel: string; externalConversationId: string }) => and(
+        eq(table.channel, row.channel), eq(table.externalConversationId, row.externalConversationId),
+      )),
+    );
     const [recent, outcomes, contacts, states] = await Promise.all([
       this.db.select({
+        channel: channelMessages.channel,
         externalConversationId: channelMessages.externalConversationId,
         role: channelMessages.role,
         content: channelMessages.content,
         createdAt: channelMessages.createdAt,
         sentBy: channelMessages.sentBy,
       }).from(channelMessages)
-        .where(inArray(channelMessages.externalConversationId, ids))
+        .where(scope(channelMessages))
         .orderBy(desc(channelMessages.createdAt), desc(replyAfterCustomer)),
       this.db.select({
+        channel: conversationOutcomes.channel,
         externalConversationId: conversationOutcomes.externalConversationId,
         intent: conversationOutcomes.intent,
         finalStatus: conversationOutcomes.finalStatus,
         handoff: conversationOutcomes.handoff,
         createdAt: conversationOutcomes.createdAt,
       }).from(conversationOutcomes)
-        .where(inArray(conversationOutcomes.externalConversationId, ids))
+        .where(scope(conversationOutcomes))
         .orderBy(desc(conversationOutcomes.createdAt)),
       this.db.select({
         channel: channelContacts.channel,
         externalConversationId: channelContacts.externalConversationId,
         displayName: channelContacts.displayName,
       }).from(channelContacts)
-        .where(inArray(channelContacts.externalConversationId, ids)),
-      this.db.select().from(conversationStates).where(inArray(conversationStates.externalConversationId, ids)),
+        .where(scope(channelContacts)),
+      this.db.select().from(conversationStates).where(scope(conversationStates)),
     ]);
 
     const byConversation = new Map<string, Array<{ role: string; content: string; createdAt: string; sentBy: string | null }>>();
     for (const row of recent) {
-      const rows = byConversation.get(row.externalConversationId) ?? [];
+      const key = conversationKey(row.channel, row.externalConversationId);
+      const rows = byConversation.get(key) ?? [];
       rows.push(row);
-      byConversation.set(row.externalConversationId, rows);
+      byConversation.set(key, rows);
     }
     const lastOutcome = new Map<string, { intent: string; finalStatus: string; handoff: boolean }>();
-    for (const row of outcomes) if (!lastOutcome.has(row.externalConversationId)) lastOutcome.set(row.externalConversationId, row);
-    const names = new Map<string, string>(contacts.map((row: { channel: string; externalConversationId: string; displayName: string }) => [`${row.channel}:${row.externalConversationId}`, row.displayName]));
-    const stateRows = new Map<string, ConversationStateRow>(states.map((row: ConversationStateRow & { channel: string; externalConversationId: string }) => [`${row.channel}:${row.externalConversationId}`, {
+    for (const row of outcomes) {
+      const key = conversationKey(row.channel, row.externalConversationId);
+      if (!lastOutcome.has(key)) lastOutcome.set(key, row);
+    }
+    const names = new Map<string, string>(contacts.map((row: { channel: string; externalConversationId: string; displayName: string }) => [conversationKey(row.channel, row.externalConversationId), row.displayName]));
+    const stateRows = new Map<string, ConversationStateRow>(states.map((row: ConversationStateRow & { channel: string; externalConversationId: string }) => [conversationKey(row.channel, row.externalConversationId), {
       status: row.status === "resolved" ? "resolved" : "open", assigneeId: row.assigneeId, assigneeName: row.assigneeName,
       assignedAt: row.assignedAt, resolvedAt: row.resolvedAt, resolvedBy: row.resolvedBy,
     }]));
-    const senders = await this.namesByEmail(grouped.map((row: { externalConversationId: string }) => {
-      const last = byConversation.get(row.externalConversationId)?.[0];
+    const senders = await this.namesByEmail(grouped.map((row: { channel: string; externalConversationId: string }) => {
+      const last = byConversation.get(conversationKey(row.channel, row.externalConversationId))?.[0];
       return last?.role === "agent" ? last.sentBy : null;
     }));
 
     return grouped.map((row: { channel: string; externalConversationId: string; lastAt: string; messages: number }) => {
-      const rows = byConversation.get(row.externalConversationId) ?? [];
+      const key = conversationKey(row.channel, row.externalConversationId);
+      const rows = byConversation.get(key) ?? [];
       const last = rows[0];
       const lastCustomer = rows.find((item) => item.role === "customer");
-      const outcome = lastOutcome.get(row.externalConversationId);
+      const outcome = lastOutcome.get(key);
       const sentBy = last?.role === "agent" ? last.sentBy ?? undefined : undefined;
       return {
         channel: row.channel,
@@ -238,13 +256,13 @@ export class DbConversationsRepository implements ConversationsRepository {
         finalStatus: outcome?.finalStatus,
         intent: outcome?.intent,
         handoff: outcome?.handoff,
-        displayName: names.get(`${row.channel}:${row.externalConversationId}`),
+        displayName: names.get(key),
         awaitingSince: awaitingSinceFrom(rows),
         lastSentBy: sentBy,
         lastSentByName: senderName(sentBy, senders),
         lastCustomerAt: lastCustomer?.createdAt,
         lastCustomerMessage: lastCustomer?.content,
-        state: effectiveState(stateRows.get(`${row.channel}:${row.externalConversationId}`), lastCustomer?.createdAt),
+        state: effectiveState(stateRows.get(key), lastCustomer?.createdAt),
       };
     });
   }
