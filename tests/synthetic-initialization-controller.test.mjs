@@ -13,7 +13,7 @@ const token='c'.repeat(64); // Fixed, invented test token; never an operator cre
 const source=()=>({...stagingDemoRequirements,...Object.fromEntries(['FEATURE_N8N_CHANNEL','FEATURE_N8N_AUTOREPLY','FEATURE_ATTENDANT_REPLY','FEATURE_LLM_INTENT','FEATURE_COPILOT_LLM','FEATURE_TELEGRAM_ALERTS'].map(k=>[k,'false'])),NODE_ENV:'production',FEATURE_AUTH:'true',FEATURE_IXC_FULL_BASE:'false',
   FEATURE_SYNTHETIC_INVOICES:'true',DEMO_DATASET:'isolated-invoices-v1',SYNTHETIC_WEB_DEMO:'true',
   SYNTHETIC_DATABASE_CONFIRMATION:'isolated-synthetic-postgres-v1',SYNTHETIC_DEMO_ORIGIN:'https://review.example.invalid',
-  SYNTHETIC_INIT_ENABLED:'true',SYNTHETIC_INIT_CAPABILITY_SHA256:createHash('sha256').update(token).digest('hex'),
+  SYNTHETIC_INIT_EXPIRES_AT:new Date(Date.now()+15*60*1000).toISOString(),SYNTHETIC_INIT_ENABLED:'true',SYNTHETIC_INIT_CAPABILITY_SHA256:createHash('sha256').update(token).digest('hex'),
   SYNTHETIC_INIT_DATABASE_HOST:'db.example.invalid',DATABASE_URL:'postgresql://lzr_synthetic_demo:invented@db.example.invalid/lzr_synthetic_demo'});
 const request=(method='GET',body,headers={})=>new Request('https://review.example.invalid/api/demo/initialize',{
   method,headers:{'x-synthetic-init-capability':token,origin:'https://review.example.invalid',...headers},...(body?{body:JSON.stringify(body)}:{})});

@@ -134,11 +134,11 @@ test('proxy executado pelo runtime vinext verifica sessão real e fecha páginas
     Object.assign(process.env, values);
   });
   await t.test('capability de inicialização só libera rota exata quando opt-in, sem conceder acesso ao negócio', async () => {
-    const keys=['SYNTHETIC_INIT_ENABLED','SYNTHETIC_INIT_CAPABILITY_SHA256'];
+    const keys=['SYNTHETIC_INIT_EXPIRES_AT','SYNTHETIC_INIT_ENABLED','SYNTHETIC_INIT_CAPABILITY_SHA256'];
     const saved=Object.fromEntries(keys.map(k=>[k,process.env[k]]));
     const token='c'.repeat(64),headers={'x-synthetic-init-capability':token,origin:values.SYNTHETIC_DEMO_ORIGIN};
     try {
-      process.env.SYNTHETIC_INIT_ENABLED='true';process.env.SYNTHETIC_INIT_CAPABILITY_SHA256=createHash('sha256').update(token).digest('hex');
+      process.env.SYNTHETIC_INIT_EXPIRES_AT=new Date(Date.now()+15*60*1000).toISOString();process.env.SYNTHETIC_INIT_ENABLED='true';process.env.SYNTHETIC_INIT_CAPABILITY_SHA256=createHash('sha256').update(token).digest('hex');
       assert.equal((await run('/api/demo/initialize',{headers})).continue,true);
       assert.equal((await run('/api/demo/initialize',{method:'POST',headers})).continue,true);
       for(const path of ['/api/customers','/api/demo/initialize/extra','/login','/api/auth/me'])assert.equal((await run(path,{headers})).response.status,503);
