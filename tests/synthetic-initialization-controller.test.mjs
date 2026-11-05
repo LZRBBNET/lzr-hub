@@ -98,7 +98,58 @@ test('revisão: GET concorrente mantém exclusividade e não invalida consentime
     connect:async()=>{connects++;if(connects===1)await wait;return new Simulator(store);}});
   const pending=handle(request());
   assert.equal((await handle(request())).status,409);
+  assert.equal((await handle(statusRequest())).status,409);
   assert.equal((await handle(request('POST',body()))).status,409);assert.equal(connects,1);
   release();assert.equal((await pending).status,200);
   assert.equal((await handle(request('POST',body()))).status,201);assert.equal(connects,2);
+});
+
+const statusRequest=(oid='12345',attempt='synthetic-init-review-20261105',headers={})=>new Request(
+  `https://review.example.invalid/api/demo/initialize?status=1&databaseOid=${oid}&attempt=${attempt}`,
+  {headers:{'x-synthetic-init-capability':token,...headers}});
+const readOnlyCalls=client=>assert.ok(client.calls.every(({sql})=>sql.startsWith('SELECT ')||sql.startsWith('SET LOCAL ')||
+  ['BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY','COMMIT','ROLLBACK'].includes(sql)));
+test('status autenticado observa ausência sem consentir escrita; configuração e escopo recusados antes de conectar',async()=>{
+  const f=fixture();assert.equal((await f.handle(statusRequest('12345',undefined,{'x-synthetic-init-capability':''}))).status,404);
+  assert.equal(f.connects(),0);
+  for(const [oid,attempt] of [['bad','synthetic-init-review-20261105'],['12345','bad']])assert.equal((await f.handle(statusRequest(oid,attempt))).status,400);
+  const response=await f.handle(statusRequest());assert.equal(response.status,200);
+  const value=await response.json();assert.equal(value.state,'absence-observed');assert.equal(value.retryAllowed,false);
+  readOnlyCalls(f.clients[0]);assert.equal((await f.handle(request('POST',body()))).status,400,'status never grants preflight');
+  f.config.SYNTHETIC_INIT_DATABASE_HOST='wrong.example.invalid';assert.equal((await f.handle(statusRequest())).status,400);assert.equal(f.connects(),1);
+});
+test('status permite reconciliação após commit de resposta incerta e restart, sem liberar POST',async()=>{
+  let lost=false;
+  const f=fixture('boot-one',fresh(),(at,sql)=>{if(sql==='COMMIT'&&f.store.completed&&!lost){lost=true;return 'after';}return false;});
+  assert.equal((await f.handle(request())).status,200);
+  assert.equal((await f.handle(request('POST',body()))).status,503);assert.equal(f.store.completed,true);
+  const response=await f.handle(statusRequest());assert.equal(response.status,200);
+  const text=await response.text(),value=JSON.parse(text);assert.equal(value.state,'completion-observed');assert.equal(value.manifestMatches,true);
+  assert.equal(value.retryAllowed,false);assert.equal(value.credentialsVerified,false);
+  assert.doesNotMatch(text,/invented|aaaa|bbbb|password|postgresql|DATABASE_URL|db.example.invalid/);
+  readOnlyCalls(f.clients.at(-1));assert.equal((await f.handle(request('POST',body()))).status,409);
+  const restarted=fixture('boot-two',f.store);assert.equal((await restarted.handle(statusRequest())).status,200);
+  assert.equal((await restarted.handle(request('POST',body('boot-two')))).status,400);
+  f.store.rows.find(r=>r.sql.startsWith('INSERT INTO drizzle.__drizzle_migrations')).values[0]='wrong';
+  assert.equal((await restarted.handle(statusRequest())).status,503,'journal drift never confirms completion');
+});
+test('status reconhece reserva e falha fechada para manifesto, duplicação, identidade, transação ou disposal ambíguos',async()=>{
+  const f=fixture('boot-one',fresh(),(at,sql)=>sql==='CREATE SCHEMA drizzle'?'before':false);
+  await f.handle(request());await f.handle(request('POST',body()));
+  assert.equal((await (await f.handle(statusRequest())).json()).state,'reservation-observed');
+  for(const mutate of [store=>store.rows[0].values[1]='wrong',store=>store.rows.push(structuredClone(store.rows[0])),store=>store.objects=1]){
+    const store=structuredClone(f.store);mutate(store);const g=fixture('boot-two',store);
+    assert.equal((await g.handle(statusRequest())).status,503);readOnlyCalls(g.clients[0]);
+  }
+  assert.equal((await f.handle(statusRequest('54321'))).status,503);
+  for(const fail of [(at,sql)=>sql==='COMMIT'?'after':false,(at,sql)=>sql==='BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY'?'before':false]){
+    const g=fixture('boot-two',f.store,fail);assert.equal((await g.handle(statusRequest())).status,503);assert.equal(g.clients[0].destroyed,1);
+  }
+});
+
+test('status não publica confirmação quando descarte do cliente é incerto',async()=>{
+  const f=fixture('boot-one',fresh(),()=>{f.clients.at(-1).failDestroy=true;return false;});
+  const response=await f.handle(statusRequest());assert.equal(response.status,503);
+  assert.deepEqual(await response.json(),{state:'unknown',retryAllowed:false,credentialsVerified:false});
+  readOnlyCalls(f.clients[0]);assert.equal(f.clients[0].destroyed,1);
 });
