@@ -5,6 +5,7 @@ import {
   type DispatchInvoiceInput, type DispatchLedgerRow,
 } from "@/lib/platform/collection-dispatch-service";
 import { DbCollectionRulesRepository } from "@/lib/platform/collection-rules-service";
+import { loadFreshDispatchInvoices } from "@/lib/platform/collection-dispatch-source";
 import { businessToday } from "@/lib/platform/billing-service";
 import { logUnauthenticatedAction } from "@/lib/platform/audit-log";
 import { authorize } from "@/lib/platform/session-guard";
@@ -14,8 +15,9 @@ const PERIODS: Record<string, number> = { "7d": 7, "30d": 30, "90d": 90 };
 
 /**
  * Disparo real da régua (issue #15) — só cobre o escopo em que "antes do
- * vencimento" é calculável de verdade: a allowlist, onde o snapshot por
- * cliente traz a fatura inteira (vencida e futura). Com a base cheia
+ * vencimento" é calculável de verdade: a allowlist, onde uma leitura fresca
+ * só das faturas abertas por cliente inclui vencidas e futuras. Recortes acima
+ * de 20 faturas ou sem confirmação completa bloqueiam a rodada. Com a base cheia
  * (`FEATURE_IXC_FULL_BASE`) o IXC só expõe uma varredura de faturas **já
  * vencidas** — não existe consulta de "vence em breve" na base inteira sem
  * varrer 73 mil registros. Declarar essa fronteira é melhor que fingir que a
@@ -26,13 +28,12 @@ async function loadOpenInvoices(): Promise<{ scope: "allowlist" | "unavailable";
   try { runtime = getIxcRuntime(); } catch { runtime = undefined; }
   if (!runtime?.provider) return { scope: "unavailable", invoices: [], detail: "IXC desligado: sem fonte de fatura" };
 
-  const settled = await Promise.allSettled(
-    runtime.config.ixcAllowlist.map((id) => runtime.provider!.getSnapshot(id, crypto.randomUUID())),
-  );
-  const invoices: DispatchInvoiceInput[] = settled.flatMap((result) => result.status === "fulfilled"
-    ? result.value.invoices.map((invoice) => ({ id: invoice.id, customerId: invoice.customerId, status: invoice.status, dueAt: invoice.dueAt, value: invoice.value }))
-    : []);
-  return { scope: "allowlist", invoices };
+  try {
+    const invoices = await loadFreshDispatchInvoices(runtime.provider, runtime.config.ixcAllowlist);
+    return { scope: "allowlist", invoices };
+  } catch {
+    return { scope: "unavailable", invoices: [], detail: "Não foi possível confirmar todas as faturas abertas da allowlist. Nenhuma cobrança foi registrada. Confira a fonte antes de tentar novamente." };
+  }
 }
 
 function summarizeLedger(rows: DispatchLedgerRow[]) {

@@ -1,4 +1,5 @@
 "use client";
+import type { PromiseReviewBatchResult } from "@/lib/platform/payment-promise-service";
 import { useEffect, useState } from "react";
 import { RULE_CHANNELS, type RuleStepInput } from "@/lib/platform/collection-rules-shared";
 import { Icon, type IconKey } from "@/components/ui/icons";
@@ -126,8 +127,9 @@ function PaymentPromisePanel(){
   const [form,setForm]=useState({invoiceId:"",customerId:"",promisedFor:""});
   const [busy,setBusy]=useState(false);
   const [error,setError]=useState<string|null>(null);
-  const [reviewResult,setReviewResult]=useState<{fulfilled:string[];broken:string[];stillPending:string[]}|null>(null);
+  const [reviewResult,setReviewResult]=useState<PromiseReviewBatchResult|null>(null);
   const [nonce,setNonce]=useState(0);
+  const [reviewCursor,setReviewCursor]=useState<string|null>(null);
   const toast=useToast();
 
   useEffect(()=>{let active=true;
@@ -145,19 +147,22 @@ function PaymentPromisePanel(){
     setBusy(false);
   }
 
-  async function review(){
+  async function review(restart=false){
     setBusy(true);setError(null);setReviewResult(null);
-    const response=await fetch("/api/billing/promises",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({action:"review"})});
-    const payload=await response.json();
-    if(response.ok){setReviewResult(payload);setNonce(n=>n+1)}
-    else setError(payload.error??"Não foi possível revisar.");
-    setBusy(false);
+    try{
+      const response=await fetch("/api/billing/promises",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({action:"review",cursor:restart?null:reviewCursor})});
+      const payload=await response.json();
+      if(response.ok){setReviewResult(payload);setReviewCursor(payload.nextCursor??null)}
+      else setError(payload.error??"Não foi possível revisar.");
+    }catch{setError("Não foi possível confirmar a revisão. Consulte as promessas antes de tentar novamente.")}
+    finally{setState("loading");setNonce(n=>n+1);setBusy(false)}
   }
 
   return <div className="grid-2">
     <Card title="Promessas pendentes" badge={state==="ready"&&<Badge>{pending.length}</Badge>}
-      actions={<button className="button secondary small" disabled={busy} onClick={()=>void review()}><Icon name="refresh" size={14}/>Conferir no IXC</button>} flush>
-      {reviewResult&&<div className="card-content"><Notice tone={reviewResult.broken.length?"warn":"ok"}>{reviewResult.fulfilled.length} cumprida(s), <strong>{reviewResult.broken.length} quebrada(s)</strong> — essas precisam de recontato manual —, {reviewResult.stillPending.length} ainda pendente(s).</Notice></div>}
+      actions={<><button className="button secondary small" disabled={busy} onClick={()=>void review()}><Icon name="refresh" size={14}/>{reviewCursor?"Conferir próximo lote":"Conferir no IXC"}</button>{reviewCursor&&<button className="button secondary small" disabled={busy} onClick={()=>void review(true)}>Reiniciar conferência</button>}</>} flush>
+      {reviewResult&&<div className="card-content"><Notice tone={reviewResult.broken.length||reviewResult.unverified.length||reviewResult.hasMore?"warn":"ok"}>Neste lote: {reviewResult.fulfilled.length} cumprida(s), <strong>{reviewResult.broken.length} quebrada(s)</strong> — conferir antes de qualquer recontato manual —, {reviewResult.stillPending.length} ainda pendente(s). {reviewResult.unverified.length>0&&<strong>{reviewResult.unverified.length} sem confirmação: esta revisão não alterou essas promessas. Consulte a situação atual antes de agir.</strong>} {reviewResult.hasMore&&<strong>Há mais promessas não conferidas. Use Conferir próximo lote; nada será consultado automaticamente.</strong>}</Notice></div>}
+      <div className="card-content"><p className="hint">Até 20 promessas por clique, por fatura e cliente exatos, sem depender da página do Customer 360. Leituras novas a cada lote. Reiniciar inclui novamente as pendentes anteriores; novos registros podem exigir uma nova rodada.</p></div>
       {state==="loading"&&<Loading rows={3}/>}
       {state==="error"&&<div className="card-content"><Notice tone="bad">Promessas indisponíveis.</Notice></div>}
       {state==="ready"&&pending.length===0&&<Empty icon="check" title="Nenhuma promessa pendente"/>}

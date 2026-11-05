@@ -2,7 +2,7 @@ import { IxcConnectionMapper, IxcContractMapper, IxcCustomerMapper, IxcInvoiceMa
 import { sanitizeTelemetry } from "./masking.ts";
 import { ReadonlyIxcGuard } from "./guard.ts";
 import { CircuitBreaker, SlidingWindowRateLimiter, TtlCache } from "./resilience.ts";
-import type { IxcCityDto, IxcCollectionWalletDto, IxcCustomerDto, IxcCustomerPage, IxcCustomerSnapshot, IxcSnapshotCoverage, IxcListResponse, IxcOsSubjectDto, IxcPaymentTermDto, IxcReadOperation, IxcSectorDto, IxcUfDto } from "./types.ts";
+import type { IxcCityDto, IxcCollectionWalletDto, IxcCustomerDto, IxcCustomerPage, IxcCustomerSnapshot, IxcSnapshotCoverage, IxcListResponse, IxcInvoiceDto, IxcOsSubjectDto, IxcPaymentTermDto, IxcReadOperation, IxcSectorDto, IxcUfDto } from "./types.ts";
 
 // `listOsCatalog` fica de fora porque não tem um endpoint só: a mesma operação
 // lê `su_oss_assunto` e `empresa_setor`, e o recurso vai explícito na chamada.
@@ -442,6 +442,37 @@ export class IxcReadonlyProvider {
     if(!log||!operator)return undefined;
     const at=String(log.data??"").trim();
     return{operator,at:at&&!at.startsWith("0000")?at:null};
+  }
+  /**
+   * Leitura pontual para reconciliação: o ID da fatura não substitui o escopo
+   * do cliente. Consulta `fn_areceber` com os dois filtros e revalida o retorno.
+   * Não usa o cache/snapshot nem filtra por status: recebidas também importam.
+   */
+  async getInvoiceForCustomer(customerId:string,invoiceId:string,correlationId:string):Promise<{id:string;customerId:string;status:string}|undefined>{
+    if(!/^[1-9]\d{0,31}$/.test(customerId)||!/^[1-9]\d{0,31}$/.test(invoiceId))throw new IxcReadonlyError("IXC_INVALID_INVOICE_REFERENCE");
+    const {records,total,coverage}=await this.readPage("listInvoices",endpoints.listInvoices,"fn_areceber.id",invoiceId,correlationId,2,customerId,{
+      oper:"=",page:1,sortname:"fn_areceber.id",
+      gridParam:[{TB:"fn_areceber.id_cliente",OP:"=",P:customerId}],
+    });
+    if(!coverage.complete)throw new IxcReadonlyError("IXC_INCOMPLETE_INVOICE_RESPONSE");
+    if(total===0&&records.length===0)return undefined;
+    if(total!==1||records.length!==1)throw new IxcReadonlyError("IXC_AMBIGUOUS_INVOICE");
+    const row=records[0];
+    const id=(value:unknown)=>typeof value==="string"?value:typeof value==="number"&&Number.isSafeInteger(value)?String(value):"";
+    if(id(row.id)!==invoiceId||id(row.id_cliente)!==customerId)throw new IxcReadonlyError("IXC_INVOICE_SCOPE_MISMATCH");
+    return{id:invoiceId,customerId,status:typeof row.status==="string"?row.status:""};
+  }
+  /** Uma leitura fresca somente de faturas abertas; não carrega pagamentos, contratos ou conexão. */
+  async getOpenInvoicesForDispatch(customerId:string,correlationId:string):Promise<IxcInvoiceDto[]>{
+    if(!/^[1-9]\d{0,31}$/.test(customerId))throw new IxcReadonlyError("IXC_INVALID_INVOICE_REFERENCE");
+    const {records,coverage}=await this.readPage("listInvoices",endpoints.listInvoices,"fn_areceber.id_cliente",customerId,correlationId,20,customerId,{
+      oper:"=",page:1,sortname:"fn_areceber.id",
+      gridParam:[{TB:"fn_areceber.status",OP:"=",P:"A"}],
+    });
+    if(!coverage.complete)throw new IxcReadonlyError("IXC_INCOMPLETE_INVOICE_RESPONSE");
+    const id=(value:unknown)=>typeof value==="string"?value:typeof value==="number"&&Number.isSafeInteger(value)?String(value):"";
+    if(records.some(row=>!/^[1-9]\d{0,31}$/.test(id(row.id))||id(row.id_cliente)!==customerId||row.status!=="A"))throw new IxcReadonlyError("IXC_INVOICE_SCOPE_MISMATCH");
+    return records.map(IxcInvoiceMapper.map);
   }
   /** Contagem de faturas em aberto na base inteira: uma consulta, sem varrer registro. */
   async countOpenInvoices(correlationId:string){
