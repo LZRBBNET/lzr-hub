@@ -46,16 +46,37 @@ export function parseKnowledgeInput(body: Record<string, unknown>) {
   return { title, category, content };
 }
 
+const KNOWLEDGE_DAY = new Intl.DateTimeFormat("en-CA", {
+  timeZone: "America/Sao_Paulo", year: "numeric", month: "2-digit", day: "2-digit",
+});
+
+/** Null means no deadline. Civil dates include the whole business day; ISO instants expire exactly. */
+export function isKnowledgeCurrent(validUntil: string | null, now: Date): boolean {
+  if (validUntil === null) return true;
+  if (typeof validUntil !== "string" || !Number.isFinite(now.getTime())) return false;
+  const day = validUntil.slice(0, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(day) || day.startsWith("0000")) return false;
+  const calendar = new Date(`${day}T00:00:00.000Z`);
+  if (!Number.isFinite(calendar.getTime()) || calendar.toISOString().slice(0, 10) !== day) return false;
+  if (validUntil.length === 10) return day >= KNOWLEDGE_DAY.format(now);
+  // No locale-dependent dates or implicit server timezone. Reject normalized
+  // impossible times as well as malformed/unknown metadata rather than cite it.
+  const instant = /^\d{4}-\d{2}-\d{2}T(\d{2}):(\d{2}):(\d{2})(?:\.\d{1,3})?(Z|[+-]\d{2}:\d{2})$/.exec(validUntil);
+  if (!instant || Number(instant[1]) > 23 || Number(instant[2]) > 59 || Number(instant[3]) > 59) return false;
+  const deadline = Date.parse(validUntil);
+  return Number.isFinite(deadline) && now.getTime() < deadline;
+}
+
 /**
  * Busca por termos no título, categoria e conteúdo. Só documentos publicados —
  * rascunho não é fonte. É correspondência textual simples, não busca semântica:
  * `FEATURE_PGVECTOR` está desligada e não há embedding gerado.
  */
-export function searchDocuments(documents: KnowledgeDoc[], query: string): KnowledgeSearchHit[] {
+export function searchDocuments(documents: KnowledgeDoc[], query: string, now: Date = new Date()): KnowledgeSearchHit[] {
   const terms = normalize(query).split(/\s+/).filter((term) => term.length > 2);
   if (terms.length === 0) return [];
   return documents
-    .filter((document) => document.status === "published")
+    .filter((document) => document.status === "published" && isKnowledgeCurrent(document.validUntil, now))
     .map((document) => {
       const haystack = normalize(`${document.title} ${document.category} ${document.content}`);
       const hits = terms.filter((term) => haystack.includes(term)).length;
@@ -68,7 +89,7 @@ export function searchDocuments(documents: KnowledgeDoc[], query: string): Knowl
 const toDoc = (row: Record<string, unknown>): KnowledgeDoc => ({
   id: String(row.id), title: String(row.title), category: String(row.category),
   content: String(row.content), status: row.status === "published" ? "published" : "draft",
-  version: Number(row.version ?? 1), validUntil: row.validUntil ? String(row.validUntil) : null,
+  version: Number(row.version ?? 1), validUntil: row.validUntil == null ? null : String(row.validUntil),
   updatedAt: String(row.updatedAt),
 });
 
