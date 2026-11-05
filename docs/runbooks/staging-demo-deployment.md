@@ -6,7 +6,7 @@ Publicar uma demonstração protegida do LZR HUB com dados sintéticos, agente e
 
 ## Controles obrigatórios
 
-Use exatamente as variáveis de `.env.staging.example`. A aplicação falha fechada se qualquer uma delas divergir.
+Use exatamente as variáveis de `.env.staging.example`. O validador de configuração recusa divergências e o health indica `degraded`. Isso é um diagnóstico, não um bloqueio global de todos os endpoints: não publique um ambiente que falhe na validação.
 
 - `LZR_ENV=staging`
 - `NEXT_PUBLIC_LZR_ENV=staging`
@@ -16,8 +16,16 @@ Use exatamente as variáveis de `.env.staging.example`. A aplicação falha fech
 - `IXC_WRITE_ENABLED=false`
 - `FEATURE_IXC_WRITE=false`
 - todas as integrações externas e perfis de homologação desligados
+- `FEATURE_N8N_CHANNEL=false` e `FEATURE_N8N_AUTOREPLY=false`
+- `FEATURE_ATTENDANT_REPLY=false`
+- `FEATURE_LLM_INTENT=false` e `FEATURE_COPILOT_LLM=false`
+- `FEATURE_TELEGRAM_ALERTS=false`
 
-O ambiente publicado não recebe `IXC_API_TOKEN`, token de relay, segredo de job ou credenciais de WhatsApp. Não existe fallback para o IXC.
+O wrapper `scripts/staging-env.sh` fixa esses valores no processo filho, inclusive quando a shell herda flags ativas. Ele não remove credenciais herdadas, não confirma que o banco é sintético e não muda `FEATURE_AUTH`. Use um ambiente isolado sem secrets reais. Executar somente `build:staging` não fixa essas variáveis no runtime publicado: configure-as também no processo que servirá a aplicação.
+
+Acesso protegido é uma condição separada: o modo mock não equivale a autenticação. Com `FEATURE_AUTH` ausente ou diferente de `true`, o guard da aplicação libera as permissões sem identidade. Preserve o controle externo aprovado para a demo e teste acesso negado fora da lista; antes de piloto com dados reais, exija login e RBAC verificados. Não desligue autenticação para fazer os testes passarem.
+
+Não forneça `IXC_API_TOKEN`, token de relay, segredo de job, credenciais de WhatsApp ou chave de LLM a esta demo. Verifique a ausência dessas credenciais no ambiente isolado antes de publicar; o wrapper não as remove. Mantenha IXC desativado sem fallback.
 
 ## Preparação e validação
 
