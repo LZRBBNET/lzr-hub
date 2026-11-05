@@ -81,7 +81,8 @@ async function readFreshEvidence(readEvidence, context, requestedAt) {
 /**
  * readEvidence must be a trusted server-side dependency, never a job payload
  * callback. It must fetch the exact invoice and current dispatch/rule/cancel
- * state during THIS call, without cache or partial/list-only fallbacks.
+ * state during THIS call, without cache or partial/list-only fallbacks. Invoice
+ * value must be a confirmed positive open balance, never the face value.
  * A continuation is an explicit integration boundary, not an existing sender.
  */
 export async function processBillingReminder(job, { readEvidence, continueEligible, now = () => new Date() } = {}) {
@@ -102,6 +103,9 @@ export async function processBillingReminder(job, { readEvidence, continueEligib
   const { invoice, intent } = evidence;
   if (invoice.id !== context.invoiceId || invoice.customerId !== context.customerId) block("BILLING_INVOICE_IDENTITY_MISMATCH");
   if (typeof invoice.status !== "string" || !/^(?:a|abert[ao]|em aberto)$/i.test(invoice.status.trim())) block("BILLING_INVOICE_NOT_OPEN");
+  const cents = typeof invoice.value === "number" ? Math.round(invoice.value * 100) : NaN;
+  if (invoice.valueSource !== "open-balance" || typeof invoice.value !== "number" || !Number.isFinite(invoice.value)
+    || invoice.value <= 0 || !Number.isSafeInteger(cents) || cents <= 0) block("BILLING_INVOICE_BALANCE_UNCONFIRMED");
   for (const key of Object.keys(context)) {
     if (intent[key] !== context[key]) block("BILLING_INTENT_MISMATCH");
   }

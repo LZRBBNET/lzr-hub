@@ -23,7 +23,7 @@ function evidence(input = job()) {
   delete context.schemaVersion;
   return {
     complete: true, observedAt: NOW,
-    invoice: { id: context.invoiceId, customerId: context.customerId, status: "A", dueAt: "2026-11-05" },
+    invoice: { id: context.invoiceId, customerId: context.customerId, status: "A", dueAt: "2026-11-05", value: 50, valueSource: "open-balance" },
     intent: { ...context, idempotencyKey: input.data.idempotencyKey, offsetDays: 0, current: true, active: true, cancelled: false },
   };
 }
@@ -294,4 +294,19 @@ test("non-billing simulated queues preserve retry and processedAt behavior", asy
   assert.equal(result.queue, "knowledge-indexing");
   assert.equal(result.correlationId, "fictional");
   assert.ok(Number.isFinite(new Date(result.processedAt).getTime()));
+});
+
+for (const [label, value, valueSource] of [
+  ['zero',0,'open-balance'],['negative',-1,'open-balance'],['missing',undefined,'open-balance'],
+  ['string','50','open-balance'],['NaN',NaN,'open-balance'],['infinite',Infinity,'open-balance'],
+  ['overflow',1e20,'open-balance'],['below-cent',0.001,'open-balance'],
+  ['face-value',50,'face-value'],['unknown-source',50,undefined],['unavailable',50,'unavailable'],
+]) test(`open status does not authorize reminder with ${label} balance`,async()=>{
+  const current=evidence();current.invoice.value=value;current.invoice.valueSource=valueSource;
+  await blocked(job(),'BILLING_INVOICE_BALANCE_UNCONFIRMED',{readEvidence:async()=>current});
+});
+
+for(const value of [0.01,0.29,15.75])test(`confirmed positive balance ${value} reaches fake continuation only`,async()=>{
+ const current=evidence();current.invoice.value=value;
+ const h=harness({readEvidence:async()=>current});assert.deepEqual(await h.processor(job()),{simulated:true,delivered:false});assert.equal(h.continuations.length,1);
 });
