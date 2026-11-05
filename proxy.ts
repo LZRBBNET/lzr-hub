@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import { currentUser } from './lib/platform/session-guard.ts';
 import { assertSyntheticWeb, syntheticWebRequested } from './lib/runtime/synthetic-web.ts';
+import { initializationAccess } from './lib/platform/synthetic-initialization-access.ts';
 
 declare const __LZR_SYNTHETIC_WEB_BUILD__: boolean | undefined;
 const protectedBuild = typeof __LZR_SYNTHETIC_WEB_BUILD__ !== 'undefined' && __LZR_SYNTHETIC_WEB_BUILD__ === true;
@@ -20,6 +21,14 @@ export async function proxy(request: Request) {
   // Do not accept browser writes from another origin, or originless jobs/webhooks.
   if (!read && request.headers.get('origin') !== origin) {
     return NextResponse.json({ error: 'Origem não autorizada' }, { status: 403, headers });
+  }
+  if (path === '/api/demo/initialize' && ['GET','POST'].includes(request.method) && initializationAccess(request, process.env)) {
+    return NextResponse.next({ headers });
+  }
+  // Exclusive bootstrap window: anonymous login must not open application pool
+  // connections while emptiness/exclusive ownership is being established.
+  if (process.env.SYNTHETIC_INIT_ENABLED !== undefined && process.env.SYNTHETIC_INIT_ENABLED !== 'false') {
+    return NextResponse.json({ error: 'Inicialização isolada em revisão', retryAllowed: false }, { status: 503, headers });
   }
   if ((read && (publicReads.has(path) || path.startsWith('/_next/static/'))) ||
       (path === '/api/auth/login' && request.method === 'POST')) return NextResponse.next({ headers });

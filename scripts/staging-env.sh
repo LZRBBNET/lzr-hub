@@ -17,4 +17,13 @@ export FEATURE_QUEUES=false
 export FEATURE_PGVECTOR=false
 export FEATURE_AGENT_HOMOLOGATION_PROFILES=false
 
+# Neutralize newer channels and model calls even when inherited from the shell.
+export FEATURE_N8N_CHANNEL=false
+export FEATURE_N8N_AUTOREPLY=false
+export FEATURE_ATTENDANT_REPLY=false
+export FEATURE_LLM_INTENT=false
+export FEATURE_COPILOT_LLM=false
+export FEATURE_TELEGRAM_ALERTS=false
+
+# Do not change FEATURE_AUTH: access protection is configured separately.
 exec "$@"

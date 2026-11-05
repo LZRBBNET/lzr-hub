@@ -53,6 +53,10 @@ test('endpoint de pagamento é inerte fora da demo, respeita negação e não ac
   assert.equal((await post({action:'reset',invoiceId:'901'})).status,400);
   assert.equal((await post(valid)).status,200);
   assert.equal((await demo.provider.getInvoiceForCustomer('10','901','synthetic')).status,'R');
+  assert.equal((await post({action:'reset_fixture',invoiceId:'901'})).status,400);
+  const reset=await post({action:'reset_fixture',invoiceId:'901',confirmation:'RESET_SYNTHETIC_INVOICE_901'});
+  assert.equal(reset.status,200);assert.equal((await reset.json()).databaseReset,false);
+  assert.equal((await demo.provider.getInvoiceForCustomer('10','901','synthetic')).status,'A');
 });
 
 test('factory Cliente 360 usa a mesma fatura e rotula dados fictícios',async t=>{

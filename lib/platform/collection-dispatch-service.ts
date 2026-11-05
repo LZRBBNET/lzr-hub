@@ -15,7 +15,8 @@ import type { CollectionRuleRow } from "./collection-rules-shared.ts";
  * e sem duplicar. O envio em si é enfileirado em `billing-reminders` (fica
  * registrado mesmo com a fila desligada, no mesmo espírito do modo observação
  * do canal de entrada) — quando existir worker que de fato manda WhatsApp,
- * ele consome dessa fila sem esta camada precisar mudar.
+ * ele ainda precisará revalidar cada job com evidência fresca; o runtime atual
+ * bloqueia cobrança por não ter fonte confiável nem remetente configurados.
  */
 
 export type DispatchStatus = "queued";
@@ -193,7 +194,11 @@ export async function runTodayDispatch(
           name: `collection-step:${candidate.stepId}`,
           idempotencyKey: `${candidate.invoiceId}:${candidate.stepId}:${candidate.scheduledFor}`,
           correlationId,
-          payload: { invoiceId: candidate.invoiceId, customerId: candidate.customerId, channel: candidate.channel, templateId: candidate.templateId },
+          payload: {
+            schemaVersion: 1, invoiceId: candidate.invoiceId, customerId: candidate.customerId,
+            ruleId: candidate.ruleId, ruleVersion: rule.version, stepId: candidate.stepId, scheduledFor: candidate.scheduledFor,
+            channel: candidate.channel, templateId: candidate.templateId,
+          },
         },
       });
       enqueued += 1; queueEnabled = true;

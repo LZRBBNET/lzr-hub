@@ -1,0 +1,379 @@
+{
+  "synthetic": true,
+  "serverStarted": false,
+  "databaseStarted": false,
+  "browser": false,
+  "source": "declared route.ts HTTP exports; actual Node artifact Request/Response; offline guard required",
+  "routes": [
+    {
+      "path": "/api/admin/ixc-users/sync",
+      "method": "POST",
+      "status": 401
+    },
+    {
+      "path": "/api/admin/status",
+      "method": "GET",
+      "status": 401
+    },
+    {
+      "path": "/api/admin/teams",
+      "method": "GET",
+      "status": 401
+    },
+    {
+      "path": "/api/admin/teams",
+      "method": "POST",
+      "status": 401
+    },
+    {
+      "path": "/api/admin/users",
+      "method": "GET",
+      "status": 401
+    },
+    {
+      "path": "/api/admin/users",
+      "method": "POST",
+      "status": 401
+    },
+    {
+      "path": "/api/agent",
+      "method": "POST",
+      "status": 401
+    },
+    {
+      "path": "/api/agent/replies",
+      "method": "GET",
+      "status": 401
+    },
+    {
+      "path": "/api/agent/replies",
+      "method": "POST",
+      "status": 401
+    },
+    {
+      "path": "/api/audit",
+      "method": "GET",
+      "status": 401
+    },
+    {
+      "path": "/api/audit/contracts",
+      "method": "GET",
+      "status": 401
+    },
+    {
+      "path": "/api/audit/contracts",
+      "method": "POST",
+      "status": 401
+    },
+    {
+      "path": "/api/auth/forgot",
+      "method": "POST",
+      "status": 401
+    },
+    {
+      "path": "/api/auth/login",
+      "method": "POST",
+      "status": 400
+    },
+    {
+      "path": "/api/auth/logout",
+      "method": "POST",
+      "status": 401
+    },
+    {
+      "path": "/api/auth/me",
+      "method": "GET",
+      "status": 200
+    },
+    {
+      "path": "/api/auth/password",
+      "method": "POST",
+      "status": 401
+    },
+    {
+      "path": "/api/billing/collections/dispatch",
+      "method": "GET",
+      "status": 401
+    },
+    {
+      "path": "/api/billing/collections/dispatch",
+      "method": "POST",
+      "status": 401
+    },
+    {
+      "path": "/api/billing/invoices/reissue",
+      "method": "GET",
+      "status": 401
+    },
+    {
+      "path": "/api/billing/invoices/reissue",
+      "method": "POST",
+      "status": 401
+    },
+    {
+      "path": "/api/billing/overview",
+      "method": "GET",
+      "status": 401
+    },
+    {
+      "path": "/api/billing/promises",
+      "method": "GET",
+      "status": 401
+    },
+    {
+      "path": "/api/billing/promises",
+      "method": "POST",
+      "status": 401
+    },
+    {
+      "path": "/api/billing/renegotiations",
+      "method": "GET",
+      "status": 401
+    },
+    {
+      "path": "/api/billing/renegotiations",
+      "method": "POST",
+      "status": 401
+    },
+    {
+      "path": "/api/billing/rules",
+      "method": "GET",
+      "status": 401
+    },
+    {
+      "path": "/api/billing/rules",
+      "method": "POST",
+      "status": 401
+    },
+    {
+      "path": "/api/channels/evolution",
+      "method": "POST",
+      "status": 401
+    },
+    {
+      "path": "/api/channels/meta",
+      "method": "GET",
+      "status": 401
+    },
+    {
+      "path": "/api/channels/meta",
+      "method": "POST",
+      "status": 401
+    },
+    {
+      "path": "/api/channels/n8n",
+      "method": "GET",
+      "status": 401
+    },
+    {
+      "path": "/api/channels/n8n",
+      "method": "POST",
+      "status": 401
+    },
+    {
+      "path": "/api/cockpit",
+      "method": "GET",
+      "status": 401
+    },
+    {
+      "path": "/api/conversations",
+      "method": "GET",
+      "status": 401
+    },
+    {
+      "path": "/api/conversations/customer",
+      "method": "GET",
+      "status": 401
+    },
+    {
+      "path": "/api/conversations/reply",
+      "method": "POST",
+      "status": 401
+    },
+    {
+      "path": "/api/conversations/state",
+      "method": "POST",
+      "status": 401
+    },
+    {
+      "path": "/api/copilot",
+      "method": "POST",
+      "status": 401
+    },
+    {
+      "path": "/api/customers",
+      "method": "GET",
+      "status": 401
+    },
+    {
+      "path": "/api/customers",
+      "method": "POST",
+      "status": 401
+    },
+    {
+      "path": "/api/demo/initialize",
+      "method": "GET",
+      "status": 401
+    },
+    {
+      "path": "/api/demo/initialize",
+      "method": "POST",
+      "status": 401
+    },
+    {
+      "path": "/api/demo/invoices",
+      "method": "POST",
+      "status": 401
+    },
+    {
+      "path": "/api/health",
+      "method": "GET",
+      "status": 401
+    },
+    {
+      "path": "/api/integrations/ixc/smoke",
+      "method": "POST",
+      "status": 401
+    },
+    {
+      "path": "/api/integrations/ixc/sync",
+      "method": "POST",
+      "status": 401
+    },
+    {
+      "path": "/api/integrations/telegram/webhook",
+      "method": "POST",
+      "status": 401
+    },
+    {
+      "path": "/api/intelligence/churn",
+      "method": "GET",
+      "status": 401
+    },
+    {
+      "path": "/api/intelligence/churn-risk",
+      "method": "GET",
+      "status": 401
+    },
+    {
+      "path": "/api/internal-chat",
+      "method": "GET",
+      "status": 401
+    },
+    {
+      "path": "/api/internal-chat",
+      "method": "POST",
+      "status": 401
+    },
+    {
+      "path": "/api/knowledge",
+      "method": "GET",
+      "status": 401
+    },
+    {
+      "path": "/api/knowledge",
+      "method": "POST",
+      "status": 401
+    },
+    {
+      "path": "/api/operation/overview",
+      "method": "GET",
+      "status": 401
+    },
+    {
+      "path": "/api/pilot",
+      "method": "GET",
+      "status": 401
+    },
+    {
+      "path": "/api/pilot",
+      "method": "POST",
+      "status": 401
+    },
+    {
+      "path": "/api/queues",
+      "method": "GET",
+      "status": 401
+    },
+    {
+      "path": "/api/queues",
+      "method": "POST",
+      "status": 401
+    },
+    {
+      "path": "/api/sales/goals",
+      "method": "DELETE",
+      "status": 401
+    },
+    {
+      "path": "/api/sales/goals",
+      "method": "GET",
+      "status": 401
+    },
+    {
+      "path": "/api/sales/goals",
+      "method": "POST",
+      "status": 401
+    },
+    {
+      "path": "/api/sales/leads",
+      "method": "GET",
+      "status": 401
+    },
+    {
+      "path": "/api/sales/leads",
+      "method": "POST",
+      "status": 401
+    },
+    {
+      "path": "/api/sales/leads/customer",
+      "method": "GET",
+      "status": 401
+    },
+    {
+      "path": "/api/sales/leads/customer",
+      "method": "POST",
+      "status": 401
+    },
+    {
+      "path": "/api/sales/overview",
+      "method": "GET",
+      "status": 401
+    },
+    {
+      "path": "/api/support/incidents",
+      "method": "GET",
+      "status": 401
+    },
+    {
+      "path": "/api/support/incidents",
+      "method": "POST",
+      "status": 401
+    },
+    {
+      "path": "/api/support/metrics",
+      "method": "GET",
+      "status": 401
+    },
+    {
+      "path": "/api/support/network-alerts",
+      "method": "GET",
+      "status": 401
+    },
+    {
+      "path": "/api/support/service-orders",
+      "method": "GET",
+      "status": 401
+    },
+    {
+      "path": "/api/support/service-orders",
+      "method": "POST",
+      "status": 401
+    },
+    {
+      "path": "/api/support/tickets",
+      "method": "GET",
+      "status": 401
+    }
+  ]
+}

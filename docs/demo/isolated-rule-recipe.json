@@ -1,0 +1,12 @@
+{
+  "name": "DEMO — régua fictícia sem envio",
+  "steps": [
+    {
+      "offsetDays": 1,
+      "channel": "WhatsApp",
+      "templateId": "DEMO-NO-DELIVERY",
+      "attempts": 1,
+      "active": true
+    }
+  ]
+}

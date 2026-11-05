@@ -1,23 +1,14 @@
 import { Worker } from "bullmq";
 import { deadLetterQueueName, loadConfig, queueNames } from "./config.mjs";
 import { createRuntime } from "./runtime.mjs";
+import { createProcessor } from "./processor.mjs";
 
 const config = loadConfig();
 const runtime = createRuntime(config);
 
-async function processor(job) {
-  const simulateFailures = Number(job.data?.payload?.simulateFailures ?? 0);
-  if (Number.isInteger(simulateFailures) && simulateFailures > job.attemptsMade) {
-    throw new Error("SIMULATED_TRANSIENT_FAILURE");
-  }
-  return {
-    processedAt: new Date().toISOString(),
-    correlationId: job.data?.correlationId,
-    queue: job.queueName,
-  };
-}
-
 const workers = queueNames.map((name) => {
+  // No billing evidence adapter or sender is configured: billing fails closed.
+  const processor = createProcessor(name);
   const worker = new Worker(name, processor, {
     connection: runtime.connection,
     prefix: config.prefix,

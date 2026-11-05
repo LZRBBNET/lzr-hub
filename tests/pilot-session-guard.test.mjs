@@ -1,5 +1,7 @@
 // Real guard, session resolver, RBAC and handlers; memory repositories only.
 import test from 'node:test';
+import { assessStagingReadiness } from '../lib/runtime/staging-readiness.ts';
+import { stagingDemoRequirements } from '../lib/runtime/staging-demo.ts';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
@@ -115,6 +117,30 @@ test('fora do piloto FEATURE_AUTH=true ainda exige sessão', async t => {
   assert.equal((await f.create()).status, 401); noBusiness(f);
 });
 
+
+test('composição: demo com auth ligada é configuração válida mas ainda exige sessão', async t => {
+  const f = fixture(t, { mode: 'disabled', flag: 'true', cookie: '' });
+  const report = assessStagingReadiness({ ...stagingDemoRequirements, FEATURE_AUTH: 'true' });
+  assert.equal(report.status, 'configuration_valid'); assert.equal(report.applicationAuth, 'required');
+  assert.equal(report.readyForProduction, false); assert.equal(report.databaseConnectionConfigured, false);
+  assert.equal((await f.create()).status, 401); noBusiness(f);
+});
+
+test('composição: configuração válida sem auth não comprova demonstração protegida', async t => {
+  const f = fixture(t, { mode: 'disabled', flag: 'false', cookie: '' });
+  const report = assessStagingReadiness({ ...stagingDemoRequirements, FEATURE_AUTH: 'false' });
+  assert.equal(report.status, 'configuration_valid'); assert.equal(report.applicationAuth, 'not_enforced');
+  assert.ok(report.requiredEvidence.includes('access_control')); assert.equal(report.readyForProduction, false);
+  assert.deepEqual(await f.guard.authorize(f.request(), 'customer.read'), { allowed: true }); noBusiness(f);
+});
+
+test('composição: preflight de demo recusa piloto interno enquanto guard protege a requisição', async t => {
+  const f = fixture(t, { flag: 'false', cookie: '' });
+  const report = assessStagingReadiness({ ...stagingDemoRequirements, PILOT_MODE: 'internal', FEATURE_AUTH: 'false' });
+  assert.equal(report.status, 'blocked');
+  assert.ok(report.blockers.some(item => item.variable === 'PILOT_MODE'));
+  assert.equal((await f.create()).status, 401); noBusiness(f);
+});
 
 test('senha provisória bloqueia leitura/mutações pelo guard até troca confirmada no repositório',async t=>{
   const f=fixture(t,{flag:'true',mustChangePassword:true});

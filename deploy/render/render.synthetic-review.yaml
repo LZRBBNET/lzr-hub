@@ -1,0 +1,96 @@
+# REVIEW ONLY: local; not published, applied, or authorized for provisioning.
+# Draft branch only; publication of this file does not authorize applying the plan.
+# Initial Blueprint creation can deploy even with automatic updates disabled.
+previews:
+  generation: 'off'
+services:
+- type: web
+  name: lzr-synthetic-review-web-20261105
+  runtime: node
+  plan: free
+  region: oregon
+  repo: https://github.com/LZRBBNET/lzr-hub
+  branch: review/render-synthetic-initialization-package-20261105
+  autoDeployTrigger: 'off'
+  buildCommand: npm ci --include=dev && node --experimental-strip-types scripts/synthetic-web.mjs
+    build
+  startCommand: node --experimental-strip-types scripts/synthetic-web.mjs start
+  envVars:
+  - key: NODE_ENV
+    value: production
+  - key: NODE_VERSION
+    value: 24.22.1
+  - key: LZR_ENV
+    value: staging
+  - key: NEXT_PUBLIC_LZR_ENV
+    value: staging
+  - key: LZR_RUNTIME_MODE
+    value: mock
+  - key: FEATURE_AUTH
+    value: 'true'
+  - key: PILOT_MODE
+    value: disabled
+  - key: IXC_MODE
+    value: disabled
+  - key: IXC_TRANSPORT
+    value: disabled
+  - key: FEATURE_IXC_FULL_BASE
+    value: 'false'
+  - key: FEATURE_SYNTHETIC_INVOICES
+    value: 'true'
+  - key: DEMO_DATASET
+    value: isolated-invoices-v1
+  - key: SYNTHETIC_INIT_ENABLED
+    value: 'false'
+  - key: SYNTHETIC_WEB_DEMO
+    value: 'true'
+  - key: SYNTHETIC_DATABASE_CONFIRMATION
+    value: isolated-synthetic-postgres-v1
+  - key: FEATURE_IXC_WRITE
+    value: 'false'
+  - key: IXC_WRITE_ENABLED
+    value: 'false'
+  - key: FEATURE_QUEUES
+    value: 'false'
+  - key: FEATURE_META_WHATSAPP
+    value: 'false'
+  - key: FEATURE_N8N_CHANNEL
+    value: 'false'
+  - key: FEATURE_N8N_AUTOREPLY
+    value: 'false'
+  - key: FEATURE_ATTENDANT_REPLY
+    value: 'false'
+  - key: FEATURE_EVOLUTION
+    value: 'false'
+  - key: FEATURE_CHATWOOT
+    value: 'false'
+  - key: FEATURE_LANGFUSE
+    value: 'false'
+  - key: FEATURE_LLM_INTENT
+    value: 'false'
+  - key: FEATURE_COPILOT_LLM
+    value: 'false'
+  - key: FEATURE_TELEGRAM_ALERTS
+    value: 'false'
+  - key: FEATURE_PGVECTOR
+    value: 'false'
+  - key: FEATURE_AGENT_HOMOLOGATION_PROFILES
+    value: 'false'
+  # Alias of this service default URL; available during build and runtime.
+  - key: SYNTHETIC_DEMO_ORIGIN
+    fromService:
+      type: web
+      name: lzr-synthetic-review-web-20261105
+      envVarKey: RENDER_EXTERNAL_URL
+  - key: DATABASE_URL
+    fromDatabase:
+      name: lzr-synthetic-review-db-20261105
+      property: connectionString
+databases:
+- name: lzr-synthetic-review-db-20261105
+  plan: free
+  region: oregon
+  postgresMajorVersion: '17'
+  databaseName: lzr_synthetic_demo
+  user: lzr_synthetic_demo
+  ipAllowList: []
