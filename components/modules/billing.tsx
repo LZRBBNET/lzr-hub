@@ -1,5 +1,6 @@
 "use client";
 import type { PromiseReviewBatchResult } from "@/lib/platform/payment-promise-service";
+import { formatPromisedDate } from "@/lib/platform/payment-promise-date";
 import { useEffect, useState } from "react";
 import { RULE_CHANNELS, type RuleStepInput } from "@/lib/platform/collection-rules-shared";
 import { Icon, type IconKey } from "@/components/ui/icons";
@@ -167,7 +168,7 @@ function PaymentPromisePanel(){
       {state==="error"&&<div className="card-content"><Notice tone="bad">Promessas indisponíveis.</Notice></div>}
       {state==="ready"&&pending.length===0&&<Empty icon="check" title="Nenhuma promessa pendente"/>}
       {state==="ready"&&<div className="list">{pending.map(p=><div className="row" key={p.id}>
-        <div className="row-main"><strong>Fatura {p.invoiceId}</strong><span>Cliente {p.customerId} · promete pagar em {new Date(p.promisedFor+"T00:00:00Z").toLocaleDateString("pt-BR")}</span></div>
+        <div className="row-main"><strong>Fatura {p.invoiceId}</strong><span>Cliente {p.customerId} · promete pagar em {formatPromisedDate(p.promisedFor)}</span></div>
         <div className="row-value"><span className={`status ${PROMISE_STATUS[p.status]?.[1]??""}`}>{PROMISE_STATUS[p.status]?.[0]??p.status}</span></div>
       </div>)}</div>}
     </Card>
