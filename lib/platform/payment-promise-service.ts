@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { asc, desc, eq, and, gt } from "drizzle-orm";
 import { paymentPromises } from "../../db/schema.ts";
 import { businessToday } from "./billing-service.ts";
+import { isValidPromisedDate } from "./payment-promise-date.ts";
 
 /**
  * Promessa de pagamento (issue #16, item 2). Registrada e avaliada só contra
@@ -28,11 +29,9 @@ export class PaymentPromiseValidationError extends Error {
   constructor(message: string) { super(message); this.name = "PaymentPromiseValidationError"; }
 }
 
-const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
-
 /** Data prometida não pode ser passado (promessa por definição é futura) nem longe demais — mais de 60 dias não é "promessa", é ficção. */
 export function parsePromisedFor(value: string, now: Date): string {
-  if (!DATE_RE.test(value)) throw new PaymentPromiseValidationError("Data prometida deve estar no formato AAAA-MM-DD");
+  if (!isValidPromisedDate(value)) throw new PaymentPromiseValidationError("Data prometida deve ser uma data válida no formato AAAA-MM-DD");
   const today = businessToday(now);
   if (value < today) throw new PaymentPromiseValidationError("A data prometida não pode estar no passado");
   const maxDays = 60;
