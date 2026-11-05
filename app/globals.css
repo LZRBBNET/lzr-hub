@@ -789,6 +789,14 @@ button.tr:hover, .tr.clickable:hover { background: var(--hover); cursor: pointer
 .rule-name input:hover { border-color: var(--line); }
 .rule-name input:focus { border-color: var(--blue); background: var(--panel); }
 .rule-name span { font-size: 12px; color: var(--muted); }
+.rule-toolbar .toolbar-main { flex: 1 1 280px; }
+.rule-toolbar .rule-name { min-width: 0; width: 100%; grid-template-columns: minmax(0, 1fr); }
+.rule-toolbar .rule-name input { min-width: 0; width: 100%; }
+.rule-toolbar .rule-name span { overflow-wrap: anywhere; }
+@media (max-width: 640px) {
+  .rule-toolbar .toolbar-main { flex-basis: 100%; }
+  .rule-toolbar .toolbar-actions { width: 100%; }
+}
 .rule-steps { list-style: none; margin: 0; padding: 0; }
 .rule-step { display: grid; grid-template-columns: 32px minmax(0, 1fr) auto; gap: 14px; align-items: start; padding: 14px 18px; border-bottom: 1px solid var(--line-soft); }
 .rule-step:last-child { border-bottom: 0; }
