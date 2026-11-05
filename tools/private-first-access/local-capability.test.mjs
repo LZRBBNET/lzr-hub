@@ -19,7 +19,7 @@ test('servidor aceita chave bruta somente com verificador e prazo válidos; veri
 test('sessão local expõe somente verificador/prazo e recusa uso expirado/segunda tentativa',async()=>{
   let clock=at,calls=0;const bytes=Buffer.alloc(32,0xab);
   const session=createLocalFirstAccess({random:n=>{assert.equal(n,32);return bytes;},now:()=>clock,prompt:async()=>{throw new Error('test cancellation');},derive:async()=>{throw new Error('unused');},transport:async()=>{calls++;}});
-  assert.deepEqual(Object.keys(session).sort(),['configuration','run']);
+  assert.deepEqual(Object.keys(session).sort(),['configuration','observeTarget','run']);
   assert.equal(session.configuration.SYNTHETIC_INIT_CAPABILITY_SHA256,source().SYNTHETIC_INIT_CAPABILITY_SHA256);
   assert.equal(bytes.every(x=>x===0),true);assert.doesNotMatch(JSON.stringify(session),new RegExp(token));
   clock=at+900000;assert.equal((await session.run({})).state,'expired');assert.equal((await session.run({})).state,'blocked');assert.equal(calls,0);
@@ -32,4 +32,14 @@ test('sem canal de chave: sessão injeta chave apenas no header e não pede capa
   const target={origin:source().SYNTHETIC_DEMO_ORIGIN,databaseOid:'12345',attempt:'synthetic-init-local-review'};
   assert.equal((await session.run(target)).state,'refused');assert.equal((await session.run(target)).state,'blocked');
   assert.equal(keys.some(x=>/capability/i.test(x)),false);
+});
+
+test('OID pode ser observado por GET autenticado antes da aprovação; leitura não executa POST',async()=>{
+  const calls=[];const session=createLocalFirstAccess({random:()=>Buffer.alloc(32,0xab),now:()=>at,prompt:async()=>{throw new Error('not approved');},derive:async()=>{throw new Error('unused');},
+    transport:async(url,req)=>{calls.push(req);return {status:200,body:{processId:'synthetic-process-123',databaseOid:'12345',available:true,freshManualApprovalRequired:true,retryAllowed:false}};}});
+  assert.deepEqual(await session.observeTarget({origin:source().SYNTHETIC_DEMO_ORIGIN,attempt:'synthetic-init-local-review'}),{databaseOid:'12345',processId:'synthetic-process-123'});
+  await assert.rejects(session.observeTarget({origin:source().SYNTHETIC_DEMO_ORIGIN,attempt:'synthetic-init-local-review'}));
+  assert.equal(calls.length,1);assert.equal(calls[0].method,'GET');assert.equal(calls[0].headers['x-synthetic-init-capability'],token);
+  assert.equal((await session.run({origin:source().SYNTHETIC_DEMO_ORIGIN,databaseOid:'12345',attempt:'synthetic-init-local-review'})).state,'refused');
+  assert.equal(calls.length,1,'without approval there is no subsequent network or POST');
 });

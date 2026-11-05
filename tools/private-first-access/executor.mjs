@@ -80,7 +80,7 @@ export function createLocalFirstAccess({ random, now, ...dependencies }) {
     SYNTHETIC_INIT_CAPABILITY_SHA256: createHash('sha256').update(token).digest('hex'),
     SYNTHETIC_INIT_EXPIRES_AT: new Date(expires).toISOString(),
   });
-  let used = false;
+  let used = false, observed = false;
   const execute = createFirstAccessExecutor({ ...dependencies, transport: async (...args) => {
     if (!Number.isFinite(now()) || now() >= expires) fail();
     return dependencies.transport(...args);
@@ -88,7 +88,17 @@ export function createLocalFirstAccess({ random, now, ...dependencies }) {
     if (!token || !Number.isFinite(now()) || now() >= expires) fail();
     return token;
   }});
-  return Object.freeze({ configuration, async run(target) {
+  return Object.freeze({ configuration, async observeTarget({ origin, attempt }) {
+    if (used || observed || !Number.isFinite(now()) || now() >= expires) fail();
+    observed = true;
+    validateTarget(origin, '1', attempt); // Validate origin/attempt; no database approval inferred.
+    const response = await dependencies.transport(`${origin}/api/demo/initialize`, { method: 'GET', headers: { 'x-synthetic-init-capability': token, origin } });
+    const p = response.body;
+    if (response.status !== 200 || !exactKeys(p, ['processId','databaseOid','available','freshManualApprovalRequired','retryAllowed']) || p.available !== true ||
+        p.freshManualApprovalRequired !== true || p.retryAllowed !== false || typeof p.processId !== 'string' || !/^[a-zA-Z0-9-]{8,64}$/.test(p.processId) ||
+        typeof p.databaseOid !== 'string' || !/^[1-9]\d{0,9}$/.test(p.databaseOid) || now() >= expires) fail();
+    return Object.freeze({ databaseOid: p.databaseOid, processId: p.processId });
+  }, async run(target) {
     if (used) return { state: 'blocked', retryAllowed: false };
     used = true;
     try {
@@ -169,9 +179,9 @@ async function main() {
       ['NODE_OPTIONS','NODE_DEBUG','NODE_DEBUG_NATIVE','SSLKEYLOGFILE','NODE_USE_ENV_PROXY','HTTP_PROXY','HTTPS_PROXY','ALL_PROXY','http_proxy','https_proxy','all_proxy'].some(key=>process.env[key])) fail();
   const prompt = hiddenPrompt(process.stdin, process.stdout, process, 15 * 60 * 1000);
   const origin = await prompt('Origem HTTPS onrender.com previamente verificada: ');
-  const databaseOid = await prompt('OID do banco descartável previamente aprovado: ');
+  let databaseOid = await prompt('OID previamente aprovado (Enter para observar por leitura autenticada): ');
   const attempt = await prompt('Identificador único da tentativa aprovada (synthetic-init-...): ');
-  validateTarget(origin, databaseOid, attempt);
+  validateTarget(origin, databaseOid || '1', attempt);
   process.stdout.write(`Alvo a conferir: ${origin}; OID ${databaseOid}; tentativa ${attempt}\n`);
   if (await prompt('Digite PREPARAR_CHAVE_LOCAL para gerar a chave apenas neste processo: ') !== 'PREPARAR_CHAVE_LOCAL') fail();
   const session = createLocalFirstAccess({ random: randomBytes, now: Date.now, prompt, transport: createHttpsTransport(globalThis.fetch),
@@ -181,6 +191,12 @@ async function main() {
   for (const [key, value] of Object.entries(session.configuration)) process.stdout.write(`${key}=${value}\n`);
   process.stdout.write('Mantenha este processo aberto. Não compartilhe senha ou chave; nenhuma foi impressa.\n');
   if (await prompt('Após configuração ativa aprovada, digite CONFIGURACAO_ATIVA: ') !== 'CONFIGURACAO_ATIVA') fail();
+  if (!databaseOid) {
+    const observation = await session.observeTarget({ origin, attempt });
+    process.stdout.write(`OID observado no alvo autenticado: ${observation.databaseOid}\n`);
+    if (await prompt(`Digite APROVO_OID_${observation.databaseOid} após conferir o alvo descartável: `) !== `APROVO_OID_${observation.databaseOid}`) fail();
+    databaseOid = observation.databaseOid;
+  }
   const result = await session.run({ origin, databaseOid, attempt });
   process.stdout.write(result.state === 'completion-confirmed'
     ? 'Conclusão confirmada. Feche/revogue a janela antes de abrir o login e trocar a senha provisória.\n'
