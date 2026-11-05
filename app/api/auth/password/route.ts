@@ -10,9 +10,10 @@ import { currentUser, readSessionToken } from "@/lib/platform/session-guard";
  * atual. Um "Somente leitura" precisa poder trocar a própria senha.
  */
 export async function POST(request: Request) {
-  const token = readSessionToken(request);
   const user = await currentUser(request);
-  if (!token || !user) return NextResponse.json({ error: "Sessão inválida ou expirada" }, { status: 401 });
+  if (!user) return NextResponse.json({ error: "Sessão inválida ou expirada" }, { status: 401 });
+  const token = readSessionToken(request);
+  if (!token) return NextResponse.json({ error: "Sessão inválida ou expirada" }, { status: 401 });
 
   const body = await request.json().catch(() => null) as Record<string, unknown> | null;
   const currentPassword = typeof body?.currentPassword === "string" ? body.currentPassword : "";
