@@ -4,6 +4,7 @@ import { DbConversationsRepository, replyWindowFrom } from "@/lib/platform/conve
 import { metaSendConfigFromEnv } from "@/lib/integrations/meta/cloud-client";
 import { REPLY_WINDOW_MS, attendantReplyEnabled } from "@/lib/platform/attendant-reply-service";
 import { CHANNEL_NAME } from "@/lib/platform/n8n-channel-service";
+import { can } from "@/lib/platform/rbac";
 import { authEnforced, authorize } from "@/lib/platform/session-guard";
 
 const LIST_LIMIT = 40;
@@ -29,7 +30,7 @@ export async function GET(request: Request) {
   const channelState = {
     enabled: channelEnabled,
     autoReply: channelEnabled && process.env.FEATURE_N8N_AUTOREPLY === "true",
-    canReply: attendantReplyEnabled() && authEnforced() && Boolean(metaSendConfigFromEnv()),
+    canReply: Boolean(guard.user && can(guard.user.role, "support.write")) && attendantReplyEnabled() && authEnforced() && Boolean(metaSendConfigFromEnv()),
   };
 
   try {

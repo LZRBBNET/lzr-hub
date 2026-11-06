@@ -415,7 +415,7 @@ export function AttendanceModule({ initialConversation, onAwaiting }: { initialC
         <div className="inbox-title">
           <h1>Atendimentos</h1>
           <div className="inbox-title-actions">
-            {observing && <span className="mode-chip">Modo observação<InfoTip label="O que é o modo observação">O canal recebe e registra as mensagens, e a IA propõe a resposta — mas nada é enviado automaticamente. {channelState.canReply ? "Quem responde é o atendente, pelo campo abaixo da conversa." : "O envio pela tela está desligado: ninguém responde ao cliente por aqui."}</InfoTip></span>}
+            {observing && <span className="mode-chip">Modo observação<InfoTip label="O que é o modo observação">O canal recebe e registra as mensagens, e a IA propõe a resposta — mas nada é enviado automaticamente. {channelState.canReply ? "Quem responde é o atendente, pelo campo abaixo da conversa." : "O envio pela tela não está disponível para seu acesso."}</InfoTip></span>}
             <button type="button" className={`icon-button ${notify ? "pressed" : ""}`} onClick={() => void toggleNotify()} aria-pressed={notify} aria-label={notify ? "Desligar avisos de cliente na fila" : "Avisar quando um cliente entrar na fila"} title={notify ? "Avisos ligados" : "Avisar quando um cliente entrar na fila"}><Icon name={notify ? "bell" : "bell-off"} size={17} /></button>
           </div>
         </div>
@@ -576,7 +576,7 @@ function Composer({ deliveryBlocked, canReply, canCompose, replyWindow, now, res
   slashMatches:QuickReply[]; slashActive:number;
   onDraft:(value:string)=>void; onSlashMove:(delta:number)=>void; onSlashClose:()=>void; onPick:(content:string)=>void; onInsert:(content:string)=>void; onSend:()=>void; onResolve?:()=>void;
 }) {
-  if (!canReply) return <div className="composer-closed"><Icon name="info" size={18} /><div><strong>Responder pela tela está desligado neste ambiente.</strong><span>Nenhuma resposta sai para o cliente por aqui.</span></div></div>;
+  if (!canReply) return <div className="composer-closed"><Icon name="info" size={18} /><div><strong>O envio pela tela não está disponível para seu acesso.</strong><span>Consulte um supervisor se precisar responder.</span></div></div>;
   if (!replyWindow?.lastCustomerAt) return <div className="composer-closed"><Icon name="info" size={18} /><div><strong>Este cliente ainda não escreveu.</strong><span>A Meta só deixa responder com texto livre depois que o cliente manda uma mensagem.</span></div></div>;
   if (deliveryBlocked) return <div className="composer-closed warn">Envio bloqueado. Confira o estado persistente do envio acima.</div>;
   if (!canCompose) return <div className="composer-closed warn">
