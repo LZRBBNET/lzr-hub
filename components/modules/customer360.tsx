@@ -122,6 +122,7 @@ export function CustomerDetail({data,loading,error,refreshing,onRefresh,onClose,
     </div>
     <div className="details-body">
       {(data.partial||incompleteReading)&&<Notice tone="warn">Leitura parcial ou com dados não confirmados. Os recortes abaixo não representam necessariamente todo o histórico.</Notice>}
+      {data.mode==="staging-readonly"&&<p className="hint">Contratos, faturas e OS: IDs mais recentes primeiro, até 3 páginas de 20 registros por fonte. Ordem por ID não comprova data nem contrato atual. Totais são os informados pela fonte durante a consulta.</p>}
       <Section title="Contato" rows={[["Telefone",data.contact.phone],["E-mail",data.contact.email],["Endereço",data.contact.address],["Cliente desde",data.contact.customerSince]]}/>
       {(!live||reading?.contractSelection==="single")&&<Section title={live?"Contrato único na leitura":"Contrato"} rows={[["Código",data.contract.id],["Situação do contrato",statusOf(data.contract.status)[0]],["Plano",data.contract.plan],["Mensalidade",currency(data.contract.monthlyValue)],["Vencimento",data.contract.dueDay?`Dia ${data.contract.dueDay}`:"Indisponível"]]}/>}
       {live&&reading?.contractSelection!=="single"&&<section className="details-section">

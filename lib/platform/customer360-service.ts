@@ -35,8 +35,14 @@ function scopedRows<T extends {id:string;customerId:string}>(rows:T[],customerId
   for(const row of rows)counts.set(row.id,(counts.get(row.id)??0)+1);
   return rows.filter(row=>typeof row.id==="string"&&!!row.id.trim()&&row.customerId===customerId&&counts.get(row.id)===1);
 }
+/** Accept expanded bounded snapshots; keep legacy/unknown producers capped at 20. */
+function sourceLimit(snapshot:IxcCustomerSnapshot,key:"contracts"|"invoices"|"payments"|"serviceOrders"){
+  if(key==="payments")return 100;
+  const limit=snapshot.coverage?.[key]?.limit;
+  return typeof limit==="number"&&Number.isSafeInteger(limit)&&limit>0&&limit<=60?limit:20;
+}
 function coverageOf(snapshot:IxcCustomerSnapshot,key:"contracts"|"invoices"|"payments"|"serviceOrders",rawCount:number,validCount:number):IxcSnapshotCoverage{
-  const metadata=snapshot.coverage?.[key];const limit=key==="payments"?100:20;
+  const metadata=snapshot.coverage?.[key];const limit=sourceLimit(snapshot,key);
   const total=metadata?.total;
   const knownTotal=typeof total==="number"&&Number.isSafeInteger(total)&&total>=rawCount?total:null;
   return {read:validCount,total:knownTotal,limit,complete:!snapshot.partialSources.includes(key)&&metadata?.complete===true&&metadata.read===rawCount&&knownTotal===rawCount&&rawCount===validCount&&rawCount<=limit};
@@ -150,16 +156,16 @@ export class Customer360Service {
     const snapshot=await this.ixc!.getSnapshot(customerId,crypto.randomUUID(),force);
     if(snapshot.customer.id!==customerId)throw new Error("IXC_CUSTOMER_SCOPE_MISMATCH");
     if(snapshot.mode!=="staging-readonly")throw new Error("IXC_READONLY_MODE_REQUIRED");
-    const contracts=scopedRows(snapshot.contracts,customerId).slice(0,20);
+    const contracts=scopedRows(snapshot.contracts,customerId).slice(0,sourceLimit(snapshot,"contracts"));
     const contractIds=new Set(contracts.map(row=>row.id));
-    const invoices=scopedRows(snapshot.invoices,customerId).slice(0,20);
+    const invoices=scopedRows(snapshot.invoices,customerId).slice(0,sourceLimit(snapshot,"invoices"));
     const invoiceIds=new Set(invoices.map(row=>row.id));
     const today=businessToday(this.now());
     const payments=scopedRows(snapshot.payments,customerId).flatMap(row=>{
       const paidOn=paymentDate(row.paidAt);
       return row.invoiceId&&invoiceIds.has(row.invoiceId)&&paidOn&&paidOn<=today?[{...row,invoiceId:row.invoiceId,paidOn}]:[];
     }).slice(0,100);
-    const orders=scopedRows(snapshot.serviceOrders,customerId).slice(0,20);
+    const orders=scopedRows(snapshot.serviceOrders,customerId).slice(0,sourceLimit(snapshot,"serviceOrders"));
     const coverage={
       contracts:coverageOf(snapshot,"contracts",snapshot.contracts.length,contracts.length),
       invoices:coverageOf(snapshot,"invoices",snapshot.invoices.length,invoices.length),
@@ -176,7 +182,7 @@ export class Customer360Service {
     // completo: a proteção passou a ser sessão + RBAC (login obrigatório), não mais texto
     // truncado. Ver decisão registrada ao lado do pedido do Breno de tela completa.
     const customer:CustomerSummary={id:snapshot.customer.id,name:snapshot.customer.name,maskedDocument:snapshot.customer.document,city:snapshot.customer.city,neighborhood:snapshot.customer.neighborhood,plan:contract?.planName??"Não informado",status:snapshot.customer.status,priority:"Controlada",tags:["IXC somente leitura"]};
-    const source=(provider:string,key:string,partialKey:string):DataSource=>({provider,updatedAt:snapshot.fetchedAt,state:snapshot.partialSources.includes(partialKey)?"error":"ready",detail:snapshot.partialSources.includes(partialKey)?"Fonte indisponível; restante preservado":"Dado real do IXC",mode:"staging-readonly",cache:snapshot.cache,masked:false,latencyMs:snapshot.metrics.blockLatencies[key]??0});
+    const source=(provider:string,key:string,partialKey:string):DataSource=>({provider,updatedAt:snapshot.fetchedAt,state:partialKey==="plan"&&!contract?"empty":snapshot.partialSources.includes(partialKey)?"error":"ready",detail:partialKey==="plan"&&!contract?"Plano não consultado: nenhum contrato único confirmado":snapshot.partialSources.includes(partialKey)?"Fonte indisponível; restante preservado":"Dado real do IXC",mode:"staging-readonly",cache:snapshot.cache,masked:false,latencyMs:snapshot.metrics.blockLatencies[key]??0});
     return{
       customer,
       contact:{phone:snapshot.customer.phone,email:snapshot.customer.email,address:snapshot.customer.address,customerSince:snapshot.customer.customerSince??"Não informado"},
