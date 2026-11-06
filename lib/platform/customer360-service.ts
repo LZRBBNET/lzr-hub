@@ -1,6 +1,6 @@
 import { customers } from "./demo-data.ts";
 import { businessToday } from "./billing-service.ts";
-import type { IxcCustomerSnapshot, IxcSnapshotCoverage } from "../integrations/ixc/types.ts";
+import type { IxcCustomerSnapshot, IxcSnapshotCoverage, IxcPaymentScope } from "../integrations/ixc/types.ts";
 import type { CustomerSummary, DataSource } from "./types.ts";
 import type { IxcReadonlyProvider } from "../integrations/ixc/readonly-provider.ts";
 
@@ -14,7 +14,7 @@ export interface Customer360 {
   intelligence: { health:number; churnRisk:string; upgradeEligible:boolean; recommendedPlan:string; reason:string };
   details?: { contracts:number; invoices:number; payments:number; serviceOrders:number };
   reading?: {
-    observedAt:string; referenceDate:string;
+    observedAt:string; referenceDate:string; paymentScope?:IxcPaymentScope;
     coverage:Record<"contracts"|"invoices"|"payments"|"serviceOrders",IxcSnapshotCoverage>;
     contracts:Array<{id:string;status:string;plan:string}>;
     invoices?:Array<{id:string;contractId:string|null;status:string;dueAt:string|null;openBalance:number|null;valueSource:"open-balance"|"face-value"|"unavailable"}>;
@@ -35,11 +35,11 @@ function scopedRows<T extends {id:string;customerId:string}>(rows:T[],customerId
   for(const row of rows)counts.set(row.id,(counts.get(row.id)??0)+1);
   return rows.filter(row=>typeof row.id==="string"&&!!row.id.trim()&&row.customerId===customerId&&counts.get(row.id)===1);
 }
-/** Accept expanded bounded snapshots; keep legacy/unknown producers capped at 20. */
+/** Accept bounded snapshots (100 invoices, 60 contracts/OS); keep legacy producers capped at 20. */
 function sourceLimit(snapshot:IxcCustomerSnapshot,key:"contracts"|"invoices"|"payments"|"serviceOrders"){
   if(key==="payments")return 100;
   const limit=snapshot.coverage?.[key]?.limit;
-  return typeof limit==="number"&&Number.isSafeInteger(limit)&&limit>0&&limit<=60?limit:20;
+  return typeof limit==="number"&&Number.isSafeInteger(limit)&&limit>0&&limit<=(key==="invoices"?100:60)?limit:20;
 }
 function coverageOf(snapshot:IxcCustomerSnapshot,key:"contracts"|"invoices"|"payments"|"serviceOrders",rawCount:number,validCount:number):IxcSnapshotCoverage{
   const metadata=snapshot.coverage?.[key];const limit=sourceLimit(snapshot,key);
@@ -195,7 +195,7 @@ export class Customer360Service {
       support:{openTickets:orders.filter((item)=>!/[F]|fechad/i.test(item.status)).length,lastProtocol:orders[0]?.id??"—",lastReason:orders[0]?.subject??"Sem OS",csat:0},
       intelligence:{health:0,churnRisk:"não calculado",upgradeEligible:false,recommendedPlan:"—",reason:"Nenhum modelo calcula saúde ou risco: os sinais necessários não são coletados. Ver docs/telas-removidas.md"},
       details:{contracts:contracts.length,invoices:invoices.length,payments:payments.length,serviceOrders:orders.length},
-      reading:{observedAt:snapshot.fetchedAt,referenceDate:today,coverage,contracts:contracts.map(item=>({id:item.id,status:item.status,plan:item.planName})),
+      reading:{observedAt:snapshot.fetchedAt,referenceDate:today,paymentScope:snapshot.paymentScope,coverage,contracts:contracts.map(item=>({id:item.id,status:item.status,plan:item.planName})),
         // A fatura pertence ao cadastro; só atribuímos contrato quando a mesma
         // leitura também comprova esse contrato. Valor nominal nunca vira saldo.
         invoices:invoices.map(item=>({id:item.id,contractId:item.contractId&&contractIds.has(item.contractId)?item.contractId:null,status:item.status,dueAt:calendarDate(item.dueAt),openBalance:item.valueSource==="open-balance"?safeMoney(item.value):null,valueSource:item.valueSource==="open-balance"||item.valueSource==="face-value"?item.valueSource:"unavailable"})),

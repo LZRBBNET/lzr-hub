@@ -1,4 +1,5 @@
 "use client";
+import {InvoicePaymentPages} from "@/components/invoice-payment-pages";
 import { useEffect, useState } from "react";
 import type { Customer360 } from "@/lib/platform/customer360-service";
 import type { CustomerSummary } from "@/lib/platform/types";
@@ -122,7 +123,7 @@ export function CustomerDetail({data,loading,error,refreshing,onRefresh,onClose,
     </div>
     <div className="details-body">
       {(data.partial||incompleteReading)&&<Notice tone="warn">Leitura parcial ou com dados não confirmados. Os recortes abaixo não representam necessariamente todo o histórico.</Notice>}
-      {data.mode==="staging-readonly"&&<p className="hint">Contratos, faturas e OS: IDs mais recentes primeiro, até 3 páginas de 20 registros por fonte. Ordem por ID não comprova data nem contrato atual. Totais são os informados pela fonte durante a consulta.</p>}
+      {data.mode==="staging-readonly"&&<p className="hint">IDs mais recentes primeiro: contratos e OS até 3 páginas de 20; faturas até 5 páginas de 20. Ordem por ID não comprova data nem contrato atual. Totais são os informados pela fonte durante a consulta.</p>}
       <Section title="Contato" rows={[["Telefone",data.contact.phone],["E-mail",data.contact.email],["Endereço",data.contact.address],["Cliente desde",data.contact.customerSince]]}/>
       {(!live||reading?.contractSelection==="single")&&<Section title={live?"Contrato único na leitura":"Contrato"} rows={[["Código",data.contract.id],["Situação do contrato",statusOf(data.contract.status)[0]],["Plano",data.contract.plan],["Mensalidade",currency(data.contract.monthlyValue)],["Vencimento",data.contract.dueDay?`Dia ${data.contract.dueDay}`:"Indisponível"]]}/>}
       {live&&reading?.contractSelection!=="single"&&<section className="details-section">
@@ -139,11 +140,12 @@ export function CustomerDetail({data,loading,error,refreshing,onRefresh,onClose,
         {!!reading?.excludedInvoices&&<p className="hint">{reading.excludedInvoices} fatura(s) excluída(s) por identidade, status, vencimento ou valor não confirmados.</p>}
         {!!reading?.nominalValueInvoices&&<p className="hint">{reading.nominalValueInvoices} valor(es) nominal(is) ou sem origem confirmada excluído(s) do subtotal; pagamentos parciais podem não estar descontados.</p>}
         <p className="hint">Pagamentos: {coverageLabel("payments")}. Consulta limitada a até 10 faturas; não afirma qual foi o último pagamento do cliente.</p>
+        {reading?.paymentScope&&<p className="hint">Pagamentos consultados em {reading.paymentScope.invoicesRequested} de {reading.paymentScope.invoicesRead} faturas lidas (total de faturas informado: {reading.paymentScope.invoiceTotal??"não confirmado"}); {reading.paymentScope.invoicesConfirmed} consulta(s) de fatura com cobertura confirmada. Zero registros nesse recorte não comprova ausência de pagamentos.</p>}
       </section>}
       {live&&reading&&<>
         <section className="details-section"><h3>Faturas do recorte</h3>
           <p className="hint">Identificadores de contrato apenas quando confirmados nesta leitura. Valores nominais não são saldo em aberto.</p>
-          {reading.invoices===undefined?<p className="hint">Detalhamento indisponível nesta resposta.</p>:reading.invoices.length===0?<p className="hint">Nenhuma fatura neste recorte; consulte a cobertura acima.</p>:<ul className="customer-record-list">{reading.invoices.map(i=><li key={i.id}><strong>Fatura {i.id} · {i.contractId?`Contrato ${i.contractId}`:"Contrato não confirmado"}</strong><span>Status na fonte: {i.status} · Vencimento: {i.dueAt??"não confirmado"}</span><small>Saldo em aberto: {currency(i.openBalance)} · Origem do valor: {i.valueSource}</small></li>)}</ul>}
+          {reading.invoices===undefined?<p className="hint">Detalhamento indisponível nesta resposta.</p>:reading.invoices.length===0?<p className="hint">Nenhuma fatura neste recorte; consulte a cobertura acima.</p>:<ul className="customer-record-list">{reading.invoices.map(i=><li key={i.id}><strong>Fatura {i.id} · {i.contractId?`Contrato ${i.contractId}`:"Contrato não confirmado"}</strong><span>Status na fonte: {i.status} · Vencimento: {i.dueAt??"não confirmado"}</span><small>Saldo em aberto: {currency(i.openBalance)} · Origem do valor: {i.valueSource}</small>{data.mode==="staging-readonly"&&<InvoicePaymentPages key={`${data.customer.id}:${i.id}`} customerId={data.customer.id} invoiceId={i.id}/>}</li>)}</ul>}
         </section>
         <section className="details-section"><h3>Pagamentos do recorte</h3>
           <p className="hint">Somente pagamentos vinculados às faturas consultadas; não representam necessariamente todo o histórico.</p>

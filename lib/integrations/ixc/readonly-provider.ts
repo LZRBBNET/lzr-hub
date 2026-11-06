@@ -447,9 +447,30 @@ export class IxcReadonlyProvider {
   async countOpenInvoices(correlationId:string){
     return (await this.readPage("listInvoices",endpoints.listInvoices,"fn_areceber.status","A",correlationId,1,"",{oper:"=",sortname:"fn_areceber.id"})).total;
   }
+  /** Fresh exact ownership proof before reading one payment page. No snapshot or writes. */
+  async getInvoicePaymentPage(customerId:string,invoiceId:string,page:number,correlationId:string){
+    this.guard.assertCustomer(customerId);
+    if(!/^[1-9]\d{0,31}$/.test(customerId)||!/^[1-9]\d{0,31}$/.test(invoiceId)||!Number.isSafeInteger(page)||page<1||page>1000)throw new IxcReadonlyError("IXC_INVALID_PAYMENT_PAGE");
+    const confirmOwnership=async()=>{
+      const owned=await this.readPage("listInvoices",endpoints.listInvoices,"fn_areceber.id",invoiceId,correlationId,2,customerId);
+      if(!owned.coverage.complete||owned.records.length!==1||String(owned.records[0].id)!==invoiceId||String(owned.records[0].id_cliente)!==customerId)throw new IxcReadonlyError("IXC_INVOICE_OWNERSHIP_UNCONFIRMED");
+    };
+    await confirmOwnership();
+    const result=await this.readPage("listPayments",endpoints.listPayments,"id_receber",invoiceId,correlationId,10,customerId,{page,sortname:"fn_movim_finan.id",sortorder:"desc"});
+    if(!result.rowsValid||!result.pageMatches||result.records.length>10||result.records.some(row=>String(row.id_receber??row.id_fatura??"")!==invoiceId))throw new IxcReadonlyError("IXC_PAYMENT_PAGE_UNCONFIRMED");
+    const ids=result.records.map(row=>String(row.id).trim());
+    if(new Set(ids).size!==ids.length||ids.some((id,index)=>index>0&&/^\d+$/.test(id)&&/^\d+$/.test(ids[index-1])&&BigInt(id)>=BigInt(ids[index-1])))throw new IxcReadonlyError("IXC_PAYMENT_PAGE_UNCONFIRMED");
+    const total=result.coverage.total,offset=(page-1)*10;
+    if(total!==null&&(offset+result.records.length>total||(offset<total&&result.records.length!==Math.min(10,total-offset))))throw new IxcReadonlyError("IXC_PAYMENT_PAGE_UNCONFIRMED");
+    // Recheck after reading: a reassigned invoice must not disclose its payments.
+    // This is not an atomic IXC snapshot; a change and reversal between reads remains undetectable.
+    await confirmOwnership();
+    return {customerId,invoiceId,page,pageSize:10,total,hasMore:total===null?null:offset+result.records.length<total,scope:"invoice-page" as const,
+      items:result.records.map(row=>{const payment=IxcPaymentMapper.map(row,customerId);const raw=row.valor;const decimal=typeof raw==="number"||(typeof raw==="string"&&/^\d+(?:[.,]\d+)?$/.test(raw.trim()));const value=decimal?payment.value:undefined;return {id:payment.id,invoiceId,paidAt:payment.paidAt??null,method:payment.method,value:typeof value==="number"&&Number.isFinite(value)&&value>=0&&Number.isSafeInteger(Math.round(value*100))?Math.round(value*100)/100:null};})};
+  }
   /** Bounded recent-first traversal; never implies a complete history beyond the cap. */
   private async readSnapshotPages(operation:"listContracts"|"listInvoices"|"listServiceOrders",resource:string,customerId:string,correlationId:string){
-    const pageSize=20,limit=60;const records:Record<string,unknown>[]=[];const ids=new Set<string>();let total:number|null=null;
+    const pageSize=20,limit=operation==="listInvoices"?100:60;const records:Record<string,unknown>[]=[];const ids=new Set<string>();let total:number|null=null;
     const result=(complete=false)=>({records,total:total??records.length,coverage:{read:records.length,total,complete,limit}});
     for(let page=1;page<=limit/pageSize;page++){
       let next:Awaited<ReturnType<IxcReadonlyProvider["readPage"]>>;
@@ -499,6 +520,7 @@ export class IxcReadonlyProvider {
       // para não disparar uma fatura de chamadas por atendimento.
       const invoiceRows=rows(1);let payments:ReturnType<typeof IxcPaymentMapper.map>[]=[];let paymentsFailed=false;
       const paymentInvoices=invoiceRows.filter(invoice=>String(invoice.id_cliente??"")===customerId&&String(invoice.id??"").trim()&&invoiceRows.filter(other=>String(other.id)===String(invoice.id)).length===1).slice(0,10);
+      const paymentScope={invoicesRead:invoiceRows.length,invoiceTotal:coverage.invoices?.total??null,invoicesRequested:paymentInvoices.length,invoicesConfirmed:0,invoiceLimit:10};
       coverage.payments={read:0,total:coverage.invoices?.complete&&invoiceRows.length===0?0:null,complete:coverage.invoices?.complete===true&&invoiceRows.length===0,limit:100};
       if(paymentInvoices.length>0){
         const paymentSettled=await Promise.allSettled(paymentInvoices.map((invoice)=>{
@@ -507,13 +529,14 @@ export class IxcReadonlyProvider {
         }));
         payments=paymentSettled.flatMap((item,index)=>item.status==="fulfilled"?item.value.records.slice(0,10).filter(row=>String(row.id_receber??row.id_fatura??"")===String(paymentInvoices[index].id)).map((row)=>IxcPaymentMapper.map(row,customerId)):[]);
         paymentsFailed=paymentSettled.some((item)=>item.status==="rejected");
+        paymentScope.invoicesConfirmed=paymentSettled.filter((item,index)=>item.status==="fulfilled"&&item.value.coverage.complete&&item.value.records.every(row=>String(row.id_receber??row.id_fatura??"")===String(paymentInvoices[index].id))).length;
         const complete=coverage.invoices?.complete===true&&invoiceRows.length<=10&&paymentInvoices.length===invoiceRows.length&&paymentSettled.every((item,index)=>item.status==="fulfilled"&&item.value.coverage.complete&&item.value.records.every(row=>String(row.id_receber??row.id_fatura??"")===String(paymentInvoices[index].id)));
         coverage.payments={read:payments.length,total:complete?payments.length:null,complete,limit:100};
       }
       let customer=IxcCustomerMapper.map(customerRows[0]);
       const cityCode=String(customerRows[0].cidade??"").trim();
       if(cityCode){const cityName=await this.resolveCityName(cityCode,correlationId,customerId);if(cityName)customer={...customer,city:cityName};}
-      const snapshot:IxcCustomerSnapshot={customer,contracts,plan,invoices:invoiceRows.map(IxcInvoiceMapper.map),payments,serviceOrders:rows(2).map(IxcServiceOrderMapper.map),connection:rows(3)[0]?IxcConnectionMapper.map(rows(3)[0]):null,coverage,partialSources:[...settled.flatMap((item,index)=>item.status==="rejected"?[sourceNames[index]]:[]),...(planFailed?["plan"]:[]),...(paymentsFailed?["payments"]:[])],metrics:{totalLatencyMs:this.now()-started,blockLatencies:{...(this.durations.get(correlationId)??{})}},fetchedAt:new Date(this.now()).toISOString(),mode:"staging-readonly",cache:"miss"};
+      const snapshot:IxcCustomerSnapshot={customer,contracts,plan,invoices:invoiceRows.map(IxcInvoiceMapper.map),payments,serviceOrders:rows(2).map(IxcServiceOrderMapper.map),connection:rows(3)[0]?IxcConnectionMapper.map(rows(3)[0]):null,paymentScope,coverage,partialSources:[...settled.flatMap((item,index)=>item.status==="rejected"?[sourceNames[index]]:[]),...(planFailed?["plan"]:[]),...(paymentsFailed?["payments"]:[])],metrics:{totalLatencyMs:this.now()-started,blockLatencies:{...(this.durations.get(correlationId)??{})}},fetchedAt:new Date(this.now()).toISOString(),mode:"staging-readonly",cache:"miss"};
       this.cache.set(customerId,snapshot);this.emit("ixc.snapshot",correlationId,this.now()-started,"success",{partial:settled.some((item)=>item.status==="rejected")});return snapshot;
     }catch(error){this.emit("ixc.snapshot",correlationId,this.now()-started,"failed",{error:error instanceof Error?error.name:"unknown"});throw error;}
   }
@@ -533,11 +556,11 @@ export class IxcReadonlyProvider {
     return (await this.readPage(operation,resource,qtype,query,correlationId,rp,authorizedCustomerId,options)).records;
   }
   private async readPage(operation:IxcReadOperation,resource:string,qtype:string,query:string,correlationId:string,rp=20,authorizedCustomerId=query,options?:ReadOptions):Promise<{records:Record<string,unknown>[];total:number;coverage:IxcSnapshotCoverage;pageMatches:boolean;rowsValid:boolean}>{
-    this.guard.assertOperation(operation);if(!GLOBAL_SCOPE_OPERATIONS.has(operation))this.guard.assertCustomer(authorizedCustomerId);if(!this.breaker.canRequest())throw new Error("IXC_CIRCUIT_OPEN");this.limiter.assert();
+    this.guard.assertOperation(operation);if(!GLOBAL_SCOPE_OPERATIONS.has(operation))this.guard.assertCustomer(authorizedCustomerId);if(!this.breaker.canRequest())throw new Error("IXC_CIRCUIT_OPEN");
     const url=`${this.options.baseUrl.replace(/\/$/,"")}/webservice/v1/${resource}`;let last:unknown;
     const payload:Record<string,string>={qtype,query,oper:options?.oper??"=",page:String(options?.page??1),rp:String(rp),sortname:options?.sortname??"id",sortorder:options?.sortorder??"asc"};
     if(options?.gridParam?.length)payload.grid_param=JSON.stringify(options.gridParam);
-    const maxAttempts=1+(this.options.retryLimit??1);for(let attempt=0;attempt<maxAttempts;attempt+=1){const controller=new AbortController();const timer=setTimeout(()=>controller.abort(),this.timeoutMs);const started=this.now();try{const response=await this.fetcher(url,{method:"POST",headers:{Authorization:`Basic ${basicCredential(this.options.token)}`,"Content-Type":"application/json","ixcsoft":"listar","x-correlation-id":correlationId},body:JSON.stringify(payload),signal:controller.signal});clearTimeout(timer);if(!response.ok){const retry=response.status===429||response.status>=500;if(retry&&attempt+1<maxAttempts){last=new IxcReadonlyError(`IXC_HTTP_${response.status}`);continue}throw new IxcReadonlyError(`IXC_HTTP_${response.status}`)}const body=await response.json() as IxcListResponse;const contractError=apiError(body);if(contractError)throw contractError;
+    const maxAttempts=1+(this.options.retryLimit??1);for(let attempt=0;attempt<maxAttempts;attempt+=1){this.limiter.assert();const controller=new AbortController();const timer=setTimeout(()=>controller.abort(),this.timeoutMs);const started=this.now();try{const response=await this.fetcher(url,{method:"POST",headers:{Authorization:`Basic ${basicCredential(this.options.token)}`,"Content-Type":"application/json","ixcsoft":"listar","x-correlation-id":correlationId},body:JSON.stringify(payload),signal:controller.signal});if(!response.ok){clearTimeout(timer);const retry=response.status===429||response.status>=500;if(retry&&attempt+1<maxAttempts){last=new IxcReadonlyError(`IXC_HTTP_${response.status}`);continue}throw new IxcReadonlyError(`IXC_HTTP_${response.status}`)}const body=await response.json() as IxcListResponse;clearTimeout(timer);const contractError=apiError(body);if(contractError)throw contractError;
     const records=Array.isArray(body.registros)?body.registros.filter((item):item is Record<string,unknown>=>!!item&&typeof item==="object"&&!Array.isArray(item)):[];
     const rawTotal=body.total;
     const knownTotal=(typeof rawTotal==="number"||(typeof rawTotal==="string"&&/^\d+$/.test(rawTotal)))&&Number.isSafeInteger(Number(rawTotal))&&Number(rawTotal)>=records.length?Number(rawTotal):null;
