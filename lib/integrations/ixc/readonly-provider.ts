@@ -130,6 +130,19 @@ export function basicCredential(token:string){
   return /^\d+:[A-Fa-f0-9]{32,}$/.test(value)?btoa(value):value;
 }
 
+/** Match the mapper's nonempty aliases, but never ignore contradictory references. */
+function paymentInvoiceReference(row:Record<string,unknown>){
+  const values=[row.id_receber,row.id_fatura];
+  if(values.some(value=>value!==undefined&&value!==null&&typeof value!=="string"&&!(typeof value==="number"&&Number.isSafeInteger(value)&&value>0)))return {state:"invalid" as const,id:""};
+  const ids=values.map(value=>String(value??"").trim()).filter(Boolean);
+  if(ids.length===0)return {state:"missing" as const,id:""};
+  if(new Set(ids).size!==1)return {state:"conflict" as const,id:""};
+  return {state:"confirmed" as const,id:ids[0]};
+}
+function paymentMatchesInvoice(row:Record<string,unknown>,invoiceId:string){
+  const reference=paymentInvoiceReference(row);return reference.state==="confirmed"&&reference.id===invoiceId.trim();
+}
+
 export class IxcReadonlyProvider {
   readonly mode="staging-readonly" as const;
   private readonly guard:ReadonlyIxcGuard; private readonly fetcher:typeof fetch; private readonly timeoutMs:number; private readonly cache:TtlCache<IxcCustomerSnapshot>; private readonly cityCache:TtlCache<string>; private readonly planCache:TtlCache<{name:string;value?:number}>; private readonly breaker:CircuitBreaker; private readonly limiter:SlidingWindowRateLimiter; private readonly now:()=>number; private readonly options:IxcReadonlyOptions;private readonly durations=new Map<string,Record<string,number>>();
@@ -457,11 +470,26 @@ export class IxcReadonlyProvider {
     };
     await confirmOwnership();
     const result=await this.readPage("listPayments",endpoints.listPayments,"id_receber",invoiceId,correlationId,10,customerId,{page,sortname:"fn_movim_finan.id",sortorder:"desc"});
-    if(!result.rowsValid||!result.pageMatches||result.records.length>10||result.records.some(row=>String(row.id_receber??row.id_fatura??"")!==invoiceId))throw new IxcReadonlyError("IXC_PAYMENT_PAGE_UNCONFIRMED");
+    const reject=(reason:string):never=>{
+      // Fixed reason codes and shape only: never record IDs, raw response, field values or secrets.
+      this.emit("ixc.paymentPageValidation",correlationId,0,"blocked",{reason,rowsValid:result.rowsValid,pageMatches:result.pageMatches,withinLimit:result.records.length<=10,count:result.records.length});
+      throw new IxcReadonlyError(reason);
+    };
+    if(!result.rowsValid)reject("IXC_PAYMENT_ROWS_INVALID");
+    if(!result.pageMatches)reject("IXC_PAYMENT_PAGE_MISMATCH");
+    if(result.records.length>10)reject("IXC_PAYMENT_PAGE_LIMIT");
+    for(const row of result.records){
+      const reference=paymentInvoiceReference(row);
+      if(reference.state==="invalid")reject("IXC_PAYMENT_INVOICE_LINK_INVALID");
+      if(reference.state==="missing")reject("IXC_PAYMENT_INVOICE_LINK_MISSING");
+      if(reference.state==="conflict")reject("IXC_PAYMENT_INVOICE_LINK_CONFLICT");
+      if(reference.id!==invoiceId)reject("IXC_PAYMENT_INVOICE_LINK_MISMATCH");
+    }
     const ids=result.records.map(row=>String(row.id).trim());
-    if(new Set(ids).size!==ids.length||ids.some((id,index)=>index>0&&/^\d+$/.test(id)&&/^\d+$/.test(ids[index-1])&&BigInt(id)>=BigInt(ids[index-1])))throw new IxcReadonlyError("IXC_PAYMENT_PAGE_UNCONFIRMED");
+    if(new Set(ids).size!==ids.length)reject("IXC_PAYMENT_ID_DUPLICATE");
+    if(ids.some((id,index)=>index>0&&/^\d+$/.test(id)&&/^\d+$/.test(ids[index-1])&&BigInt(id)>=BigInt(ids[index-1])))reject("IXC_PAYMENT_ORDER_UNCONFIRMED");
     const total=result.coverage.total,offset=(page-1)*10;
-    if(total!==null&&(offset+result.records.length>total||(offset<total&&result.records.length!==Math.min(10,total-offset))))throw new IxcReadonlyError("IXC_PAYMENT_PAGE_UNCONFIRMED");
+    if(total!==null&&(offset+result.records.length>total||(offset<total&&result.records.length!==Math.min(10,total-offset))))reject("IXC_PAYMENT_CARDINALITY_UNCONFIRMED");
     // Recheck after reading: a reassigned invoice must not disclose its payments.
     // This is not an atomic IXC snapshot; a change and reversal between reads remains undetectable.
     await confirmOwnership();
@@ -527,10 +555,10 @@ export class IxcReadonlyProvider {
           const invoiceId=String((invoice as Record<string,unknown>).id??"");
           return this.readPage("listPayments",endpoints.listPayments,"id_receber",invoiceId,correlationId,10,customerId,{sortname:"fn_movim_finan.id",sortorder:"desc"});
         }));
-        payments=paymentSettled.flatMap((item,index)=>item.status==="fulfilled"?item.value.records.slice(0,10).filter(row=>String(row.id_receber??row.id_fatura??"")===String(paymentInvoices[index].id)).map((row)=>IxcPaymentMapper.map(row,customerId)):[]);
+        payments=paymentSettled.flatMap((item,index)=>item.status==="fulfilled"?item.value.records.slice(0,10).filter(row=>paymentMatchesInvoice(row,String(paymentInvoices[index].id))).map((row)=>IxcPaymentMapper.map(row,customerId)):[]);
         paymentsFailed=paymentSettled.some((item)=>item.status==="rejected");
-        paymentScope.invoicesConfirmed=paymentSettled.filter((item,index)=>item.status==="fulfilled"&&item.value.coverage.complete&&item.value.records.every(row=>String(row.id_receber??row.id_fatura??"")===String(paymentInvoices[index].id))).length;
-        const complete=coverage.invoices?.complete===true&&invoiceRows.length<=10&&paymentInvoices.length===invoiceRows.length&&paymentSettled.every((item,index)=>item.status==="fulfilled"&&item.value.coverage.complete&&item.value.records.every(row=>String(row.id_receber??row.id_fatura??"")===String(paymentInvoices[index].id)));
+        paymentScope.invoicesConfirmed=paymentSettled.filter((item,index)=>item.status==="fulfilled"&&item.value.coverage.complete&&item.value.records.every(row=>paymentMatchesInvoice(row,String(paymentInvoices[index].id)))).length;
+        const complete=coverage.invoices?.complete===true&&invoiceRows.length<=10&&paymentInvoices.length===invoiceRows.length&&paymentSettled.every((item,index)=>item.status==="fulfilled"&&item.value.coverage.complete&&item.value.records.every(row=>paymentMatchesInvoice(row,String(paymentInvoices[index].id))));
         coverage.payments={read:payments.length,total:complete?payments.length:null,complete,limit:100};
       }
       let customer=IxcCustomerMapper.map(customerRows[0]);
