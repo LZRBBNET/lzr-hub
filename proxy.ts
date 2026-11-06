@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import { currentUser } from './lib/platform/session-guard.ts';
 import { assertSyntheticWeb, syntheticWebRequested } from './lib/runtime/synthetic-web.ts';
+import { browserSetupRequested } from './lib/platform/browser-initialization.ts';
 import { initializationAccess } from './lib/platform/synthetic-initialization-access.ts';
 
 declare const __LZR_SYNTHETIC_WEB_BUILD__: boolean | undefined;
@@ -22,6 +23,16 @@ export async function proxy(request: Request) {
   if (!read && request.headers.get('origin') !== origin) {
     return NextResponse.json({ error: 'Origem não autorizada' }, { status: 403, headers });
   }
+  const browserSetup = browserSetupRequested(process.env);
+  if (browserSetup && request.method === 'GET' && ['/first-access','/first-access/browser.js'].includes(path)) {
+    return NextResponse.next({ headers }); // Static page/assets only; no pool or session lookup.
+  }
+  if (path === '/api/demo/browser-setup') {
+    if (browserSetup && ['GET','POST'].includes(request.method) && initializationAccess(request,process.env)) return NextResponse.next({ headers });
+    return NextResponse.json({ error:'Indisponível', retryAllowed:false },{status:404,headers});
+  }
+  // Browser mode must not be bypassed through the older capability-only endpoint.
+  if (browserSetup && path === '/api/demo/initialize') return NextResponse.json({ error:'Indisponível', retryAllowed:false },{status:404,headers});
   if (path === '/api/demo/initialize' && ['GET','POST'].includes(request.method) && initializationAccess(request, process.env)) {
     return NextResponse.next({ headers });
   }
