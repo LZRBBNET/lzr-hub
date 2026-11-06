@@ -541,7 +541,9 @@ export class IxcReadonlyProvider {
     const cached=this.cityCache.get(cityCode);if(cached)return cached;
     try{
       const rows=await this.read("getCity",endpoints.getCity,"id",cityCode,correlationId,1,customerId);
-      const raw=rows[0] as Record<string,unknown>|undefined;if(!raw)return undefined;
+      // Only cache the exact catalog identity requested; a mismatched/ambiguous
+      // response must not label this customer or poison other customer snapshots.
+      const raw=rows[0];if(rows.length!==1||String(raw?.id??"").trim()!==cityCode)return undefined;
       const name=["nome","cidade","descricao"].map((key)=>raw[key]).find((value)=>value!==undefined&&value!==null&&String(value).trim());
       if(!name)return undefined;
       const value=String(name).trim();this.cityCache.set(cityCode,value);return value;
