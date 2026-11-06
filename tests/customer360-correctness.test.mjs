@@ -103,7 +103,7 @@ const providerFixture=(overrides={},options={})=>{
 };
 test("provider carries explicit complete coverage and original cached observation time",async()=>{
   const {provider,calls,tick}=providerFixture();const first=await provider.getSnapshot(id,"c1");
-  assert.deepEqual(first.coverage.invoices,{read:1,total:1,complete:true,limit:60});assert.equal(first.coverage.payments.complete,true);
+  assert.deepEqual(first.coverage.invoices,{read:1,total:1,complete:true,limit:100});assert.equal(first.coverage.payments.complete,true);
   const count=calls.length;tick();const cached=await provider.getSnapshot(id,"c2");assert.equal(cached.fetchedAt,first.fetchedAt);assert.equal(cached.cache,"hit");assert.equal(calls.length,count);
 });
 test("provider never infers complete invoices from absent/invalid totals, duplicate rows or later pages",async()=>{
