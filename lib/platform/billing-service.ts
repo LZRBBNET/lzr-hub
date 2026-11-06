@@ -89,8 +89,12 @@ export const businessToday = (now: Date) => SAO_PAULO.format(now);
 /** Datas do IXC vêm como AAAA-MM-DD. Formato diferente devolve undefined em vez de NaN silencioso. */
 export function daysOverdue(dueAt: string | undefined, now: Date): number | undefined {
   if (!dueAt) return undefined;
-  const parsed = new Date(`${dueAt.slice(0, 10)}T00:00:00Z`);
-  if (Number.isNaN(parsed.getTime())) return undefined;
+  // Preserva o prefixo civil, inclusive nos timestamps já aceitos, mas rejeita
+  // normalização de datas impossíveis (30 de fevereiro virar março).
+  const civil = dueAt.slice(0, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(civil) || civil.startsWith("0000-")) return undefined;
+  const parsed = new Date(`${civil}T00:00:00Z`);
+  if (Number.isNaN(parsed.getTime()) || parsed.toISOString().slice(0, 10) !== civil) return undefined;
   const today = new Date(`${businessToday(now)}T00:00:00Z`);
   return Math.round((today.getTime() - parsed.getTime()) / 86400000);
 }
