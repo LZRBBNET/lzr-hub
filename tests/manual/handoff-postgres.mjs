@@ -1,0 +1,53 @@
+// Only a newly initialized disposable cluster. Never uses DATABASE_URL.
+// PG_BIN=/path/to/postgresql/bin node --experimental-strip-types tests/manual/handoff-postgres.mjs
+import assert from 'node:assert/strict';
+import {mkdtemp,writeFile} from 'node:fs/promises';
+import {tmpdir} from 'node:os';
+import {join,resolve,dirname} from 'node:path';
+import {fileURLToPath} from 'node:url';
+import {execFileSync} from 'node:child_process';
+import pg from 'pg';
+import {drizzle} from 'drizzle-orm/node-postgres';
+import {migrate} from 'drizzle-orm/node-postgres/migrator';
+import {runDeliveryQA} from './human-delivery-postgres.mjs';
+import {DbConversationStateRepository,changeConversationState} from '../../lib/platform/conversation-state-service.ts';
+import {DbConversationsRepository} from '../../lib/platform/conversations-service.ts';
+import {loadConversationSummary} from '../../lib/platform/copilot-summary-service.ts';
+const root=resolve(dirname(fileURLToPath(import.meta.url)),'../..'),bin=process.env.PG_BIN;
+assert.ok(bin,'Explicit local PostgreSQL path required');
+const dir=await mkdtemp(join(tmpdir(),'handoff-synthetic-')),data=join(dir,'data'),env={PATH:process.env.PATH,LANG:'C.UTF-8',LC_ALL:'C.UTF-8'},results=[];
+let pool,runtime,started=false;
+const record=(name,evidence)=>{results.push({name,...evidence});console.log(JSON.stringify(results.at(-1)));};
+try{
+ execFileSync(join(bin,'initdb'),['-D',data,'--auth=trust','--encoding=UTF8','--no-locale'],{env,stdio:'pipe'});
+ execFileSync(join(bin,'pg_ctl'),['-D',data,'-l',join(dir,'postgres.log'),'-o',`-k ${dir} -h ''`,'-w','start'],{env,stdio:'pipe'});started=true;
+ pool=new pg.Pool({host:dir,user:process.env.USER||'agent',database:'postgres'});await pool.query('CREATE DATABASE handoff_synthetic');await pool.end();
+ pool=new pg.Pool({host:dir,user:process.env.USER||'agent',database:'handoff_synthetic'});
+ await migrate(drizzle(pool),{migrationsFolder:join(root,'drizzle')});
+ await pool.query(`CREATE ROLE synthetic_delivery_runtime LOGIN; GRANT CONNECT ON DATABASE handoff_synthetic TO synthetic_delivery_runtime; GRANT USAGE ON SCHEMA public TO synthetic_delivery_runtime;
+ GRANT SELECT ON conversation_states,channel_messages,channel_idempotency_keys,audit_events,conversation_outcomes TO synthetic_delivery_runtime;
+ GRANT INSERT ON audit_events,channel_idempotency_keys TO synthetic_delivery_runtime;
+ GRANT DELETE ON channel_idempotency_keys TO synthetic_delivery_runtime;
+ GRANT UPDATE(response_json) ON channel_idempotency_keys TO synthetic_delivery_runtime;
+ GRANT INSERT(id,channel,external_conversation_id,role,content,correlation_id,sent_by,external_message_id,created_at) ON channel_messages TO synthetic_delivery_runtime;
+ GRANT INSERT(channel,external_conversation_id,status,assignee_id,assignee_name,assigned_at,resolved_at,resolved_by,updated_at),UPDATE(status,assignee_id,assignee_name,assigned_at,resolved_at,resolved_by,updated_at) ON conversation_states TO synthetic_delivery_runtime;`);
+ runtime=new pg.Pool({host:dir,user:'synthetic_delivery_runtime',database:'handoff_synthetic'});
+ await runDeliveryQA(pool,record,runtime);
+ const db=drizzle(runtime),states=new DbConversationStateRepository(db),conversations=new DbConversationsRepository(db),phone='5511000000001';
+ await pool.query("INSERT INTO conversation_outcomes(id,channel,external_conversation_id,intent,final_status,handoff,handoff_reason,created_at,correlation_id) VALUES('synthetic-summary','synthetic-delivery',$1,'technical_slow','open',true,'customer_requested_human',$2,'synthetic-summary')",[phone,new Date().toISOString()]);
+ const summary=await loadConversationSummary(conversations,states,'synthetic-delivery',phone);
+ assert.match(summary,/Cliente pediu atendente/);assert.match(summary,/Preciso de ajuda/);assert.match(summary,/Bruno sintético/);
+ await pool.query("INSERT INTO channel_messages(id,channel,external_conversation_id,role,content,created_at) VALUES('synthetic-other-channel','synthetic-other',$1,'customer','Contexto separado',$2)",[phone,new Date().toISOString()]);
+ const other=await loadConversationSummary(conversations,states,'synthetic-other',phone);assert.match(other,/Contexto separado/);assert.doesNotMatch(other,/Bruno sintético|Cliente pediu atendente/);
+ const actor={id:'delivery-bruno',name:'Bruno sintético',email:'bruno@example.invalid',role:'Atendente'};
+ assert.equal((await changeConversationState(states,{channel:'synthetic-delivery',conversationId:phone,action:'resolve',actor})).ok,true);
+ assert.equal((await changeConversationState(states,{channel:'synthetic-delivery',conversationId:phone,action:'reopen',actor})).ok,true);
+ assert.match(await loadConversationSummary(conversations,states,'synthetic-delivery',phone),/ainda não atribuído/);
+ record('handoff_summary_composition',{reason:true,context:true,currentOwner:true,channelIsolation:true,reopenedWithoutOldOwner:true});
+ await runtime.end();runtime=null;await pool.end();pool=null;
+ execFileSync(join(bin,'pg_ctl'),['-D',data,'-l',join(dir,'postgres.log'),'-m','fast','-w','restart'],{env,stdio:'pipe'});
+ pool=new pg.Pool({host:dir,user:process.env.USER||'agent',database:'handoff_synthetic'});
+ const pending=Number((await pool.query("SELECT count(*) FROM channel_idempotency_keys WHERE idempotency_key LIKE 'delivery:%'")).rows[0].count);assert.equal(pending,6);
+ record('delivery_reservations_survive_restart',{pendingReservations:pending,powerFailureTested:false});
+ await writeFile(join(dir,'results.json'),JSON.stringify(results,null,2)+'\n');console.log('QA_EVIDENCE='+join(dir,'results.json'));
+}finally{if(runtime)await runtime.end();if(pool)await pool.end();if(started)execFileSync(join(bin,'pg_ctl'),['-D',data,'-m','fast','-w','stop'],{env,stdio:'pipe'});}

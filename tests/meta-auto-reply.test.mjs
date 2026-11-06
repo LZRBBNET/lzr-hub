@@ -33,6 +33,7 @@ function montar({ enabled = true, comConfig = true, fetcher, mensagemDoClienteHa
   const estado = { fetcher: fetcher ?? padrao };
   const config = comConfig ? { accessToken: "TOKEN-SECRETO", phoneNumberId: "999", graphVersion: "v26.0", fetcher: (...args) => estado.fetcher(...args) } : undefined;
   const deps = {
+    delivery: { begin: async () => "test-token", finish: async () => {} },
     enabled, states, messages: channel, claims, config, channel: CHANNEL_NAME,
     customerMessageAt: semHora ? undefined : new Date(Date.now() - mensagemDoClienteHa).toISOString(),
   };

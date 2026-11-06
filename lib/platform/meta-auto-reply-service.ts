@@ -1,3 +1,4 @@
+import type { ConversationDelivery } from "./conversation-delivery-service.ts";
 import { MAX_TEXT_LENGTH, sendTextMessage, type MetaSendConfig } from "../integrations/meta/cloud-client.ts";
 import type { ReplyRepository } from "./attendant-reply-service.ts";
 import { isNonCustomerConversation } from "./conversation-scope.ts";
@@ -28,6 +29,7 @@ export type AutoReplyClaims = Pick<ReplyRepository, "claim" | "claimState" | "se
 
 export interface MetaAutoReplyDeps {
   claims: AutoReplyClaims;
+  delivery?: ConversationDelivery;
   /** `undefined` quando falta token ou id do número. */
   config: MetaSendConfig | undefined;
   channel: string;
@@ -67,18 +69,30 @@ export function metaAutoReplySender(deps: MetaAutoReplyDeps): AutoReplySender {
       return { sent: false, outcome: "failed", reason: "Não consegui reservar o envio no banco; nada foi enviado." };
     }
 
+    let deliveryToken: string;
+    try {
+      if (!deps.delivery) throw Error("DELIVERY_UNAVAILABLE");
+      deliveryToken = await deps.delivery.begin(deps.channel, conversationId);
+    } catch {
+      await deps.claims.release(key).catch(() => undefined);
+      return blocked("Conversa reservada ou responsável não confirmado; envio automático bloqueado.");
+    }
+    const finish = () => deps.delivery!.finish(deps.channel, conversationId, deliveryToken).catch(() => undefined);
+
     // 3. Chamada.
     const sent = await sendTextMessage(config, { to: conversationId, text });
     if (!sent.ok) {
-      // Em timeout a mensagem pode ter saído: a reserva fica e barra a reentrega.
-      // Nos demais casos a Meta recusou, e soltar é seguro.
-      if (sent.kind === "timeout") await deps.claims.setClaimState(key, { status: "unknown" }).catch(() => undefined);
-      else await deps.claims.release(key).catch(() => undefined);
+      // Ambiguous transport/provider outcomes keep the durable reservation.
+      if (["timeout", "unreachable", "rejected"].includes(sent.kind)) await deps.claims.setClaimState(key, { status: "unknown" }).catch(() => undefined);
+      else { await deps.claims.release(key).catch(() => undefined); await finish(); }
       const detail = `${sent.reason} (${sent.kind}${sent.metaCode ? ` ${sent.metaCode}` : ""})`;
-      return { sent: false, outcome: sent.kind === "timeout" ? "unknown" : "failed", reason: detail };
+      return { sent: false, outcome: ["timeout", "unreachable", "rejected"].includes(sent.kind) ? "unknown" : "failed", reason: detail };
     }
     // A Meta já aceitou: falhar ao marcar a reserva não desfaz o envio.
-    await deps.claims.setClaimState(key, { status: "sent", messageId: sent.messageId, text }).catch(() => undefined);
+    try {
+      await deps.claims.setClaimState(key, { status: "sent", messageId: sent.messageId, text });
+      await finish();
+    } catch { /* keep reservation for reconciliation; external send already happened */ }
     return { sent: true, messageId: sent.messageId };
   };
 }
