@@ -40,7 +40,7 @@ export type ReplyResult =
   | { ok: false; status: 400 | 403 | 409 | 422 | 429 | 502 | 503; reason: string };
 
 /** `text` é o que saiu, para quem precisa refazer o registro sem reenviar (a resposta automática, na reentrega do webhook). */
-export type ClaimState = { context?: string; recorded?: boolean } & ({ status: "pending" } | { status: "sent"; messageId: string; text?: string } | { status: "unknown" });
+export type ClaimState = { context?: string; recorded?: boolean } & ({ status: "pending" } | { status: "sent"; messageId: string; text?: string } | { status: "unknown" } | { status: "reconciled"; resolution: string });
 
 export interface ReplyRepository {
   lastCustomerMessage(channel: string, conversationId: string): Promise<{ createdAt: string; externalMessageId?: string } | undefined>;
@@ -96,6 +96,7 @@ export async function sendAttendantReply(deps: ReplyDeps, input: ReplyInput): Pr
   const previous = await repository.claimState(claimKey);
   if (previous && previous.context !== context) return refusal(409, "Identificador já usado em outro envio ou registro antigo; confira a conversa.");
   if (previous?.status === "sent") return { ok: true, messageId: previous.messageId, duplicate: true, recorded: previous.recorded === true };
+  if (previous?.status === "reconciled") return refusal(409, "Esta operação foi reconciliada e encerrada. Ela não será reenviada.");
   if (previous) return refusal(409, previous.status === "pending" ? "Esse envio já está em andamento." : "Esse envio ficou sem confirmação da Meta. Confira a conversa antes de reenviar.");
 
   // 3. Política. Sem login não há autor, e mensagem a cliente sem autor não sai.
@@ -119,7 +120,7 @@ export async function sendAttendantReply(deps: ReplyDeps, input: ReplyInput): Pr
   let deliveryToken: string;
   try {
     if (!deps.delivery || !input.actor.id || !input.actor.name) throw Error("DELIVERY_UNAVAILABLE");
-    deliveryToken = await deps.delivery.begin(input.channel, phone, { ...input.actor, id: input.actor.id, name: input.actor.name });
+    deliveryToken = await deps.delivery.begin(input.channel, phone, { ...input.actor, id: input.actor.id, name: input.actor.name }, claimKey);
   } catch {
     await repository.release(claimKey).catch(() => undefined);
     return refusal(503, "Não foi possível confirmar o responsável. Nenhuma mensagem foi enviada nesta tentativa; atualize a conversa.");
@@ -136,7 +137,10 @@ export async function sendAttendantReply(deps: ReplyDeps, input: ReplyInput): Pr
   if (!sent.ok) {
     // Outcomes without a definite provider refusal may have sent the message.
     // Keep both reservations until manual reconciliation.
-    if (["timeout", "unreachable", "rejected"].includes(sent.kind)) await repository.setClaimState(claimKey, { status: "unknown", context }).catch(() => undefined);
+    if (["timeout", "unreachable", "rejected"].includes(sent.kind)) {
+      await repository.setClaimState(claimKey, { status: "unknown", context }).catch(() => undefined);
+      await deps.delivery.settleUncertain(input.channel, phone, deliveryToken).catch(() => undefined);
+    }
     else { await repository.release(claimKey).catch(() => undefined); await finish(); }
     await repository.audit({ correlationId, entity, action: "whatsapp.reply.failed", result: ["timeout", "unreachable", "rejected"].includes(sent.kind) ? "unknown" : "failed", reason: `Envio ao cliente falhou (${sent.kind}${sent.metaCode ? ` ${sent.metaCode}` : ""}): ${sanitizeHandoffText(sent.reason)} ${preview}`, actor: input.actor }).catch(() => undefined);
     const status = sent.kind === "window_closed" || sent.kind === "not_allowed" || sent.kind === "invalid_recipient" ? 422
@@ -159,8 +163,10 @@ export async function sendAttendantReply(deps: ReplyDeps, input: ReplyInput): Pr
   }
   try {
     await repository.setClaimState(claimKey, { status: "sent", messageId: sent.messageId, context, recorded });
-    await finish();
+    if (recorded) await finish();
+    else await deps.delivery.settleUncertain(input.channel, phone, deliveryToken, sent.messageId).catch(() => undefined);
   } catch {
+    await deps.delivery.settleUncertain(input.channel, phone, deliveryToken, sent.messageId).catch(() => undefined);
     // Keep the conversation fenced when the durable result cannot be confirmed.
     recorded = false;
   }

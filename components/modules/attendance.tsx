@@ -1,5 +1,6 @@
 "use client";
 
+import { DeliveryReconciliation } from "./delivery-reconciliation";
 import { Fragment, useEffect, useRef, useState } from "react";
 import { containsHomologationText } from "@/lib/platform/reply-templates-shared";
 import { needsReply, waitTone, windowOpen, type EffectiveState, type StateAction } from "@/lib/platform/conversation-state-shared";
@@ -120,6 +121,7 @@ export function AttendanceModule({ initialConversation, onAwaiting }: { initialC
   const [quickReplies,setQuickReplies] = useState<QuickReply[]>([]);
   const [draft,setDraft] = useState("");
   const [sending,setSending] = useState(false);
+  const [deliveryBlocked,setDeliveryBlocked] = useState(false);
   const [sendError,setSendError] = useState<string|null>(null);
   const [newBelow,setNewBelow] = useState(false);
   const [now,setNow] = useState(() => Date.now());
@@ -252,7 +254,7 @@ export function AttendanceModule({ initialConversation, onAwaiting }: { initialC
     signatureRef.current = ""; countRef.current = 0; stickRef.current = true;
     setMessages([]); setMessagesState("loading"); setAudit(null); setReplyWindow(null); setNewBelow(false);
     // O rascunho é da conversa em que foi escrito: trocar de cliente não o carrega junto.
-    setDraft(""); setSendError(null); setSlashClosed(false);
+    setDraft(""); setSendError(null); setDeliveryBlocked(false); setSlashClosed(false);
     void loadMessages(item, "open");
     // O IXC tem limite de consultas por minuto: uma vez ao abrir, nunca a cada atualização.
     void lookupIxc(item);
@@ -396,7 +398,7 @@ export function AttendanceModule({ initialConversation, onAwaiting }: { initialC
   const ownerIsOther = !!conversationState?.assigneeId && !ownerIsMe && !resolvedNow;
   const windowState = windowInfo(replyWindow, now);
   const canWindow = !!replyWindow?.closesAt && now <= Date.parse(replyWindow.closesAt);
-  const canCompose = channelState.canReply && messagesState==="ready" && canWindow;
+  const canCompose = !deliveryBlocked && channelState.canReply && messagesState==="ready" && canWindow;
   const statusLabel = selected?.handoff ? "Transbordo" : selected?.finalStatus ? FINAL_STATUS_LABELS[selected.finalStatus] ?? selected.finalStatus : "Sem desfecho";
   const observing = channelState.enabled && !channelState.autoReply;
   const used = usedSuggestions(messages);
@@ -477,6 +479,7 @@ export function AttendanceModule({ initialConversation, onAwaiting }: { initialC
         </div>}
       </header>
       <div className="messages-wrap">
+        {selected&&selected.channel==="n8n-whatsapp"&&/^\d{10,15}$/.test(selected.externalConversationId)&&<DeliveryReconciliation key={conversationKey(selected)} conversationId={selected.externalConversationId} refreshKey={sending} onBlocked={setDeliveryBlocked}/> }
         <div className="messages" ref={messagesRef} onScroll={(e)=>{ const el = e.currentTarget; if (newBelow && el.scrollHeight - el.scrollTop - el.clientHeight < 80) setNewBelow(false); }}>
           {messagesState==="loading" && <p className="messages-note">Carregando histórico…</p>}
           {messagesState==="error" && <p className="messages-note">Não consegui carregar esta conversa. Abra de novo em instantes.</p>}
@@ -510,7 +513,7 @@ export function AttendanceModule({ initialConversation, onAwaiting }: { initialC
       </div>
       {sendError && <p className="form-error composer-error">{sendError}</p>}
       {selected && messagesState==="ready" && <Composer
-        canReply={channelState.canReply} canCompose={canCompose} replyWindow={replyWindow} now={now} resolved={!!resolvedNow}
+        deliveryBlocked={deliveryBlocked} canReply={channelState.canReply} canCompose={canCompose} replyWindow={replyWindow} now={now} resolved={!!resolvedNow}
         ownerName={ownerIsOther ? conversationState?.assigneeName ?? null : null}
         draft={draft} sending={sending} composerRef={composerRef} quickReplies={quickReplies}
         slashMatches={slashMatches} slashActive={slashActive}
@@ -567,14 +570,15 @@ export function AttendanceModule({ initialConversation, onAwaiting }: { initialC
  * fechou só ao apertar Enviar é a falha clássica dessas telas: aqui o campo dá
  * lugar ao aviso no instante em que a janela fecha.
  */
-function Composer({ canReply, canCompose, replyWindow, now, resolved, ownerName, draft, sending, composerRef, quickReplies, slashMatches, slashActive, onDraft, onSlashMove, onSlashClose, onPick, onInsert, onSend, onResolve }: {
-  canReply:boolean; canCompose:boolean; replyWindow:ReplyWindow|null; now:number; resolved:boolean; ownerName:string|null;
+function Composer({ deliveryBlocked, canReply, canCompose, replyWindow, now, resolved, ownerName, draft, sending, composerRef, quickReplies, slashMatches, slashActive, onDraft, onSlashMove, onSlashClose, onPick, onInsert, onSend, onResolve }: {
+  deliveryBlocked:boolean; canReply:boolean; canCompose:boolean; replyWindow:ReplyWindow|null; now:number; resolved:boolean; ownerName:string|null;
   draft:string; sending:boolean; composerRef:React.RefObject<HTMLTextAreaElement|null>; quickReplies:QuickReply[];
   slashMatches:QuickReply[]; slashActive:number;
   onDraft:(value:string)=>void; onSlashMove:(delta:number)=>void; onSlashClose:()=>void; onPick:(content:string)=>void; onInsert:(content:string)=>void; onSend:()=>void; onResolve?:()=>void;
 }) {
   if (!canReply) return <div className="composer-closed"><Icon name="info" size={18} /><div><strong>Responder pela tela está desligado neste ambiente.</strong><span>Nenhuma resposta sai para o cliente por aqui.</span></div></div>;
   if (!replyWindow?.lastCustomerAt) return <div className="composer-closed"><Icon name="info" size={18} /><div><strong>Este cliente ainda não escreveu.</strong><span>A Meta só deixa responder com texto livre depois que o cliente manda uma mensagem.</span></div></div>;
+  if (deliveryBlocked) return <div className="composer-closed warn">Envio bloqueado. Confira o estado persistente do envio acima.</div>;
   if (!canCompose) return <div className="composer-closed warn">
     <Icon name="clock" size={18} />
     <div>

@@ -16,7 +16,7 @@ function montar({ enabled = true, comConfig = true, fetcher, mensagemDoClienteHa
   const estado = { fetcher: fetcher ?? padrao };
   const config = comConfig ? { accessToken: "TOKEN-SECRETO", phoneNumberId: "999", graphVersion: "v26.0", fetcher: (...args) => estado.fetcher(...args) } : undefined;
   repository.customerMessages.push({ channel: CHANNEL, conversationId: CLIENTE, createdAt: new Date(Date.now() - mensagemDoClienteHa).toISOString(), externalMessageId: "wamid.ENTRADA1" });
-  return { repository, chamadas, estado, deps: { repository, config, enabled, delivery: { begin: async () => "test-token", finish: async () => {} } } };
+  return { repository, chamadas, estado, deps: { repository, config, enabled, delivery: { begin: async () => "test-token", finish: async () => {}, settleUncertain: async () => {} } } };
 }
 
 const pedido = (over = {}) => ({

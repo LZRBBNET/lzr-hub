@@ -28,7 +28,7 @@ export async function runDeliveryQA(pool,record,runtimePool=pool){
  for(const action of ['release','resolve','reopen']){const result=await mutate(p,action);assert.ok(!result.ok||result.changed===false);}
  assert.equal((await bot(p)).sent,false);
  assert.equal((await sendAttendantReply(deps,input(p,'delivery-other-human',other))).ok,false);
- unblock();assert.equal((await running).ok,true);assert.equal(await hasDelivery(db,channel,p),false);
+ unblock();const completed=await running;assert.equal(completed.ok,true);assert.equal(completed.recorded,true);assert.equal(await hasDelivery(db,channel,p),false);
  assert.equal((await mutate(p,'release')).ok,true);assert.equal((await mutate(p,'claim',other)).ok,true);
  const count=calls,replay=await sendAttendantReply(deps,input(p,'delivery-failure'));assert.equal(replay.duplicate,true);assert.equal(calls,count);assert.equal((await states.get(channel,p)).assigneeId,other.id);
  assert.equal((await sendAttendantReply(deps,{...input(p,'delivery-failure'),text:'Outro texto'})).status,409);

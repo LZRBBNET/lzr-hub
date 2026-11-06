@@ -6,7 +6,8 @@ import { botMayReply } from "./conversation-state-shared.ts";
 import { deliveryKey, hasDelivery, lockDelivery } from "./conversation-delivery-lock.ts";
 
 export interface ConversationDelivery {
-  begin(channel: string, conversationId: string, actor?: StateActor): Promise<string>;
+  begin(channel: string, conversationId: string, actor?: StateActor, operationKey?: string): Promise<string>;
+  settleUncertain(channel: string, conversationId: string, token: string, acceptedMessageId?: string): Promise<void>;
   finish(channel: string, conversationId: string, token: string): Promise<void>;
 }
 
@@ -15,7 +16,7 @@ export class DbConversationDelivery implements ConversationDelivery {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   private readonly db: any;
   constructor(db: unknown) { this.db = db; }
-  async begin(channel: string, conversationId: string, actor?: StateActor): Promise<string> {
+  async begin(channel: string, conversationId: string, actor?: StateActor, operationKey?: string): Promise<string> {
     const token = randomUUID();
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     await this.db.transaction(async (tx: any) => {
@@ -30,17 +31,25 @@ export class DbConversationDelivery implements ConversationDelivery {
       }
       const inserted = await tx.insert(channelIdempotencyKeys).values({
         idempotencyKey: deliveryKey(channel, conversationId), channel, externalConversationId: conversationId,
-        responseJson: { status: "pending", token, kind: actor ? "human" : "bot" }, createdAt: new Date().toISOString(),
+        responseJson: { status: "pending", token, operationKey, kind: actor ? "human" : "bot" }, createdAt: new Date().toISOString(),
       }).returning({ key: channelIdempotencyKeys.idempotencyKey });
       if (inserted.length !== 1) throw Error("DELIVERY_UNCONFIRMED");
     });
     return token;
+  }
+  async settleUncertain(channel: string, conversationId: string, token: string, acceptedMessageId?: string): Promise<void> {
+    // Written only after the one transport attempt has returned. No later send is scheduled.
+    const updated = await this.db.update(channelIdempotencyKeys).set({ responseJson: sql`${channelIdempotencyKeys.responseJson} || ${JSON.stringify({ status: "uncertain", workerSettled: true, acceptedMessageId: acceptedMessageId ?? null })}::jsonb` })
+      .where(and(eq(channelIdempotencyKeys.idempotencyKey, deliveryKey(channel, conversationId)), sql`${channelIdempotencyKeys.responseJson}->>'token' = ${token}`, sql`${channelIdempotencyKeys.responseJson}->>'status' = 'pending'`))
+      .returning({ key: channelIdempotencyKeys.idempotencyKey });
+    if (updated.length !== 1) throw Error("DELIVERY_SETTLEMENT_UNCONFIRMED");
   }
   async finish(channel: string, conversationId: string, token: string): Promise<void> {
     // A late completion cannot clear a newer operation's reservation.
     await this.db.delete(channelIdempotencyKeys).where(and(
       eq(channelIdempotencyKeys.idempotencyKey, deliveryKey(channel, conversationId)),
       sql`${channelIdempotencyKeys.responseJson}->>'token' = ${token}`,
+      sql`${channelIdempotencyKeys.responseJson}->>'status' = 'pending'`,
     ));
   }
 }

@@ -25,14 +25,18 @@ try{
  pool=new pg.Pool({host:dir,user:process.env.USER||'agent',database:'handoff_synthetic'});
  await migrate(drizzle(pool),{migrationsFolder:join(root,'drizzle')});
  await pool.query(`CREATE ROLE synthetic_delivery_runtime LOGIN; GRANT CONNECT ON DATABASE handoff_synthetic TO synthetic_delivery_runtime; GRANT USAGE ON SCHEMA public TO synthetic_delivery_runtime;
+ GRANT SELECT ON users,sessions TO synthetic_delivery_runtime;
+ GRANT UPDATE(expires_at) ON sessions TO synthetic_delivery_runtime;
+ GRANT UPDATE(last_login_at) ON users TO synthetic_delivery_runtime;
  GRANT SELECT ON conversation_states,channel_messages,channel_idempotency_keys,audit_events,conversation_outcomes TO synthetic_delivery_runtime;
  GRANT INSERT ON audit_events,channel_idempotency_keys TO synthetic_delivery_runtime;
  GRANT DELETE ON channel_idempotency_keys TO synthetic_delivery_runtime;
  GRANT UPDATE(response_json) ON channel_idempotency_keys TO synthetic_delivery_runtime;
- GRANT INSERT(id,channel,external_conversation_id,role,content,correlation_id,sent_by,external_message_id,created_at) ON channel_messages TO synthetic_delivery_runtime;
+ GRANT INSERT(id,channel,external_conversation_id,role,content,correlation_id,sent_by,external_message_id,delivery_status,delivery_error,delivery_updated_at,created_at) ON channel_messages TO synthetic_delivery_runtime;
  GRANT INSERT(channel,external_conversation_id,status,assignee_id,assignee_name,assigned_at,resolved_at,resolved_by,updated_at),UPDATE(status,assignee_id,assignee_name,assigned_at,resolved_at,resolved_by,updated_at) ON conversation_states TO synthetic_delivery_runtime;`);
  runtime=new pg.Pool({host:dir,user:'synthetic_delivery_runtime',database:'handoff_synthetic'});
  await runDeliveryQA(pool,record,runtime);
+ const {runReconciliationQA}=await import("./reconciliation-postgres.mjs");await runReconciliationQA(pool,runtime,record);
  const db=drizzle(runtime),states=new DbConversationStateRepository(db),conversations=new DbConversationsRepository(db),phone='5511000000001';
  await pool.query("INSERT INTO conversation_outcomes(id,channel,external_conversation_id,intent,final_status,handoff,handoff_reason,created_at,correlation_id) VALUES('synthetic-summary','synthetic-delivery',$1,'technical_slow','open',true,'customer_requested_human',$2,'synthetic-summary')",[phone,new Date().toISOString()]);
  const summary=await loadConversationSummary(conversations,states,'synthetic-delivery',phone);
@@ -44,10 +48,12 @@ try{
  assert.equal((await changeConversationState(states,{channel:'synthetic-delivery',conversationId:phone,action:'reopen',actor})).ok,true);
  assert.match(await loadConversationSummary(conversations,states,'synthetic-delivery',phone),/ainda não atribuído/);
  record('handoff_summary_composition',{reason:true,context:true,currentOwner:true,channelIsolation:true,reopenedWithoutOldOwner:true});
+ if(process.env.PLAYWRIGHT_MODULE){const {runHandoffBrowser}=await import('./handoff-browser.mjs');await runHandoffBrowser({pool,dir,root,record});}
+ const pendingBefore=Number((await pool.query("SELECT count(*) FROM channel_idempotency_keys WHERE idempotency_key LIKE 'delivery:%'")).rows[0].count);
  await runtime.end();runtime=null;await pool.end();pool=null;
  execFileSync(join(bin,'pg_ctl'),['-D',data,'-l',join(dir,'postgres.log'),'-m','fast','-w','restart'],{env,stdio:'pipe'});
  pool=new pg.Pool({host:dir,user:process.env.USER||'agent',database:'handoff_synthetic'});
- const pending=Number((await pool.query("SELECT count(*) FROM channel_idempotency_keys WHERE idempotency_key LIKE 'delivery:%'")).rows[0].count);assert.equal(pending,6);
+ const pending=Number((await pool.query("SELECT count(*) FROM channel_idempotency_keys WHERE idempotency_key LIKE 'delivery:%'")).rows[0].count);assert.equal(pending,pendingBefore);assert.ok(pending>0);
  record('delivery_reservations_survive_restart',{pendingReservations:pending,powerFailureTested:false});
  await writeFile(join(dir,'results.json'),JSON.stringify(results,null,2)+'\n');console.log('QA_EVIDENCE='+join(dir,'results.json'));
 }finally{if(runtime)await runtime.end();if(pool)await pool.end();if(started)execFileSync(join(bin,'pg_ctl'),['-D',data,'-m','fast','-w','stop'],{env,stdio:'pipe'});}

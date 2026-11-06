@@ -72,7 +72,7 @@ export function metaAutoReplySender(deps: MetaAutoReplyDeps): AutoReplySender {
     let deliveryToken: string;
     try {
       if (!deps.delivery) throw Error("DELIVERY_UNAVAILABLE");
-      deliveryToken = await deps.delivery.begin(deps.channel, conversationId);
+      deliveryToken = await deps.delivery.begin(deps.channel, conversationId, undefined, key);
     } catch {
       await deps.claims.release(key).catch(() => undefined);
       return blocked("Conversa reservada ou responsável não confirmado; envio automático bloqueado.");
@@ -83,7 +83,10 @@ export function metaAutoReplySender(deps: MetaAutoReplyDeps): AutoReplySender {
     const sent = await sendTextMessage(config, { to: conversationId, text });
     if (!sent.ok) {
       // Ambiguous transport/provider outcomes keep the durable reservation.
-      if (["timeout", "unreachable", "rejected"].includes(sent.kind)) await deps.claims.setClaimState(key, { status: "unknown" }).catch(() => undefined);
+      if (["timeout", "unreachable", "rejected"].includes(sent.kind)) {
+        await deps.claims.setClaimState(key, { status: "unknown" }).catch(() => undefined);
+        await deps.delivery.settleUncertain(deps.channel, conversationId, deliveryToken).catch(() => undefined);
+      }
       else { await deps.claims.release(key).catch(() => undefined); await finish(); }
       const detail = `${sent.reason} (${sent.kind}${sent.metaCode ? ` ${sent.metaCode}` : ""})`;
       return { sent: false, outcome: ["timeout", "unreachable", "rejected"].includes(sent.kind) ? "unknown" : "failed", reason: detail };
@@ -92,7 +95,7 @@ export function metaAutoReplySender(deps: MetaAutoReplyDeps): AutoReplySender {
     try {
       await deps.claims.setClaimState(key, { status: "sent", messageId: sent.messageId, text });
       await finish();
-    } catch { /* keep reservation for reconciliation; external send already happened */ }
+    } catch { await deps.delivery.settleUncertain(deps.channel, conversationId, deliveryToken, sent.messageId).catch(() => undefined); }
     return { sent: true, messageId: sent.messageId };
   };
 }
