@@ -28,6 +28,6 @@ export async function POST(request: Request) {
     if (!result.ok) return NextResponse.json({ error: result.reason, state: result.state ?? null }, { status: result.status });
     return NextResponse.json({ ok: true, state: result.state, changed: result.changed });
   } catch {
-    return NextResponse.json({ error: "Não consegui mudar a conversa agora." }, { status: 503 });
+    return NextResponse.json({ ok: false, status: "unconfirmed", error: "Mudança não confirmada. Atualize e confira o responsável antes de tentar novamente." }, { status: 503 });
   }
 }

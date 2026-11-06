@@ -16,12 +16,12 @@ function montar({ enabled = true, comConfig = true, fetcher, mensagemDoClienteHa
   const estado = { fetcher: fetcher ?? padrao };
   const config = comConfig ? { accessToken: "TOKEN-SECRETO", phoneNumberId: "999", graphVersion: "v26.0", fetcher: (...args) => estado.fetcher(...args) } : undefined;
   repository.customerMessages.push({ channel: CHANNEL, conversationId: CLIENTE, createdAt: new Date(Date.now() - mensagemDoClienteHa).toISOString(), externalMessageId: "wamid.ENTRADA1" });
-  return { repository, chamadas, estado, deps: { repository, config, enabled } };
+  return { repository, chamadas, estado, deps: { repository, config, enabled, delivery: { begin: async () => "test-token", finish: async () => {}, settleUncertain: async () => {} } } };
 }
 
 const pedido = (over = {}) => ({
   channel: CHANNEL, conversationId: CLIENTE, text: "Olá! Vamos verificar sua conexão.",
-  idempotencyKey: "clique-0001-abcdef", actor: { email: "ana@bbnet.com.br", role: "Atendente" }, ...over,
+  idempotencyKey: "clique-0001-abcdef", actor: { id: "ana", name: "Ana", email: "ana@bbnet.com.br", role: "Atendente" }, ...over,
 });
 const envios = (chamadas) => chamadas.filter((c) => c.body.type === "text");
 
@@ -194,4 +194,27 @@ test("se a Meta aceitou mas o histórico não gravou, o resultado diz isso em ve
   const result = await sendAttendantReply(deps, pedido());
   assert.equal(result.ok, true, "a mensagem saiu");
   assert.equal(result.recorded, false, "mas não ficou registrada, e quem chama precisa saber");
+});
+
+test("sem coordenador durável não envia", async () => {
+  const { deps, chamadas } = montar();
+  const result = await sendAttendantReply({ ...deps, delivery: undefined }, pedido());
+  assert.equal(result.status, 503);
+  assert.equal(chamadas.length, 0);
+});
+
+test("falha de atribuição acontece antes de marcar lida ou enviar", async () => {
+  const { deps, chamadas } = montar();
+  deps.delivery.begin = async () => { throw Error("audit failed"); };
+  assert.equal((await sendAttendantReply(deps, pedido())).status, 503);
+  assert.equal(chamadas.length, 0);
+});
+
+test("chave de envio não pode mudar ator, canal, conversa ou texto", async () => {
+  const { deps, chamadas } = montar();
+  assert.equal((await sendAttendantReply(deps, pedido())).ok, true);
+  for (const change of [{channel:"outro"}, {conversationId:"5511999999999"}, {text:"Outra resposta"}, {actor:{...pedido().actor,id:"outra-identidade"}}]) {
+    assert.equal((await sendAttendantReply(deps, pedido(change))).status, 409);
+  }
+  assert.equal(envios(chamadas).length, 1);
 });

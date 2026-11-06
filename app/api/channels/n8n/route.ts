@@ -1,19 +1,17 @@
 import { NextResponse } from "next/server";
 import { randomUUID } from "node:crypto";
 import { getDb } from "@/db";
-import { CHANNEL_NAME, D1ChannelRepository, MAX_MESSAGE_LENGTH, processChannelMessage } from "@/lib/platform/n8n-channel-service";
+import { D1ChannelRepository, MAX_MESSAGE_LENGTH, processChannelMessage } from "@/lib/platform/n8n-channel-service";
 import { DbReplyTemplatesRepository, loadOverrides } from "@/lib/platform/reply-templates-service";
 import { DbSupportMetricsRepository } from "@/lib/platform/support-metrics";
 import { DbCrmRepository, captureLeadFromContact } from "@/lib/platform/crm-service";
 import { getIxcRuntime } from "@/lib/integrations/ixc/runtime";
 import { authorize } from "@/lib/platform/session-guard";
-import { DbConversationStateRepository, botMayReplyNow } from "@/lib/platform/conversation-state-service";
 
 /**
  * Resposta automática nasce desligada, como toda flag que produz efeito no
  * mundo real: ligada, a IA fala com o cliente sem ninguém no meio.
  */
-const autoReplyEnabled = () => process.env.FEATURE_N8N_AUTOREPLY === "true";
 
 /** Estado do canal, sem nada sensível — usado pelo painel de integrações para não mentir sobre o status real. */
 export async function GET(request: Request) {
@@ -22,7 +20,7 @@ export async function GET(request: Request) {
   if (!guard.allowed) return NextResponse.json({ error: guard.error }, { status: guard.status });
   const enabled = process.env.FEATURE_N8N_CHANNEL === "true";
   const configured = enabled && !!process.env.N8N_CHANNEL_SECRET;
-  return NextResponse.json({ enabled, configured, autoReply: enabled && autoReplyEnabled() });
+  return NextResponse.json({ enabled, configured, autoReply: false });
 }
 
 export async function POST(request: Request) {
@@ -51,8 +49,8 @@ export async function POST(request: Request) {
     new D1ChannelRepository(db),
     { externalConversationId, text, idempotencyKey, correlationId },
     new DbSupportMetricsRepository(db),
-    // Com um humano à frente da conversa a IA só sugere: não responde por cima dele.
-    { autoReply: autoReplyEnabled() && await botMayReplyNow(new DbConversationStateRepository(db), CHANNEL_NAME, externalConversationId), templates: await loadOverrides(new DbReplyTemplatesRepository(db)) },
+    // Delegated sending has no reservation/ack protocol; only return suggestions.
+    { autoReply: false, templates: await loadOverrides(new DbReplyTemplatesRepository(db)) },
     // Captação de lead (issue #17): quem escreve e não tem cadastro no IXC vira
     // lead no funil. Sem IXC ligado não há como saber se é cliente — e criar
     // lead na dúvida encheria o funil de quem já compra há anos.
