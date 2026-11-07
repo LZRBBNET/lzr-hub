@@ -107,9 +107,12 @@ export function summarizeFullBase(
   let overdueValue = 0, invoicesWithoutDueDate = 0;
 
   for (const invoice of invoices) {
+    // A resposta filtrada remotamente não substitui evidência local de abertura.
+    if (!/^(a|aberta|aberto|em aberto)$/i.test(invoice.status.trim())) continue;
     const value = invoice.value ?? 0;
     const days = daysOverdue(invoice.dueAt, options.now);
     if (days === undefined) { invoicesWithoutDueDate += 1; continue; }
+    if (days < 1) continue;
     overdueValue += value;
     const bucket = aging.find((item) => days >= item.minDays && (item.maxDays === null || days <= item.maxDays));
     if (bucket) { bucket.invoices += 1; bucket.value += value; }
