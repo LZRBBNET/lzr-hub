@@ -128,7 +128,7 @@ export function LzrHubApp({ ixcMode = "disabled" }: { ixcMode?: string }) {
     setLogoutState("pending");
     try {
       const response = await fetch("/api/auth/logout", { method: "POST" });
-      if (!response.ok || (await response.json()).ok !== true) throw new Error("LOGOUT_UNCONFIRMED");
+      if (response.status !== 401 && (!response.ok || (await response.json()).ok !== true)) throw new Error("LOGOUT_UNCONFIRMED");
       window.location.href = "/login";
     } catch {
       setLogoutState("failed");
