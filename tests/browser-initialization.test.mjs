@@ -119,3 +119,10 @@ test('cookie não relacionado não bloqueia navegador legítimo, mas cookie anti
   const g=fixture();assert.equal((await g.handle(g.request('GET',{headers:{cookie:prior}}))).status,409);assert.equal(g.calls.length,0);assert.equal(g.randoms,0);
  }
 });
+
+test('ready GET repeats only admission metadata without DB reads, cookie renewal or POST',async()=>{
+ const f=fixture();await f.ready();const count=f.calls.length;
+ for(let i=0;i<2;i++){const r=await f.handle(f.request('GET',{cookie}));assert.equal(r.status,200);assert.equal((await r.json()).state,'ready');assert.equal(r.headers.get('set-cookie'),null);}
+ assert.equal(f.calls.length,count);assert.equal(f.calls.filter(c=>c.method==='POST').length,0);
+ f.state.time+=900001;assert.notEqual((await f.handle(f.request('GET',{cookie}))).status,200);
+});

@@ -42,3 +42,22 @@ CSP/referrer são controles do documento, não prova da configuração de logs/r
 O modo navegador agora também impõe máximo de 15 minutos restantes no relógio do servidor, em vez de depender apenas do teto de 30 minutos do guard compartilhado legado. Prazo maior (inclusive por relógio local adiantado) é recusado antes de qualquer leitura de banco. Não estender uma sessão por troca de prazo; fingerprint de configuração e cookie perdem validade.
 
 Cookies de outros fluxos não impedem o primeiro GET autenticado. Cookie anterior do próprio setup (inclusive malformado/duplicado) continua bloqueando nova admissão após restart. A revisão corrigiu o bloqueio excessivo que recusava qualquer cabeçalho Cookie, sem reduzir a exigência da capability aprovada e do vínculo de sessão. Não é preciso apagar cookies normais como atalho; cookie de setup antigo exige reconciliação/expiração apropriada.
+
+## Alternativa local de recuperação da conferência (não ativada)
+
+A identidade do primeiro titular continua dependendo da conferência humana do verificador por um canal autenticado já estabelecido. A chave aprovada comprova posse; o cookie vincula a admissão ao navegador. Nenhum desses elementos, nem o primeiro visitante, comprova sozinho a identidade civil. O código existente não fornece convite, OAuth ou conta prévia utilizável para eliminar essa etapa; não foi inventada uma integração externa.
+
+A melhoria limita-se à experiência antes da escrita:
+- Preparar gera uma única chave na memória da aba, sem rede. O titular envia uma vez o bloco público e mantém a aba aberta.
+- “Aguardar autorização” faz GET. Uma resposta 404 estruturada com retryAllowed=false indica espera, não falha definitiva da aba. Conferências GET continuam a cada 10 s enquanto a tentativa original estiver válida; clicar novamente não gera chave nem estende prazo. Não há POST automático.
+- GET de admissão já pronta pode repetir os mesmos metadados, sem nova observação de banco, cookie renovado ou nova inicialização. Isso não garante que o banco permaneça vazio: POST continua exigindo todas as guardas do inicializador.
+- Outros erros, expiração, reinício do servidor, alteração de binding/tentativa/cookie ou incerteza após POST continuam fechados. Nenhuma expiração ou falta de logs significa rollback.
+- OID e alvo continuam sendo conferidos antes da autorização de escrita. Senha só é escolhida na página; a equipe não recebe senha ou chave.
+
+Um marcador público no localStorage contém somente tentativa, expiração, estágio e bloco público de configuração. Não contém token, cookie, senha, hash de senha ou dados de banco. Serve para evitar confusão após recarga/outra aba; não é autenticação, trava distribuída nem prova de escrita. Pode ser removido ou alterado pelo usuário/scripts e, por isso, o servidor nunca confia nele. Alteração observada em outra aba encerra a admissão local e limpa os campos de senha. Dados secretos continuam só em memória; não há recuperação automática da chave após fechar/recarregar. Voltar pelo cache de navegação também mantém a sessão descartada. Marcador indisponível impede preparação.
+
+Uma recarga mostra que existe tentativa anterior e orienta voltar à aba original ou pedir reconciliação; não prepara outra chave. Não há botão de limpar marcador/reiniciar nem limpeza automática após expiração. Uma nova tentativa depende de reconciliação explícita e autorização separada; apagar o marcador não desfaz reserva ou torna um POST repetível. Falha antes de armazenar o bloqueio local impede envio de POST. Após POST incerto, somente GET de status na aba ainda válida; sem chave/cookie/processo válidos, é necessária reconciliação operacional autorizada.
+
+Limite de simplificação: não elimina a rodada de aprovação/configuração nem permite abandonar a aba original. Remove a necessidade de acertar o momento de clicar e evita instruções de gerar novas chaves durante espera. Para eliminar aprovação manual seria necessário um mecanismo de identidade/convite confiável aprovado separadamente; não consta desta implementação.
+
+Ação mínima do titular em futura janela aprovada: preparar e enviar o bloco público uma única vez, clicar “Aguardar autorização” e manter a aba; depois conferir o alvo e escolher/confirmar a senha. Aguardar fechamento da janela antes de login. O fluxo não presume estado de tentativas anteriores; ausência de logs não prova ausência de escrita.
