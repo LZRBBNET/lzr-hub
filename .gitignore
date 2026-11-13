@@ -51,3 +51,6 @@ backups/
 
 # Configuração pessoal do Claude Code (o launch.json é compartilhado, este não)
 .claude/settings.local.json
+
+# Isolated synthetic Node build output
+/work/

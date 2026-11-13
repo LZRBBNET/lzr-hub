@@ -16,7 +16,7 @@ export async function GET(request:Request){
     const result=await provider.getInvoicePaymentPage(id,invoiceId,Number(rawPage),randomUUID());
     if(result.customerId!==id||result.invoiceId!==invoiceId||result.page!==Number(rawPage)||result.scope!=='invoice-page')throw Error('Unconfirmed page identity');
     await logUnauthenticatedAction({action:'customer360.invoice.payments.view',entity:`customer:${id}:invoice:${invoiceId}`,result:'success',reason:'Consulta de página de pagamentos da fatura',actor:guard.user});
-    return NextResponse.json({...result,mode:'staging-readonly',observedAt:new Date().toISOString()},{headers});
+    return NextResponse.json({...result,mode:process.env.FEATURE_SYNTHETIC_INVOICES==='true'?'demo':'staging-readonly',observedAt:new Date().toISOString()},{headers});
   }catch(error){
     const forbidden=error instanceof Error&&error.name==='IxcCustomerNotAllowedError';
     const limited=error instanceof Error&&['IXC_RATE_LIMITED','IXC_HTTP_429'].includes(error.message);
