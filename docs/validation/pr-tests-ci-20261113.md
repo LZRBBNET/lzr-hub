@@ -25,12 +25,16 @@ relatórios de validação da composição e da candidata sintética.
 - Checks descartam variáveis herdadas, inclusive credenciais/URLs/NODE_OPTIONS,
   e recusam dotenv local, inclusive symlinks. Instalação preserva apenas proxies
   HTTP(S) padrão do ambiente, além de PATH e flags técnicas enumeradas.
-- Guarda de teste bloqueia TCP externo, sockets Unix e UDP; permite loopback
+- Guarda de teste intercepta `net.Socket.prototype.connect` para bloquear
+  TCP externo e sockets Unix, e recusa `dgram.createSocket`; permite loopback
   literal para fixtures descartáveis. Testes validam HTTP/HTTPS/fetch bloqueados
   e HTTP loopback funcional. É prevenção de transporte acidental em Node, não
   sandbox de código hostil nem mudança na segurança de rede da infraestrutura.
   Os dois testes que iniciam subprocessos usam ambiente fictício explícito e a
   guarda de egress já existente nos launchers. Nenhum banco é provisionado.
+  A guarda não cobre DNS nativo via `node:dns`, os builds, binários nativos ou
+  subprocessos arbitrários. O escopo validado usa mocks e os launchers descritos;
+  não há promessa de isolamento de toda a rede do runner.
 - `contract-audit.yml` não foi alterado nem executado. Produção, hosting e
   configurações externas não foram acessados ou modificados por este trabalho.
 
@@ -84,8 +88,35 @@ trabalho obsoleto, mas não é quota global. Mudança futura de visibilidade ou
 runner exige rever consumo. Build/instalação ainda dependem da disponibilidade
 do registry e do runner; o resultado remoto continua não verificado.
 
-O arquivo está pronto para revisão local. Publicar/abrir PR pode ativar o
-workflow: aguardar autorização explícita para essa etapa conforme o pedido,
-mesmo com o repositório público. Não requer confirmação adicional para manter
-o patch local. Nenhum bloqueio de validação local permanece, além da ausência
-de actionlint e do isolamento por namespace descritos acima.
+O arquivo está pronto para revisão local. Branches, testes e PRs já estão
+autorizados; a publicação permanece suspensa somente durante esta fase de
+revisão solicitada pela coordenação, não por falta permanente de autorização.
+Publicar/abrir PR pode ativar o workflow. Nenhum bloqueio de validação local
+permanece, além da ausência de actionlint e do isolamento por namespace
+descritos acima.
+
+## Revisão antes da publicação
+
+Revisão independente do diff completo: nenhum segredo, dado pessoal ou endpoint
+operacional encontrado nos cinco arquivos novos. Documentação contém somente
+refs/SHA, caminhos locais genéricos, resultados e links oficiais; fixtures usam
+domínios `.invalid`, IP de documentação e loopback. `.npmrc` existente contém
+somente opções de cache/audit/fund/update-notifier, sem autenticação.
+
+O job herda `contents: read` sem override: permissões não declaradas, inclusive
+OIDC, ficam `none`, conforme a
+[sintaxe oficial de permissões](https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax#permissions).
+Não há interpolação de título, corpo ou nome de branch de PR em shell. O único
+contexto dinâmico é o número do PR no grupo de concorrência. Checkout padrão
+testa a referência de merge de `pull_request`, conforme os
+[eventos oficiais](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#pull_request),
+sem persistir o token na configuração Git. Não foram inspecionadas configurações
+administrativas do repositório; políticas de Actions podem impedir execução,
+e PR com conflito de merge não gera esta validação. Drafts executam normalmente;
+`ready_for_review` também pode executar novamente, dentro dos limites definidos.
+
+Os cinco comandos foram revisados: instalação limitada ao lock sem lifecycle;
+tipos/lint pelos scripts existentes; Worker build seguido de agregado com guarda;
+build Node com flags sintéticas e quatro testes pós-build explícitos. Falhas
+encerram a etapa/job sem `continue-on-error`. Sem alteração de código nesta
+revisão; somente precisão documental e correção do estado da autorização.
