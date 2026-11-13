@@ -57,9 +57,74 @@ retido não é exactly-once ou idempotência durável de transporte externo. Nã
 prescreve retry manual operacional, implantação mista ou liberação de canal.
 Não cobre pagamento ocorrido entre a leitura e um efeito externo futuro.
 
-Os comandos, hashes, inspeções e resultados da rodada estão no artefato local
-`lzr-collection-consumer-observe-20261113`. Nenhuma credencial, alvo operacional
-ou dado de cliente deve ser adicionado para reproduzir o laboratório.
+## Reprodução opt-in a partir deste checkout
+
+O launcher versionado `scripts/run-collection-observe-lab.py` dispensa a
+orquestração privada da rodada inicial. Usa somente Python padrão, Docker local
+rootless com seccomp e dependências previamente instaladas e confiáveis. Não
+instala, baixa imagens, lê configuração Docker pessoal ou aceita destino remoto.
+Exige Linux/amd64, usuário local UID 1000, socket Docker local em
+`/var/run/docker.sock` e estas imagens oficiais já em cache:
+
+- Node: `node@sha256:c0a93797ee78814ae6d32fcca2561fdbbe423149c3f5389aad32d86e9fd85bd4`.
+- Redis: `redis@sha256:c5d34a98396a4775e223c74e929162c35c5a2182901ba26b50ade939941ce14b`.
+
+O código verifica também IDs locais imutáveis, arquitetura e sistema operacional.
+Cache ausente ou diferente é recusa; não há pull automático. As dependências de
+`services/queue-runtime/node_modules` devem existir, incluindo BullMQ 5.81.2 e
+seu grafo declarado. Opcionalmente `--queue-dependencies` aceita o caminho
+absoluto de outro diretório `node_modules` previamente preparado e confiável.
+A versão conferida de BullMQ não comprova a integridade de todo esse grafo.
+Não monte dependências com credenciais, configurações pessoais ou dados privados.
+
+De uma cópia limpa, com esses pré-requisitos disponíveis, escolha um diretório
+de saída absoluto NOVO cujo pai já exista:
+
+```sh
+env -i PATH=/usr/local/bin:/usr/bin:/bin python3 -I -S scripts/run-collection-observe-lab.py \
+  --approve-local-synthetic --output /tmp/lzr-billing-lab-new
+```
+
+Não execute com sudo, não reutilize socket Redis e não ajuste o daemon para
+satisfazer uma recusa. O Python exige `-I -S`; o launcher não torna seguro um
+interpretador ou bootstrap nativo previamente comprometido. `env -i` limpa o
+ambiente antes do Python, e cada subprocesso recebe ambiente enumerado. Não
+herda URL Redis, banco, tokens ou configurações de conta. A seleção de Docker
+usa caminho conhecido e um diretório de configuração vazio criado na saída.
+
+Antes de iniciar o consumidor, o launcher confere root filesystem RO, UID/GID
+1000, `network none`, ausência de portas publicadas, capabilities adicionais,
+volumes anônimos e namespaces do host; código e dependências são mounts RO.
+Apenas Redis recebe seu diretório de socket novo e tmpfs `/data`; não recebe
+TCP nem volume persistente. Somente sete arquivos com hashes fixos são copiados
+para o staging, sem `.env`, `.git` ou arquivos da aplicação restante. Os testes
+usam somente os sete resultados sintéticos já descritos acima.
+
+Nomes e label de propriedade são próprios de cada invocação. `--run-id` é apenas
+um identificador técnico opcional de 32 caracteres hexadecimais; colisão com
+contêiner existente causa recusa, sem renomear, adotar ou remover esse recurso.
+SIGTERM/SIGINT acionam teardown limitado; encerramento abrupto do host/SIGKILL
+não permite prometer cleanup. A remoção confere label, imagem e ID imutável e
+alcança somente recursos criados pela invocação. Em dúvida preserva o socket e
+registra cleanup não confirmado, para investigação manual dos IDs registrados.
+Nunca execute uma limpeza global do Docker.
+
+A saída preserva `identity.json`, `results.json`, `status.json` e `cleanup.json`
+com hashes, contagens e categorias fixas; não preserva stdout/stderr brutos do
+consumidor. Código 0 exige resultado válido e cleanup confirmado; 78 indica
+recusa/pré-requisito, 1 falha do ensaio, 143 cancelamento e 73 sucesso do ensaio
+com cleanup não confirmado. Outros erros locais são sanitizados; consulte sempre
+`status.json`. Não publique o diretório inteiro de evidência automaticamente.
+
+Os testes do launcher, sem Docker, podem ser executados com:
+
+```sh
+python3 -I -S tests/collection-observe-launcher.test.py
+```
+
+A execução completa continua sendo laboratório, sem remetente operacional,
+Postgres, IXC ou garantia de integração real. Nenhuma credencial, alvo operacional
+ou dado de cliente deve ser adicionado para reproduzi-la.
 
 ## Fronteiras das fábricas reutilizadas
 
