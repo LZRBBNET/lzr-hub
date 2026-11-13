@@ -20,7 +20,9 @@ test('RO wrapper disabled launches authenticated service without inspection or f
   assert.equal(ready,true,'launcher must serve the isolated artifact with its egress guard installed');
   const login=await request('/login');assert.equal(login.status,200);assert.match(await login.text(),/LZR/);
   const business=await request('/api/customers');assert.equal(business.status,401);await business.arrayBuffer();
-  const denied=await request('/api/demo/browser-setup',{method:'POST',headers:{origin:'https://other.invalid'}});assert.equal(denied.status,404);await denied.arrayBuffer();
+  const closedSetup=await request('/api/demo/browser-setup');assert.equal(closedSetup.status,404);await closedSetup.arrayBuffer();
+  const firstAccess=await request('/first-access');assert.equal(firstAccess.status,307);await firstAccess.arrayBuffer();
+  const denied=await request('/api/demo/browser-setup',{method:'POST',headers:{origin:'https://other.invalid'}});assert.equal(denied.status,403);await denied.arrayBuffer();
  }finally{
   if(!exited)child.kill('SIGTERM');
   const timer=setTimeout(()=>{if(!exited)child.kill('SIGKILL');},2000);
