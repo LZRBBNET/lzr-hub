@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import manifest from './synthetic-schema-manifest.json' with { type: 'json' };
-import { IDENTITY_SQL, EMPTY_SQL, RESERVED_EMPTY_SQL, type InitializationClient } from './synthetic-initialization.ts';
+import { IDENTITY_SQL, EMPTY_SQL, RESERVED_EMPTY_SQL } from './synthetic-inspection-sql.ts';
+import type { InitializationClient } from './synthetic-initialization.ts';
 
 export const STATUS_TABLES_SQL = `SELECT c.relname,c.relkind FROM pg_catalog.pg_class c
  JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace
