@@ -64,6 +64,7 @@ export function LzrHubApp({ ixcMode = "disabled" }: { ixcMode?: string }) {
   const session = useSession();
   const [logoutState, setLogoutState] = useState<"idle" | "pending" | "failed">("idle");
   const logoutPending = useRef(false);
+  const invalidSession = session?.authRequired === true && session.authenticated === false;
   const user = session?.user;
   const permissions = (session?.unavailable || logoutState !== "idle") ? [] : session?.authenticated ? session.permissions ?? [] : null;
   // Senha gerada pelo sistema: a pessoa define a dela antes de usar qualquer tela.
@@ -90,7 +91,7 @@ export function LzrHubApp({ ixcMode = "disabled" }: { ixcMode?: string }) {
   // tela informa (consulta a cada 5 s); fora dela, uma consulta leve a cada 30 s.
   const inInbox = view === "atendimento";
   useEffect(() => {
-    if (inInbox || session?.unavailable || logoutState !== "idle") return;
+    if (inInbox || session?.unavailable || invalidSession || logoutState !== "idle") return;
     let active = true;
     const load = () => fetch("/api/conversations").then((response) => response.ok ? response.json() : null)
       .then((payload: { items?: Array<{ awaitingSince?: string; lastCustomerAt?: string; state?: EffectiveState }> } | null) => {
@@ -104,7 +105,7 @@ export function LzrHubApp({ ixcMode = "disabled" }: { ixcMode?: string }) {
     void load();
     const timer = window.setInterval(load, AWAITING_POLL_MS);
     return () => { active = false; window.clearInterval(timer); };
-  }, [inInbox, session?.unavailable, logoutState]);
+  }, [inInbox, session?.unavailable, invalidSession, logoutState]);
   const awaiting = inInbox ? awaitingFromInbox ?? 0 : awaitingPolled.count;
 
   const baseTitle = useRef<string | null>(null);
@@ -140,6 +141,8 @@ export function LzrHubApp({ ixcMode = "disabled" }: { ixcMode?: string }) {
   if (logoutState !== "idle") return <main role="alert"><p>{logoutState === "pending" ? "Encerrando sessão…" : "Não foi possível confirmar o encerramento da sessão. Ela pode continuar ativa. Recarregar ou reabrir esta página não encerra a sessão. Tente sair novamente para confirmar o encerramento no servidor."}</p><button type="button" disabled={logoutState === "pending"} onClick={signOut}>Tentar sair novamente</button></main>;
 
   if (session?.unavailable) return <main role="alert"><p>Não foi possível verificar sua sessão agora.</p><button type="button" onClick={() => window.location.reload()}>Tentar novamente</button></main>;
+
+  if (invalidSession) return <main role="alert"><p>Não há uma sessão válida para este acesso.</p><a href="/login">Ir para autenticação</a></main>;
 
   const fullBleed = FULL_BLEED.includes(view);
   return <ToastProvider>
