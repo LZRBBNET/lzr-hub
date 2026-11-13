@@ -67,7 +67,12 @@ export function createBrowserInitialization(deps:Deps) {
         return deps.initialize(internal('GET',undefined,true));
       }
       if(request.method==='GET'){
-        if(current.ready||current.used||current.failed)return reply({state:'blocked',retryAllowed:false},409);
+        if(current.used||current.failed)return reply({state:'blocked',retryAllowed:false},409);
+        // Repeating admission observation never repeats initialization or extends expiry.
+        if(current.ready){
+          if(!valid())return reply({state:'blocked',retryAllowed:false},409);
+          return reply({state:'ready',databaseOid:current.oid,attempt:current.attempt,expiresAt:source.SYNTHETIC_INIT_EXPIRES_AT,retryAllowed:false},200);
+        }
         // Read-only observations; never retry a failed session automatically.
         current.failed=true;
         const preflight=await deps.initialize(internal('GET'));

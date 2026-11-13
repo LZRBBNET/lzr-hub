@@ -1,9 +1,12 @@
-/* Standalone first-access page. Secrets stay in this tab; no storage/URL/telemetry. */
+/* Standalone first-access page. Secrets stay in this tab; only public coordination metadata uses storage. */
 (() => {
   const byId=id=>document.getElementById(id);
   const message=value=>{byId('message').textContent=value;};
   const hex=bytes=>Array.from(bytes,b=>b.toString(16).padStart(2,'0')).join('');
-  let token='',attempt='',expires=0,used=false,checked=false;
+  let token='',attempt='',expires=0,used=false,checked=false,checking=false,generation=0,timer;
+  const markerKey='lzr-first-access-public-attempt-v1';
+  const stopWaiting=()=>{clearTimeout(timer);timer=undefined;};
+  const remember=state=>localStorage.setItem(markerKey,JSON.stringify({attempt,expires,state,configuration:byId('configuration').textContent}));
   byId('origin').textContent=`Ambiente a conferir: ${location.origin}`;
   const disable=()=>{for(const id of ['prepare','check','password','repeat','approve','submit'])byId(id).disabled=true;};
   const valid=()=>token&&Date.now()<expires;
@@ -17,36 +20,51 @@
     return{status:response.status,body:JSON.parse(new TextDecoder().decode(bytes))};
   }
   byId('prepare').onclick=async()=>{
-    byId('prepare').disabled=true;
+    if(token||used||localStorage.getItem(markerKey))return;
+    byId('prepare').disabled=true;const preparing=++generation;
     try{
       if(!isSecureContext||location.protocol!=='https:'||!/^[a-z0-9][a-z0-9-]*\.onrender\.com$/.test(location.hostname)||location.port||location.search||location.hash)throw Error();
       const bytes=crypto.getRandomValues(new Uint8Array(32));token=hex(bytes);bytes.fill(0);
       attempt=`synthetic-init-browser-${crypto.randomUUID()}`;expires=Date.now()+15*60*1000;
       const verifier=hex(new Uint8Array(await crypto.subtle.digest('SHA-256',new TextEncoder().encode(token))));
+      if(preparing!==generation||used)return;
+      if(!valid()){disable();message('Prazo encerrado. Peça conferência à equipe; não gere outra chave.');return;}
       byId('configuration').textContent=`SYNTHETIC_INIT_CAPABILITY_SHA256=${verifier}\nSYNTHETIC_INIT_EXPIRES_AT=${new Date(expires).toISOString()}\nTentativa: ${attempt}\nOrigem: ${location.origin}`;
-      byId('check').disabled=false;message('Aguarde a equipe autorizar este verificador e confirmar a implantação. Não recarregue a página.');
+      remember('prepared');byId('check').disabled=false;message('Etapa 1 de 3: envie este bloco público uma única vez e mantenha esta aba aberta. Conferir antes da autorização não cria conta nem envia senha.');
     }catch{token='';disable();message('Não foi possível preparar este navegador. Nenhuma inicialização foi solicitada. Pare e fale com a equipe.');}
   };
   byId('check').onclick=async()=>{
-    byId('check').disabled=true;
+    if(checking||used)return;
+    stopWaiting();checking=true;const current=++generation;byId('check').disabled=true;
+    const active=()=>current===generation&&!used&&valid();
     try{
-      const r=await request('GET');
+      const r=await request('GET');if(!active()){if(current===generation&&!used){disable();message('Prazo encerrado. Isso não desfaz uma escrita anterior. Peça reconciliação à equipe antes de nova tentativa.');}return;}
+      if(r.status===404&&r.body.retryAllowed===false){
+        message('Etapa 2 de 3: aguardando autorização desta mesma tentativa. Só faremos conferências de leitura; não gere outra chave.');
+        byId('check').disabled=false;
+        timer=setTimeout(()=>{if(current===generation&&!used)void byId('check').onclick();},10000);return;
+      }
       if(r.status!==200||r.body.state!=='ready'||r.body.attempt!==attempt||r.body.retryAllowed!==false||Date.parse(r.body.expiresAt)!==expires||!/^[1-9]\d{0,9}$/.test(r.body.databaseOid))throw Error();
-      checked=true;byId('target').textContent=`Banco descartável observado: OID ${r.body.databaseOid}. Confira com a equipe antes de autorizar.`;
+      checked=true;remember('ready');byId('target').textContent=`Banco descartável observado: OID ${r.body.databaseOid}. Confira com a equipe antes de autorizar.`;
       for(const id of ['password','repeat','approve','submit'])byId(id).disabled=false;
-      message('Autorização conferida. Escolha uma senha provisória que você não usa em outro serviço. A senha não será mostrada ao agente.');
-    }catch{disable();byId('status').disabled=!valid();message('Autorização não confirmada. Não repita nem gere outra chave; peça conferência à equipe.');}
+      message('Etapa 3 de 3: autorização conferida. Confirme o alvo e escolha sua senha provisória. Nada foi inicializado ainda.');
+    }catch{
+      if(current!==generation)return;
+      checked=false;disable();byId('status').disabled=!valid();
+      message(valid()?'Conferência não confirmada. Nenhuma senha foi enviada. Pare e peça conferência; não gere outra chave.':'Prazo encerrado. Isso não desfaz uma escrita anterior. Peça reconciliação à equipe antes de nova tentativa.');
+    }finally{checking=false;}
   };
   byId('setup').onsubmit=async event=>{
     event.preventDefault();if(used||!checked)return;
     let password=byId('password').value;
     if(!valid()||!byId('approve').checked||password.length<10||password.length>256||password!==byId('repeat').value){password='';message('Confira prazo, confirmação e senhas iguais de 10 a 256 caracteres.');return;}
-    used=true;disable();byId('password').value='';byId('repeat').value='';message('Solicitação única em andamento. Não feche ou repita.');
+    used=true;stopWaiting();generation++;disable();byId('password').value='';byId('repeat').value='';message('Solicitação única em andamento. Não feche ou repita.');
+    try{remember('submitted');}catch{password='';message('Não foi possível registrar o bloqueio local. Nenhuma escrita foi solicitada. Peça conferência à equipe.');return;}
     let body={password,confirmation:'CREATE_EMPTY_SYNTHETIC_DATABASE_V1'};password='';
     try{
       const pending=request('POST',body);body.password='';body=undefined;
       const r=await pending;if(r.status!==201||r.body.state!=='completion-confirmed'||r.body.retryAllowed!==false)throw Error();
-      token='';message('Conclusão confirmada. Aguarde a equipe fechar a janela; depois abra /login e troque a senha provisória.');
+      token='';remember('confirmed');message('Conclusão confirmada. Aguarde a equipe fechar a janela; depois abra /login e troque a senha provisória.');
     }catch{byId('status').disabled=!valid();message('Resultado não confirmado. NÃO repita a inicialização. Consulte somente o resultado ou peça conferência à equipe.');}
   };
   byId('status').onclick=async()=>{
@@ -54,6 +72,10 @@
     try{const r=await request('GET',undefined,true);if(r.status!==200||r.body.retryAllowed!==false||!['absence-observed','reservation-observed','completion-observed'].includes(r.body.state))throw Error();message(`Observação somente leitura: ${r.body.state}. Não autoriza repetir escrita. Peça conferência à equipe.`);}
     catch{message('Consulta não confirmada. Pare e peça conferência; não repita escrita.');}
   };
-  addEventListener('pagehide',()=>{token='';used=true;byId('password').value='';byId('repeat').value='';});
+  addEventListener('pagehide',()=>{generation++;stopWaiting();token='';used=true;byId('password').value='';byId('repeat').value='';});
   addEventListener('pageshow',event=>{if(event.persisted){disable();byId('status').disabled=true;message('Sessão descartada ao sair da página. Peça conferência à equipe antes de qualquer nova tentativa.');}});
+  // Public coordination hint only. Never a capability, identity proof or permission.
+  try{if(localStorage.getItem(markerKey)){disable();message('Já existe uma tentativa neste navegador. Volte à aba original. Se ela foi fechada ou recarregada, peça reconciliação à equipe; não gere outra chave.');}}
+  catch{disable();message('Armazenamento de marcador público indisponível. Pare antes de preparar a tentativa.');}
+  addEventListener('storage',event=>{if(event.key===markerKey&&token){generation++;stopWaiting();disable();checked=false;token='';used=true;byId('password').value='';byId('repeat').value='';message('A tentativa mudou em outra aba. Pare e peça conferência; nenhuma escrita será repetida.');}});
 })();
