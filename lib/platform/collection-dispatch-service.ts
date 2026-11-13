@@ -183,7 +183,7 @@ export async function runTodayDispatch(
           name: `collection-step:${candidate.stepId}`,
           idempotencyKey: `${candidate.invoiceId}:${candidate.stepId}:${candidate.scheduledFor}`,
           correlationId,
-          payload: { invoiceId: candidate.invoiceId, customerId: candidate.customerId, channel: candidate.channel, templateId: candidate.templateId },
+          payload: { schemaVersion: 1, ruleId: candidate.ruleId, ruleVersion: rule.version, stepId: candidate.stepId, scheduledFor: candidate.scheduledFor, offsetDays: candidate.offsetDays, invoiceId: candidate.invoiceId, customerId: candidate.customerId, channel: candidate.channel, templateId: candidate.templateId },
         },
       });
       enqueued += 1; queueEnabled = true;
