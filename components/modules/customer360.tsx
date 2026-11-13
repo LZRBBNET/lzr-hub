@@ -100,6 +100,17 @@ export function CustomerDetail({data,loading,error,refreshing,onRefresh,onClose,
     const valid=!!c&&Number.isSafeInteger(c.read)&&c.read>=0&&Number.isSafeInteger(c.total)&&c.total!==null&&c.total>=c.read&&Number.isSafeInteger(c.limit)&&c.limit>=c.read;
     return {valid,complete:valid&&c!.complete===true&&c!.total===c!.read};
   };
+  const paymentSource=data.sources.find(source=>source.provider==="IXC pagamentos");
+  const paymentRows=reading?.payments;
+  const paymentCount=paymentRows?.length??0;
+  const paymentsConfirmed=paymentSource?.state==="ready"&&Array.isArray(paymentRows)&&coverageState(reading?.coverage.payments).complete&&reading?.coverage.payments?.read===paymentCount;
+  const paymentsUnavailable=paymentSource?.state==="error";
+  const paymentNotice=paymentsConfirmed?null:paymentsUnavailable
+    ?paymentCount>0?"Parte do histórico de pagamentos está indisponível. Os registros confirmados foram preservados.":"Histórico de pagamentos indisponível nesta leitura."
+    :"Histórico de pagamentos parcial ou não confirmado.";
+  const paymentDateText=live&&paymentCount===0
+    ?paymentsConfirmed?"Nenhum registro de pagamento no recorte validado.":"Não confirmada nesta leitura."
+    :data.finance.lastPayment;
   const coverageLabel=(key:"contracts"|"invoices"|"payments"|"serviceOrders")=>{const c=reading?.coverage[key];return c?`${c.read} lidos${c.total===null?"; total não confirmado":` de ${c.total}`}${coverageState(c).complete?"; leitura completa":"; recorte parcial ou não confirmado"}`:"Recorte limitado; total não confirmado"};
   const coverageKeys={"IXC contratos":"contracts","IXC financeiro":"invoices","IXC pagamentos":"payments","IXC ordens de serviço":"serviceOrders"} as const;
   const sourcePresentation=(source:Customer360["sources"][number])=>{
@@ -132,7 +143,7 @@ export function CustomerDetail({data,loading,error,refreshing,onRefresh,onClose,
         {reading?.contracts.map(contract=><p className="small" key={contract.id}>Contrato {contract.id} · {statusOf(contract.status)[0]} · {contract.plan}</p>)}
       </section>}
       {live&&<p className="hint">Contratos: {coverageLabel("contracts")}</p>}
-      <Section title="Financeiro consultado" rows={[[live?(reading?.financeComplete?"Saldo vencido na leitura":"Subtotal vencido conhecido (parcial)"):"Em atraso",currency(data.finance.overdueAmount)],[live?"Data de pagamento mais recente no recorte":"Último pagamento",data.finance.lastPayment]]}/>
+      <Section title="Financeiro consultado" rows={[[live?(reading?.financeComplete?"Saldo vencido na leitura":"Subtotal vencido conhecido (parcial)"):"Em atraso",currency(data.finance.overdueAmount)],[live?"Data de pagamento mais recente no recorte":"Último pagamento",paymentDateText]]}/>
       {live&&<section className="details-section">
         <p className="hint">Faturas: {coverageLabel("invoices")}. Referência de vencimento: {reading?.referenceDate??"não confirmada"} (Brasília).</p>
         {reading&&!reading.financeAvailable&&<Notice tone="bad">Fonte financeira indisponível. Nenhum saldo foi confirmado.</Notice>}
@@ -149,7 +160,8 @@ export function CustomerDetail({data,loading,error,refreshing,onRefresh,onClose,
         </section>
         <section className="details-section"><h3>Pagamentos do recorte</h3>
           <p className="hint">Somente pagamentos vinculados às faturas consultadas; não representam necessariamente todo o histórico.</p>
-          {reading.payments===undefined?<p className="hint">Detalhamento indisponível nesta resposta.</p>:reading.payments.length===0?<p className="hint">Nenhum pagamento neste recorte.</p>:<ul className="customer-record-list">{reading.payments.map(p=><li key={p.id}><strong>Pagamento {p.id} · Fatura {p.invoiceId}</strong><span>{p.paidOn} · {currency(p.value)}</span><small>Forma: {p.method||"não informada"}</small></li>)}</ul>}
+          {paymentNotice&&<p className="hint">{paymentNotice}</p>}
+          {reading.payments===undefined?<p className="hint">Detalhamento indisponível nesta resposta.</p>:reading.payments.length===0?<p className="hint">{paymentsConfirmed?"Nenhum registro de pagamento no recorte validado.":"Esta leitura não permite concluir se há pagamentos."}</p>:<ul className="customer-record-list">{reading.payments.map(p=><li key={p.id}><strong>Pagamento {p.id} · Fatura {p.invoiceId}</strong><span>{p.paidOn} · {currency(p.value)}</span><small>Forma: {p.method||"não informada"}</small></li>)}</ul>}
         </section>
         <section className="details-section"><h3>Ordens de serviço do recorte</h3>
           <p className="hint">Origem IXC. A execução técnica acontece no SeeNet; esta leitura não confirma atualização nem completude da integração SeeNet.</p>
@@ -158,7 +170,7 @@ export function CustomerDetail({data,loading,error,refreshing,onRefresh,onClose,
       </>}
       {live&&<p className="hint">Conexão do cadastro: a fonte não identifica o contrato deste login. Não associe automaticamente a uma das faturas.</p>}
       <Section title="Conexão" rows={[["Status",data.network.onuStatus],["PPPoE (login)",data.network.pppoe],["Equipamento/OLT",data.network.equipmentDescriptor],["Tipo de conexão",data.network.connectionType],["ONU",data.network.onu],["Potência",data.network.opticalPower],["Última conexão",data.network.uptime]]}/>
-      {data.details&&<Section title={live?"Registros consultados (não totais históricos)":"Histórico"} rows={[["Contratos",String(data.details.contracts)],["Faturas",String(data.details.invoices)],["Pagamentos",String(data.details.payments)],["Ordens de serviço",String(data.details.serviceOrders)]]}/>}
+      {data.details&&<Section title={live?"Registros consultados (não totais históricos)":"Histórico"} rows={[["Contratos",String(data.details.contracts)],["Faturas",String(data.details.invoices)],["Pagamentos",live&&!paymentsConfirmed&&paymentCount===0?"Não confirmado":String(data.details.payments)],["Ordens de serviço",String(data.details.serviceOrders)]]}/>}
       {live&&<p className="hint">Ordens de serviço: {coverageLabel("serviceOrders")}</p>}
       {/* Saúde e risco só existem na demonstração: com o IXC real nada os calcula, e a seção seria quatro linhas de "não calculado". */}
       {!live&&<Section title="Inteligência (demonstração)" rows={[["Saúde",data.intelligence.health?`${data.intelligence.health}/100`:"Não calculada"],["Risco",data.intelligence.churnRisk],["Upgrade",data.intelligence.upgradeEligible?data.intelligence.recommendedPlan:"Não elegível"],["Motivo",data.intelligence.reason]]}/>}
