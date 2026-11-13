@@ -147,3 +147,23 @@ e conferir, com autorização, somente metadados de binding/nome/destino/estado 
 compatibilidade do placeholder. Não inferir a origem de booleano, regex ou formato
 Base64. Não configurar segredo agora. Os marcadores dos testes offline são
 explicitamente sintéticos, não uma gramática inventada de placeholder oficial.
+
+## Falhas de transporte e prazo do diagnóstico
+
+O caminho isolado emite `ixc.directTransportFailure` v1 para rejeições da
+Promise da requisição, antes de o provider classificar a falha. Recusas de
+política ou sinal já abortado anteriores à criação dessa Promise não passam
+por esse observador; não há garantia de evento para toda falha possível. O único dado variável é uma categoria de catálogo fechado:
+`timeout`, `proxy-tunnel`, `tls-hostname`, `tls-trust`, `connection`,
+`response-limit`, `response-incomplete`, `response-invalid`, `policy` ou `other`.
+Não são publicados mensagem/stack/código arbitrário da exceção, endereço,
+headers ou corpo. A categoria não comprova origem do segredo nem causa de negócio.
+O observador é best-effort e não substitui a exceção original.
+
+O prazo de 3500 ms rejeita a operação mesmo durante CONNECT/TLS pendente.
+O Agent exclusivo deste CLI acompanha os sockets retornados pelo runtime Node
+suportado antes de o túnel concluir e os destrói no `finally`, inclusive quando
+a requisição ainda não recebeu seu socket. Não é uma política nova do provider
+normal nem garantia de prazo do processo sob suspensão ou exaustão do host.
+Os ensaios de processo usam margem de escalonamento de 2000 ms além do prazo,
+incluindo lançamento e encerramento; não medem latência do IXC real.

@@ -46,6 +46,20 @@ function shape(body) {
   }
   return { registros: Array.isArray(body?.registros) ? "array" : "unconfirmed", fields: types };
 }
+// Track sockets returned before CONNECT completes; Agent.destroy alone does not own them yet.
+class DiagnosticAgent extends Agent {
+  pending = new Set();
+  createConnection(...args) {
+    const socket = super.createConnection(...args);
+    this.pending.add(socket);
+    socket.once("close", () => this.pending.delete(socket));
+    return socket;
+  }
+  destroy() {
+    for (const socket of this.pending) socket.destroy();
+    super.destroy();
+  }
+}
 // Fail closed for unknown Cloud metadata/CA/proxy variants; never infer permission from env.
 function managedAgent() {
   const [major, minor] = process.versions.node.split(".").map(Number);
@@ -61,7 +75,7 @@ function managedAgent() {
   if (!stat.isFile() || stat.size > 65536 || (stat.mode & 0o022)) throw new Error("TRANSPORT_CONFIGURATION");
   const ca = readFileSync(path, "utf8");
   if (!new X509Certificate(ca).ca) throw new Error("TRANSPORT_CONFIGURATION");
-  return new Agent({ proxyEnv: { HTTPS_PROXY: policy.http_proxy },
+  return new DiagnosticAgent({ proxyEnv: { HTTPS_PROXY: policy.http_proxy },
     ca: [...rootCertificates, ca], rejectUnauthorized: true, keepAlive: false, maxSockets: 1 });
 }
 async function main() {
@@ -87,11 +101,11 @@ async function main() {
       || !Number.isSafeInteger(config.page) || config.page < 1 || config.page > 1000) throw new Error("CONFIGURATION");
   } catch { agent.destroy(); refuse(); return; }
   const diagnostic = createPaymentDiagnostic();
+  let calls = 0;
   const transport = withDiagnosticAuthorization(createIxcDiagnosticFetcher({
     origin: config.origin, paths: ["/webservice/v1/fn_areceber", "/webservice/v1/fn_movim_finan"],
     timeoutMs: 3500, maxRequestBytes: 4096, maxResponseBytes: 1048576,
-  }, agent), authorization);
-  let calls = 0;
+  }, agent, category => emit({ event: "ixc.directTransportFailure", version: 1, category })), authorization);
   const fetcher = async (input, init) => {
     if (++calls > 3) throw new Error("IXC_TRANSPORT_POLICY");
     const response = await transport(input, init);

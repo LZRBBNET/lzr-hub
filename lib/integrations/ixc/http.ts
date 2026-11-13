@@ -85,7 +85,27 @@ export interface IxcHttpLimits {
   maxResponseBytes: number;
 }
 
-export function createIxcDiagnosticFetcher(limits: IxcHttpLimits, agent?: import("node:https").Agent): typeof fetch {
+export type IxcTransportFailureCategory = "timeout" | "proxy-tunnel" | "tls-hostname" | "tls-trust" | "connection" | "response-limit" | "response-incomplete" | "response-invalid" | "policy" | "other";
+/** Classify by closed equality catalogs only; never return exception content. */
+export function diagnosticTransportFailure(error: unknown): IxcTransportFailureCategory {
+  try {
+    if (error instanceof DOMException && error.name === "AbortError") return "timeout";
+    if (!(error instanceof Error)) return "other";
+    const code = "code" in error ? error.code : undefined;
+    if (code === "ERR_PROXY_TUNNEL") return "proxy-tunnel";
+    if (code === "ERR_TLS_CERT_ALTNAME_INVALID") return "tls-hostname";
+    if (["CERT_HAS_EXPIRED", "CERT_NOT_YET_VALID", "DEPTH_ZERO_SELF_SIGNED_CERT", "SELF_SIGNED_CERT_IN_CHAIN", "UNABLE_TO_VERIFY_LEAF_SIGNATURE", "UNABLE_TO_GET_ISSUER_CERT_LOCALLY", "CERT_SIGNATURE_FAILURE"].includes(code as string)) return "tls-trust";
+    if (["ECONNREFUSED", "ECONNRESET", "EPIPE", "ENOTFOUND", "EAI_AGAIN", "ENETUNREACH", "EHOSTUNREACH"].includes(code as string)) return "connection";
+    if (error.message === "IXC_RESPONSE_LIMIT") return "response-limit";
+    if (error.message === "IXC_RESPONSE_INCOMPLETE" || error.message === "IXC_RESPONSE_ERROR") return "response-incomplete";
+    if (error.message === "IXC_HTTP_RESPONSE_INVALID") return "response-invalid";
+    if (error.message === "IXC_TRANSPORT_POLICY") return "policy";
+    return "other";
+  } catch { return "other"; }
+}
+
+export function createIxcDiagnosticFetcher(limits: IxcHttpLimits, agent?: import("node:https").Agent,
+  onFailure?: (category: IxcTransportFailureCategory) => void): typeof fetch {
   if ((!Number.isSafeInteger(limits.timeoutMs) || limits.timeoutMs < 1
     || !Number.isSafeInteger(limits.maxRequestBytes) || limits.maxRequestBytes < 1
     || !Number.isSafeInteger(limits.maxResponseBytes) || limits.maxResponseBytes < 1)) throw new Error("IXC_TRANSPORT_POLICY");
@@ -94,7 +114,7 @@ export function createIxcDiagnosticFetcher(limits: IxcHttpLimits, agent?: import
     const body = typeof init?.body === "string" ? init.body : init?.body ? String(init.body) : "";
     if (limits && (url.origin !== limits.origin || url.username || url.password || url.search || url.hash
       || !limits.paths.includes(url.pathname) || Buffer.byteLength(body) > limits.maxRequestBytes)) throw new Error("IXC_TRANSPORT_POLICY");
-    if (init?.signal?.aborted) throw abortError();
+    if (init?.signal?.aborted) throw new DOMException("Diagnostic transport aborted", "AbortError");
     const headers: Record<string, string> = {};
     for (const [key, value] of Object.entries((init?.headers ?? {}) as Record<string, string>)) headers[key] = value;
     headers["Content-Length"] = String(Buffer.byteLength(body));
@@ -103,10 +123,14 @@ export function createIxcDiagnosticFetcher(limits: IxcHttpLimits, agent?: import
 
     return new Promise<Response>((resolve, reject) => {
       let timer: ReturnType<typeof setTimeout> | undefined;
+      let settled = false;
       const signal = init?.signal;
-      const abort = () => clientRequest.destroy(abortError());
+      const abort = () => {
+        const error = new DOMException("Diagnostic transport aborted", "AbortError");
+        fail(error); clientRequest.destroy(error);
+      };
       const cleanup = () => { if (timer) clearTimeout(timer); signal?.removeEventListener("abort", abort); };
-      const fail = (error: Error) => { cleanup(); reject(error); };
+      const fail = (error: Error) => { if (settled) return; settled = true; cleanup(); reject(error); };
       const clientRequest = send({
         protocol: url.protocol,
         hostname: url.hostname,
@@ -129,13 +153,13 @@ export function createIxcDiagnosticFetcher(limits: IxcHttpLimits, agent?: import
         });
         response.on("end", () => {
           cleanup();
-          try { resolve(new Response(Buffer.concat(chunks), {
+          try { const result = new Response(Buffer.concat(chunks), {
             status: response.statusCode ?? 502,
             headers: Object.fromEntries(
               Object.entries(response.headers)
                 .filter((entry): entry is [string, string] => typeof entry[1] === "string"),
             ),
-          })); } catch { fail(new Error("IXC_HTTP_RESPONSE_INVALID")); }
+          }); if (!settled) { settled = true; resolve(result); } } catch { fail(new Error("IXC_HTTP_RESPONSE_INVALID")); }
         });
         response.on("aborted", () => fail(new Error("IXC_RESPONSE_INCOMPLETE")));
         response.on("error", () => fail(new Error("IXC_RESPONSE_ERROR")));
@@ -148,12 +172,15 @@ export function createIxcDiagnosticFetcher(limits: IxcHttpLimits, agent?: import
         if (signal.aborted) abort();
       }
       if (limits) timer = setTimeout(() => {
-        clientRequest.destroy(abortError());
+        abort();
       }, limits.timeoutMs);
 
       clientRequest.on("error", fail);
       if (body) clientRequest.write(body);
       clientRequest.end();
+    }).catch((error: unknown) => {
+      try { onFailure?.(diagnosticTransportFailure(error)); } catch { /* Best-effort only. */ }
+      throw error;
     });
   }) as typeof fetch;
 }
