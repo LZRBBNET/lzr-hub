@@ -104,8 +104,16 @@ export function diagnosticTransportFailure(error: unknown): IxcTransportFailureC
   } catch { return "other"; }
 }
 
+export interface IxcTransportMilestone {
+  milestone: "request-start" | "socket-assigned" | "tls-secure" | "headers-received" | "body-first-chunk" | "body-complete" | "timeout";
+  phase: "connect-or-tls-pending" | "headers-pending" | "body-pending" | "complete";
+  elapsedMs: number;
+  timeoutOrigin: "none" | "request-signal" | "transport-deadline";
+}
+
 export function createIxcDiagnosticFetcher(limits: IxcHttpLimits, agent?: import("node:https").Agent,
-  onFailure?: (category: IxcTransportFailureCategory) => void): typeof fetch {
+  onFailure?: (category: IxcTransportFailureCategory) => void,
+  onMilestone?: (event: IxcTransportMilestone) => void): typeof fetch {
   if ((!Number.isSafeInteger(limits.timeoutMs) || limits.timeoutMs < 1
     || !Number.isSafeInteger(limits.maxRequestBytes) || limits.maxRequestBytes < 1
     || !Number.isSafeInteger(limits.maxResponseBytes) || limits.maxResponseBytes < 1)) throw new Error("IXC_TRANSPORT_POLICY");
@@ -124,12 +132,26 @@ export function createIxcDiagnosticFetcher(limits: IxcHttpLimits, agent?: import
     return new Promise<Response>((resolve, reject) => {
       let timer: ReturnType<typeof setTimeout> | undefined;
       let settled = false;
+      const started = performance.now();
+      let phase: IxcTransportMilestone["phase"] = "connect-or-tls-pending";
+      let firstChunk = false;
+      let tlsSocket: import("node:tls").TLSSocket | undefined;
+      const progress = (milestone: IxcTransportMilestone["milestone"], timeoutOrigin: IxcTransportMilestone["timeoutOrigin"] = "none") => {
+        if (settled) return;
+        const elapsedMs = Math.min(60000, Math.max(0, Math.floor(performance.now() - started)));
+        try { onMilestone?.({ milestone, phase, elapsedMs, timeoutOrigin }); } catch { /* Best-effort only. */ }
+      };
+      const secure = () => { phase = "headers-pending"; progress("tls-secure"); };
+      progress("request-start");
       const signal = init?.signal;
-      const abort = () => {
+      const abort = (origin: "request-signal" | "transport-deadline") => {
+        if (settled) return;
+        progress("timeout", origin);
         const error = new DOMException("Diagnostic transport aborted", "AbortError");
         fail(error); clientRequest.destroy(error);
       };
-      const cleanup = () => { if (timer) clearTimeout(timer); signal?.removeEventListener("abort", abort); };
+      const signalAbort = () => abort("request-signal");
+      const cleanup = () => { if (timer) clearTimeout(timer); signal?.removeEventListener("abort", signalAbort); tlsSocket?.removeListener("secureConnect", secure); };
       const fail = (error: Error) => { if (settled) return; settled = true; cleanup(); reject(error); };
       const clientRequest = send({
         protocol: url.protocol,
@@ -141,9 +163,11 @@ export function createIxcDiagnosticFetcher(limits: IxcHttpLimits, agent?: import
         ...(url.protocol === "https:" ? { rejectUnauthorized: true } : {}),
         headers,
       }, (response) => {
+        phase = "body-pending"; progress("headers-received");
         const chunks: Buffer[] = [];
         let bytes = 0;
         response.on("data", (chunk: Buffer) => {
+          if (!firstChunk) { firstChunk = true; progress("body-first-chunk"); }
           bytes += chunk.length;
           if (limits && bytes > limits.maxResponseBytes) {
             const error = new Error("IXC_RESPONSE_LIMIT");
@@ -152,6 +176,7 @@ export function createIxcDiagnosticFetcher(limits: IxcHttpLimits, agent?: import
           chunks.push(chunk);
         });
         response.on("end", () => {
+          phase = "complete"; progress("body-complete");
           cleanup();
           try { const result = new Response(Buffer.concat(chunks), {
             status: response.statusCode ?? 502,
@@ -165,14 +190,22 @@ export function createIxcDiagnosticFetcher(limits: IxcHttpLimits, agent?: import
         response.on("error", () => fail(new Error("IXC_RESPONSE_ERROR")));
       });
 
+      clientRequest.once("socket", (socket) => {
+        progress("socket-assigned");
+        if (url.protocol === "http:") { phase = "headers-pending"; return; }
+        tlsSocket = socket as import("node:tls").TLSSocket;
+        if (tlsSocket.authorized) secure();
+        else if (!settled) tlsSocket.once("secureConnect", secure);
+      });
+
       // O abort do AbortController precisa derrubar a conexão de verdade,
       // senão o timeout do provider não teria efeito.
       if (signal) {
-        signal.addEventListener("abort", abort, { once: true });
-        if (signal.aborted) abort();
+        signal.addEventListener("abort", signalAbort, { once: true });
+        if (signal.aborted) signalAbort();
       }
       if (limits) timer = setTimeout(() => {
-        abort();
+        abort("transport-deadline");
       }, limits.timeoutMs);
 
       clientRequest.on("error", fail);

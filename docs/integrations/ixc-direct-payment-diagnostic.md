@@ -167,3 +167,25 @@ a requisição ainda não recebeu seu socket. Não é uma política nova do prov
 normal nem garantia de prazo do processo sob suspensão ou exaustão do host.
 Os ensaios de processo usam margem de escalonamento de 2000 ms além do prazo,
 incluindo lançamento e encerramento; não medem latência do IXC real.
+
+## Marcos de transporte
+
+`ixc.directTransportMilestone` v1 contém somente `sequence` (1–3),
+`milestone`, `phase`, `elapsedMs` e `timeoutOrigin`. O tempo é relativo ao início
+da requisição, usa relógio monotônico, é inteiro e limitado a 0–60000 ms.
+É cumulativo por requisição, não um timestamp ou tempo de fase já subtraído.
+
+Marcos: `request-start`, `socket-assigned`, `tls-secure`, `headers-received`,
+`body-first-chunk`, `body-complete`, `timeout`. Fases: `connect-or-tls-pending`,
+`headers-pending`, `body-pending`, `complete`. Origens de timeout: `none`,
+`request-signal`, `transport-deadline`. A primeira origem efetivamente observada
+vence a corrida dos dois mecanismos; `request-signal` não explica a causa do sinal.
+
+Não há marco público separado de conclusão de CONNECT ou início de TLS.
+`socket-assigned` não prova túnel ou handshake concluído. `tls-secure` observa
+`secureConnect` ou o socket já autorizado; até essa confirmação a fase permanece
+combinada. Não se infere conectividade de proxy só pela configuração.
+`headers-received` corresponde ao callback HTTP com cabeçalhos analisados,
+não ao primeiro byte físico nem à publicação dos valores/status dos cabeçalhos.
+`body-first-chunk` e `body-complete` não validam JSON, propriedade ou pagamentos.
+Os marcos são best-effort e não contêm conteúdo de rede ou exceções.

@@ -1,5 +1,5 @@
+import { DiagnosticAgent } from "./ixc-diagnostic-agent.mjs";
 import { readFileSync, lstatSync } from "node:fs";
-import { Agent } from "node:https";
 import { rootCertificates } from "node:tls";
 import { X509Certificate } from "node:crypto";
 import { diagnosticAuthorization, withDiagnosticAuthorization } from "../lib/integrations/ixc/diagnostic-authorization.ts";
@@ -46,20 +46,6 @@ function shape(body) {
   }
   return { registros: Array.isArray(body?.registros) ? "array" : "unconfirmed", fields: types };
 }
-// Track sockets returned before CONNECT completes; Agent.destroy alone does not own them yet.
-class DiagnosticAgent extends Agent {
-  pending = new Set();
-  createConnection(...args) {
-    const socket = super.createConnection(...args);
-    this.pending.add(socket);
-    socket.once("close", () => this.pending.delete(socket));
-    return socket;
-  }
-  destroy() {
-    for (const socket of this.pending) socket.destroy();
-    super.destroy();
-  }
-}
 // Fail closed for unknown Cloud metadata/CA/proxy variants; never infer permission from env.
 function managedAgent() {
   const [major, minor] = process.versions.node.split(".").map(Number);
@@ -105,7 +91,8 @@ async function main() {
   const transport = withDiagnosticAuthorization(createIxcDiagnosticFetcher({
     origin: config.origin, paths: ["/webservice/v1/fn_areceber", "/webservice/v1/fn_movim_finan"],
     timeoutMs: 3500, maxRequestBytes: 4096, maxResponseBytes: 1048576,
-  }, agent, category => emit({ event: "ixc.directTransportFailure", version: 1, category })), authorization);
+  }, agent, category => emit({ event: "ixc.directTransportFailure", version: 1, category }),
+    event => emit({ event: "ixc.directTransportMilestone", version: 1, sequence: calls, ...event })), authorization);
   const fetcher = async (input, init) => {
     if (++calls > 3) throw new Error("IXC_TRANSPORT_POLICY");
     const response = await transport(input, init);
