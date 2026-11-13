@@ -5,7 +5,6 @@ const compiled={exports:{}};new Function('require','module','exports',built.outp
 const deferred=()=>{let resolve,reject;const promise=new Promise((y,n)=>{resolve=y;reject=n});return{promise,resolve,reject};};
 const snapshot={customer:{id:'810001',name:'Cadastro exclusivamente fictício',document:'SYNTHETIC',phone:'—',email:'—',address:'—',city:'—',neighborhood:'—',status:'S'},contracts:[],plan:null,invoices:[{id:'990001',customerId:'810001',status:'A',dueAt:'2026-11-01',value:40,valueSource:'open-balance'}],payments:[],serviceOrders:[],connection:null,partialSources:['payments'],metrics:{totalLatencyMs:0,blockLatencies:{}},fetchedAt:'2026-11-03T12:00:00Z',mode:'staging-readonly',cache:'hit'};
 const data=await new Customer360Service(undefined,{getSnapshot:async()=>snapshot},['810001'],false,()=>new Date('2026-11-03T12:00:00Z')).get('810001');
-// Deliberately uses the original PR70 Customer360Module, not the PR71 selection/abort patch.
 const results=[];
 async function scenario(name,run){
  const old={fetch:globalThis.fetch,window:globalThis.window,document:globalThis.document,IS_REACT_ACT_ENVIRONMENT:globalThis.IS_REACT_ACT_ENVIRONMENT};let ui;
@@ -23,14 +22,14 @@ async function scenario(name,run){
 }
 const valid={authRequired:true,authenticated:true,user:{name:'Operador fictício',email:'operator@example.invalid',role:'Supervisor'},permissions:['customer.read']};
 for(const kind of ['success','failure','401'])test('public logout '+kind+' unmounts pending detail before its late response',()=>scenario('logout-'+kind,async({ui,me,detail,logout,open,signOut,hasModule,window,detailSignal})=>{
- await act(async()=>me.resolve(Response.json(valid)));await open();await signOut();assert.equal(hasModule(),false);assert.equal(detailSignal(),undefined,'PR70 detail has no transport cancellation; shell unmount is required');
+ await act(async()=>me.resolve(Response.json(valid)));await open();await signOut();assert.equal(hasModule(),false);assert.equal(detailSignal().aborted,true);
  await act(async()=>logout.resolve(Response.json(kind==='success'?{ok:true}:{error:'SYNTHETIC'},{status:kind==='success'?200:kind==='401'?401:503})));assert.equal(window.location.href,kind==='failure'?'unchanged':'/login');
  if(kind==='failure')assert.match(JSON.stringify(ui.toJSON()),/pode continuar ativa/);
  await act(async()=>detail.resolve(Response.json(data)));assert.equal(hasModule(),false);
 }));
 test('known invalid session unmounts customer and discards pending detail before navigation completes',()=>scenario('known-invalid',async({me,detail,open,hasModule,window,detailSignal,intervals})=>{
  await open();await act(async()=>me.resolve(Response.json({authRequired:true,authenticated:false,permissions:[]})));assert.equal(window.location.href,'/login');
- await act(async()=>detail.resolve(Response.json(data)));assert.equal(hasModule(),false);assert.equal(detailSignal(),undefined,'PR70 detail has no transport cancellation; shell unmount is required');assert.equal(intervals.size,0);
+ await act(async()=>detail.resolve(Response.json(data)));assert.equal(hasModule(),false);assert.equal(detailSignal().aborted,true);assert.equal(intervals.size,0);
 }));
 test('known invalid session also discards body parsing that started before the response',()=>scenario('known-invalid-body',async({me,detail,open,hasModule})=>{
  const body=deferred();await open();await act(async()=>detail.resolve({ok:true,json:()=>body.promise}));
@@ -38,7 +37,7 @@ test('known invalid session also discards body parsing that started before the r
  await act(async()=>body.resolve(data));assert.equal(hasModule(),false);
 }));
 test('session lookup unavailable hides pending detail without claiming successful logout',()=>scenario('session-unavailable',async({ui,me,detail,open,hasModule,window,detailSignal})=>{
- await open();await act(async()=>me.resolve(Response.json({error:'SYNTHETIC'},{status:503})));assert.equal(hasModule(),false);assert.equal(window.location.href,'unchanged');assert.equal(detailSignal(),undefined,'PR70 detail has no transport cancellation; shell unmount is required');assert.match(JSON.stringify(ui.toJSON()),/verificar sua sessão/);
+ await open();await act(async()=>me.resolve(Response.json({error:'SYNTHETIC'},{status:503})));assert.equal(hasModule(),false);assert.equal(window.location.href,'unchanged');assert.equal(detailSignal().aborted,true);assert.match(JSON.stringify(ui.toJSON()),/verificar sua sessão/);
  await act(async()=>detail.resolve(Response.json(data)));assert.equal(hasModule(),false);
 }));
 for(const kind of ['success','failure'])test('public logout '+kind+' discards a pending invoice payment page',()=>scenario('payments-'+kind,async({ui,me,detail,payment,logout,open,signOut,hasModule,window,pageSignal})=>{

@@ -1,3 +1,4 @@
+import {createCustomerSessionAdmission} from '../lib/platform/customer-session-admission.ts';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFile} from 'node:fs/promises';
@@ -16,15 +17,15 @@ test('logout does not confirm revocation or clear retry token when database fail
 });
 const app=await readFile(new URL('../components/lzr-hub-app.tsx',import.meta.url),'utf8');
 const action=stripTypeScriptTypes(app.slice(app.indexOf('  async function signOut()'),app.indexOf('  if (logoutState !== "idle")')));
-const consumer=new Function('fetch','window','setLogoutState','logoutPending',action+';return signOut;');
+const consumer=new Function('fetch','window','setLogoutState','logoutPending','admitted',action+';return signOut;');
 for(const scenario of ['401','503','network','bad-json','false-ok','success'])test('logout UI '+scenario,async()=>{
  const states=[],window={location:{href:'unchanged'}},pending={current:false};
- const signOut=consumer(async()=>{if(scenario==='network')throw Error('offline');if(scenario==='bad-json')return new Response('bad');return Response.json({ok:scenario==='success'},{status:scenario==='503'?503:scenario==='401'?401:200});},window,s=>states.push(s),pending);
+ const signOut=consumer(async()=>{if(scenario==='network')throw Error('offline');if(scenario==='bad-json')return new Response('bad');return Response.json({ok:scenario==='success'},{status:scenario==='503'?503:scenario==='401'?401:200});},window,s=>states.push(s),pending,{admission:createCustomerSessionAdmission()});
  await signOut();assert.equal(window.location.href,['success','401'].includes(scenario)?'/login':'unchanged');assert.deepEqual(states,['success','401'].includes(scenario)?['pending']:['pending','failed']);assert.equal(pending.current,false);
 });
 test('logout UI prevents duplicate pending requests and retries after failure',async()=>{
  let complete,calls=0;const states=[],window={location:{href:'unchanged'}};
- const signOut=consumer(()=>{calls++;return new Promise(r=>complete=r);},window,s=>states.push(s),{current:false});
+ const signOut=consumer(()=>{calls++;return new Promise(r=>complete=r);},window,s=>states.push(s),{current:false},{admission:createCustomerSessionAdmission()});
  const first=signOut();await signOut();assert.equal(calls,1);complete(Response.json({}, {status:503}));await first;
  const retry=signOut();assert.equal(calls,2);complete(Response.json({ok:true}));await retry;assert.equal(window.location.href,'/login');
 });

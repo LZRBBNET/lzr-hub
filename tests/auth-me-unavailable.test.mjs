@@ -12,20 +12,18 @@ for(const scenario of ['unavailable','invalid','valid','provisional','second-fai
  if(['unavailable','second-failure','second-missing'].includes(scenario)){assert.equal(response.status,503);assert.equal(response.headers.get('cache-control'),'no-store');assert.equal(body.authenticated,undefined);assert.equal(body.user,undefined);assert.doesNotMatch(JSON.stringify(body),/private-dsn/);}
  else {assert.equal(response.status,200);assert.equal(body.authenticated,scenario!=='invalid');if(scenario!=='invalid')assert.equal(body.mustChangePassword,scenario==='provisional');}
 });
-const app=await readFile(new URL('../components/lzr-hub-app.tsx',import.meta.url),'utf8');
-const hook=stripTypeScriptTypes(app.slice(app.indexOf('function useSession()'),app.indexOf('/** Telas que ocupam')));
-const runHook=new Function('useState','useEffect','fetch','window',hook+';return useSession();');
 for(const scenario of ['503','network','invalid-json','invalid-shape','invalid-session','valid-session'])test('session consumer '+scenario,async()=>{
- let state,cleanup;const window={location:{href:'unchanged'}};
- runHook(()=>[null,value=>state=value],effect=>{cleanup=effect();},async()=>{
+ const {createCustomerSessionAdmission}=await import('../lib/platform/customer-session-admission.ts');
+ const window={location:{href:'unchanged'}};
+ const admission=createCustomerSessionAdmission({onInvalid:()=>{window.location.href='/login';},fetchSession:async()=>{
   if(scenario==='network')throw Error('offline');
   if(scenario==='503')return Response.json({authenticated:false,authRequired:true},{status:503});
   if(scenario==='invalid-json')return new Response('bad-json');
   if(scenario==='invalid-shape')return Response.json({error:'unknown'});
   return Response.json({authenticated:scenario==='valid-session',authRequired:true});
- },window);
- await new Promise(r=>setImmediate(r));
+ }});
+ await admission.start();const state=admission.snapshot().session;
  if(scenario==='invalid-session'){assert.equal(window.location.href,'/login');assert.equal(state.authenticated,false);}
  else {assert.equal(window.location.href,'unchanged');assert.equal(state.unavailable,scenario==='valid-session'?undefined:true);}
- cleanup();
+ admission.stop();
 });

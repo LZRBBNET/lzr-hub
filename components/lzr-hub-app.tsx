@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { canSee, navigation, parseView, sectionOf, tabOf, type NavSection, type View } from "@/lib/platform/navigation";
 import { needsReply, type EffectiveState } from "@/lib/platform/conversation-state-shared";
 import { Icon, type IconKey } from "@/components/ui/icons";
@@ -19,7 +19,7 @@ import { QualityModule } from "@/components/modules/quality";
 import { InternalChatModule } from "@/components/modules/internal-chat";
 import { ContractAuditModule } from "@/components/modules/contract-audit";
 
-type SessionState = { unavailable?: boolean; authenticated: boolean; authRequired: boolean; mustChangePassword?: boolean; permissions?: string[]; user?: { name: string; email: string; role: string } };
+import { createCustomerSessionAdmission, type CustomerReadAccess } from "@/lib/platform/customer-session-admission";
 /** O que uma tela pode pedir a outra ao navegar — hoje, abrir uma conversa específica. */
 export type NavIntent = { conversation?: string };
 export type Navigate = (view: View, intent?: NavIntent) => void;
@@ -30,21 +30,10 @@ export type Navigate = (view: View, intent?: NavIntent) => void;
  * testes do ambiente de demonstração e não pode virar uma tela de carregamento.
  */
 function useSession() {
-  const [session, setSession] = useState<SessionState | null>(null);
-  useEffect(() => {
-    let active = true;
-    fetch("/api/auth/me", { cache: "no-store" })
-      .then((response) => { if (!response.ok) throw new Error("SESSION_UNAVAILABLE"); return response.json(); })
-      .then((data: SessionState) => {
-        if (!active) return;
-        if (typeof data.authenticated !== "boolean" || typeof data.authRequired !== "boolean") throw new Error("SESSION_UNAVAILABLE");
-        setSession(data);
-        if (data.authRequired && !data.authenticated) window.location.href = "/login";
-      })
-      .catch(() => { if (active) setSession({ unavailable: true, authenticated: false, authRequired: true, permissions: [] }); });
-    return () => { active = false; };
-  }, []);
-  return session;
+  const [admission] = useState(() => createCustomerSessionAdmission({ onInvalid: () => { window.location.href = "/login"; } }));
+  const state = useSyncExternalStore(admission.subscribe, admission.snapshot, admission.serverSnapshot);
+  useEffect(() => { void admission.start(); return () => admission.stop(); }, [admission]);
+  return { ...state, admission };
 }
 
 /** Telas que ocupam a altura inteira: título e abas roubariam espaço da conversa. */
@@ -61,7 +50,9 @@ export function LzrHubApp({ ixcMode = "disabled" }: { ixcMode?: string }) {
   const [awaitingFromInbox, setAwaitingFromInbox] = useState<number | null>(null);
   const [awaitingPolled, setAwaitingPolled] = useState<{ count: number; oldest: string | null }>({ count: 0, oldest: null });
   const collapsed = useNavCollapsed();
-  const session = useSession();
+  const admitted = useSession();
+  const session = admitted.session;
+  const customerAccess:CustomerReadAccess = { generation: admitted.generation, current: admitted.admission.current, revalidate: admitted.admission.revalidate };
   const [logoutState, setLogoutState] = useState<"idle" | "pending" | "failed">("idle");
   const logoutPending = useRef(false);
   const invalidSession = session?.authRequired === true && session.authenticated === false;
@@ -126,6 +117,7 @@ export function LzrHubApp({ ixcMode = "disabled" }: { ixcMode?: string }) {
   async function signOut() {
     if (logoutPending.current) return;
     logoutPending.current = true;
+    admitted.admission.close();
     setLogoutState("pending");
     try {
       const response = await fetch("/api/auth/logout", { method: "POST" });
@@ -171,19 +163,19 @@ export function LzrHubApp({ ixcMode = "disabled" }: { ixcMode?: string }) {
             {tabs.map((item) => <a key={item.id} href={`#/${item.id}`} className={item.id === view ? "active" : ""} aria-current={item.id === view ? "page" : undefined}
               onClick={(event) => { event.preventDefault(); navigate(item.id); }}>{item.label}</a>)}
           </nav>}
-          {!blocked && <Screen view={view} intent={intent} awaiting={awaitingPolled} onNavigate={navigate} onAwaiting={setAwaitingFromInbox} />}
+          {!blocked && <Screen key={admitted.context} customerAccess={customerAccess} view={view} intent={intent} awaiting={awaitingPolled} onNavigate={navigate} onAwaiting={setAwaitingFromInbox} />}
         </main>
       </div>
     </div>
   </ToastProvider>;
 }
 
-function Screen({ view, intent, awaiting, onNavigate, onAwaiting }: { view: View; intent: NavIntent; awaiting: { count: number; oldest: string | null }; onNavigate: Navigate; onAwaiting: (count: number) => void }) {
+function Screen({ customerAccess, view, intent, awaiting, onNavigate, onAwaiting }: { customerAccess:CustomerReadAccess; view: View; intent: NavIntent; awaiting: { count: number; oldest: string | null }; onNavigate: Navigate; onAwaiting: (count: number) => void }) {
   switch (view) {
     case "dashboard": return <HomeModule awaiting={awaiting} onNavigate={onNavigate} />;
     case "atendimento": return <AttendanceModule initialConversation={intent.conversation} onAwaiting={onAwaiting} />;
     case "training": return <TrainingModule />;
-    case "clientes": return <Customer360Module />;
+    case "clientes": return <Customer360Module access={customerAccess} />;
     case "chat-interno": return <InternalChatModule />;
     case "auditoria-contratos": return <ContractAuditModule />;
     case "monitoramento": case "massivas": case "mapa-alertas": case "chamados": return <SupportModule view={view} onNavigate={onNavigate} />;
