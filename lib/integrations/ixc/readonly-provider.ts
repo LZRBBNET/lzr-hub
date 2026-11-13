@@ -2,7 +2,7 @@ import { IxcConnectionMapper, IxcContractMapper, IxcCustomerMapper, IxcInvoiceMa
 import { sanitizeTelemetry } from "./masking.ts";
 import { ReadonlyIxcGuard } from "./guard.ts";
 import { CircuitBreaker, SlidingWindowRateLimiter, TtlCache } from "./resilience.ts";
-import type { IxcCityDto, IxcCollectionWalletDto, IxcCustomerDto, IxcCustomerPage, IxcCustomerSnapshot, IxcSnapshotCoverage, IxcListResponse, IxcOsSubjectDto, IxcPaymentTermDto, IxcReadOperation, IxcSectorDto, IxcUfDto } from "./types.ts";
+import type { IxcCityDto, IxcCollectionWalletDto, IxcCustomerDto, IxcCustomerPage, IxcCustomerSnapshot, IxcInvoiceDto, IxcSnapshotCoverage, IxcListResponse, IxcOsSubjectDto, IxcPaymentTermDto, IxcReadOperation, IxcSectorDto, IxcUfDto } from "./types.ts";
 
 // `listOsCatalog` fica de fora porque não tem um endpoint só: a mesma operação
 // lê `su_oss_assunto` e `empresa_setor`, e o recurso vai explícito na chamada.
@@ -459,6 +459,17 @@ export class IxcReadonlyProvider {
   /** Contagem de faturas em aberto na base inteira: uma consulta, sem varrer registro. */
   async countOpenInvoices(correlationId:string){
     return (await this.readPage("listInvoices",endpoints.listInvoices,"fn_areceber.status","A",correlationId,1,"",{oper:"=",sortname:"fn_areceber.id"})).total;
+  }
+  async getOpenInvoicesForDispatch(customerId:string,correlationId:string):Promise<IxcInvoiceDto[]>{
+    if(!/^[1-9]\d{0,31}$/.test(customerId))throw new IxcReadonlyError("IXC_INVALID_INVOICE_REFERENCE");
+    const {records,coverage}=await this.readPage("listInvoices",endpoints.listInvoices,"fn_areceber.id_cliente",customerId,correlationId,20,customerId,{
+      oper:"=",page:1,sortname:"fn_areceber.id",
+      gridParam:[{TB:"fn_areceber.status",OP:"=",P:"A"}],
+    });
+    if(!coverage.complete)throw new IxcReadonlyError("IXC_INCOMPLETE_INVOICE_RESPONSE");
+    const id=(value:unknown)=>typeof value==="string"?value:typeof value==="number"&&Number.isSafeInteger(value)?String(value):"";
+    if(records.some(row=>!/^[1-9]\d{0,31}$/.test(id(row.id))||id(row.id_cliente)!==customerId||row.status!=="A"))throw new IxcReadonlyError("IXC_INVOICE_SCOPE_MISMATCH");
+    return records.map(IxcInvoiceMapper.map);
   }
   /** Fresh exact ownership proof before reading one payment page. No snapshot or writes. */
   async getInvoicePaymentPage(customerId:string,invoiceId:string,page:number,correlationId:string){

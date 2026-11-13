@@ -55,8 +55,14 @@ test('actual guard wiring preserves auth enforcement and permission checks',asyn
   const req=new Request('https://test.invalid',{headers:{cookie:'lzr_session=valid'}});
   assert.equal((await guard.authorize(req,'support.write')).allowed,true);
   permission=false; assert.equal((await guard.authorize(req,'support.write')).status,403);
-  fail=true; assert.equal((await guard.authorize(req,'support.write')).status,401);
-  assert.deepEqual(reasons,['missing_cookie','lookup_failed']);
+  fail=true; const unavailable=await guard.authorize(req,'support.write'); assert.equal(unavailable.status,503); assert.equal(unavailable.allowed,false); assert.doesNotMatch(JSON.stringify(unavailable),/sensitive|postgres|token/);
+  assert.equal(await guard.currentUser(req),undefined);
+  fail=false; permission=true; assert.equal((await guard.authorize(req,'support.write')).allowed,true);
+  assert.deepEqual(reasons,['missing_cookie','lookup_failed','lookup_failed']);
+  for(const cookie of ['lzr_session=unknown','lzr_session=%ZZ']) {
+    const denied=await guard.authorize(new Request('https://test.invalid',{headers:{cookie}}),'support.write');
+    assert.equal(denied.status,401); assert.equal(denied.allowed,false);
+  }
   process.env.FEATURE_AUTH='false'; assert.deepEqual(await guard.authorize(req,'support.write'),{allowed:true});
  }finally{if(saved===undefined) delete process.env.FEATURE_AUTH; else process.env.FEATURE_AUTH=saved;}
 });

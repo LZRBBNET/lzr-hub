@@ -901,6 +901,15 @@ button.tr:hover, .tr.clickable:hover { background: var(--hover); cursor: pointer
 .login-field input:focus { border-color: var(--blue); box-shadow: var(--ring); }
 .login-submit { width: 100%; height: 42px; margin-top: 6px; font-size: 14px; }
 .login-submit:disabled { cursor: progress; }
+@media (max-width: 900px) {
+  .login-shell { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto 1fr; }
+  .login-aside { padding: 20px 24px; }
+  .login-pitch, .login-foot { display: none; }
+  .login-main { padding: 24px 16px; }
+  .login-card { padding: 28px 24px; }
+  .login-field input { font-size: 16px; }
+}
+
 .login-error { display: flex; gap: 9px; align-items: flex-start; margin: 0 0 16px; padding: 11px 13px; border: 1px solid var(--bad-line); background: var(--bad-bg); color: var(--bad); border-radius: 10px; font-size: 13px; line-height: 1.45; }
 .login-error i { font-style: normal; }
 .login-note { margin: 22px 0 0; padding-top: 18px; border-top: 1px solid var(--line); font-size: 12.5px; color: var(--muted); line-height: 1.6; }
