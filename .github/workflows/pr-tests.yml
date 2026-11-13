@@ -1,0 +1,42 @@
+name: PR tests (synthetic only)
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pr-tests-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  checks:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - name: Checkout PR merge
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+          fetch-depth: 1
+      - name: Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '24.22.1'
+      - name: Install locked dependencies (no lifecycle scripts)
+        timeout-minutes: 10
+        run: bash scripts/ci-check.sh install
+      - name: Types
+        timeout-minutes: 3
+        run: bash scripts/ci-check.sh types
+      - name: Lint
+        timeout-minutes: 3
+        run: bash scripts/ci-check.sh lint
+      - name: Worker build and aggregate tests
+        timeout-minutes: 6
+        run: bash scripts/ci-check.sh tests
+      - name: Synthetic Node build and four artifact checks
+        timeout-minutes: 5
+        run: bash scripts/ci-check.sh synthetic
