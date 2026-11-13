@@ -19,7 +19,7 @@ import { QualityModule } from "@/components/modules/quality";
 import { InternalChatModule } from "@/components/modules/internal-chat";
 import { ContractAuditModule } from "@/components/modules/contract-audit";
 
-type SessionState = { authenticated: boolean; authRequired: boolean; mustChangePassword?: boolean; permissions?: string[]; user?: { name: string; email: string; role: string } };
+type SessionState = { unavailable?: boolean; authenticated: boolean; authRequired: boolean; mustChangePassword?: boolean; permissions?: string[]; user?: { name: string; email: string; role: string } };
 /** O que uma tela pode pedir a outra ao navegar — hoje, abrir uma conversa específica. */
 export type NavIntent = { conversation?: string };
 export type Navigate = (view: View, intent?: NavIntent) => void;
@@ -34,13 +34,14 @@ function useSession() {
   useEffect(() => {
     let active = true;
     fetch("/api/auth/me", { cache: "no-store" })
-      .then((response) => response.json())
+      .then((response) => { if (!response.ok) throw new Error("SESSION_UNAVAILABLE"); return response.json(); })
       .then((data: SessionState) => {
         if (!active) return;
+        if (typeof data.authenticated !== "boolean" || typeof data.authRequired !== "boolean") throw new Error("SESSION_UNAVAILABLE");
         setSession(data);
         if (data.authRequired && !data.authenticated) window.location.href = "/login";
       })
-      .catch(() => { if (active) setSession(null); });
+      .catch(() => { if (active) setSession({ unavailable: true, authenticated: false, authRequired: true, permissions: [] }); });
     return () => { active = false; };
   }, []);
   return session;
@@ -61,8 +62,11 @@ export function LzrHubApp({ ixcMode = "disabled" }: { ixcMode?: string }) {
   const [awaitingPolled, setAwaitingPolled] = useState<{ count: number; oldest: string | null }>({ count: 0, oldest: null });
   const collapsed = useNavCollapsed();
   const session = useSession();
+  const [logoutState, setLogoutState] = useState<"idle" | "pending" | "failed">("idle");
+  const logoutPending = useRef(false);
+  const invalidSession = session?.authRequired === true && session.authenticated === false;
   const user = session?.user;
-  const permissions = session?.authenticated ? session.permissions ?? [] : null;
+  const permissions = (session?.unavailable || logoutState !== "idle") ? [] : session?.authenticated ? session.permissions ?? [] : null;
   // Senha gerada pelo sistema: a pessoa define a dela antes de usar qualquer tela.
   const forced = session?.mustChangePassword === true;
   // Só existe dado real quando o IXC está de fato ligado. Fora disso a tela
@@ -81,13 +85,13 @@ export function LzrHubApp({ ixcMode = "disabled" }: { ixcMode?: string }) {
   const tab = tabOf(view);
   const blocked = !canSee(tab, permissions);
   const firstAllowed = tabs[0]?.id;
-  useEffect(() => { if (blocked) window.location.hash = `#/${firstAllowed ?? "dashboard"}`; }, [blocked, firstAllowed]);
+  useEffect(() => { if (blocked && !session?.unavailable) window.location.hash = `#/${firstAllowed ?? "dashboard"}`; }, [blocked, firstAllowed, session?.unavailable]);
 
   // Clientes esperando resposta, de qualquer tela: na caixa de entrada a própria
   // tela informa (consulta a cada 5 s); fora dela, uma consulta leve a cada 30 s.
   const inInbox = view === "atendimento";
   useEffect(() => {
-    if (inInbox) return;
+    if (inInbox || session?.unavailable || invalidSession || logoutState !== "idle") return;
     let active = true;
     const load = () => fetch("/api/conversations").then((response) => response.ok ? response.json() : null)
       .then((payload: { items?: Array<{ awaitingSince?: string; lastCustomerAt?: string; state?: EffectiveState }> } | null) => {
@@ -101,7 +105,7 @@ export function LzrHubApp({ ixcMode = "disabled" }: { ixcMode?: string }) {
     void load();
     const timer = window.setInterval(load, AWAITING_POLL_MS);
     return () => { active = false; window.clearInterval(timer); };
-  }, [inInbox]);
+  }, [inInbox, session?.unavailable, invalidSession, logoutState]);
   const awaiting = inInbox ? awaitingFromInbox ?? 0 : awaitingPolled.count;
 
   const baseTitle = useRef<string | null>(null);
@@ -119,11 +123,26 @@ export function LzrHubApp({ ixcMode = "disabled" }: { ixcMode?: string }) {
     return () => window.removeEventListener("keydown", onKey);
   }, []);
 
-  function signOut() {
-    fetch("/api/auth/logout", { method: "POST" })
-      .then(() => { window.location.href = "/login"; })
-      .catch(() => { window.location.href = "/login"; });
+  async function signOut() {
+    if (logoutPending.current) return;
+    logoutPending.current = true;
+    setLogoutState("pending");
+    try {
+      const response = await fetch("/api/auth/logout", { method: "POST" });
+      if (response.status !== 401 && (!response.ok || (await response.json()).ok !== true)) throw new Error("LOGOUT_UNCONFIRMED");
+      window.location.href = "/login";
+    } catch {
+      setLogoutState("failed");
+    } finally {
+      logoutPending.current = false;
+    }
   }
+
+  if (logoutState !== "idle") return <main role="alert"><p>{logoutState === "pending" ? "Encerrando sessão…" : "Não foi possível confirmar o encerramento da sessão. Ela pode continuar ativa. Recarregar ou reabrir esta página não encerra a sessão. Tente sair novamente para confirmar o encerramento no servidor."}</p><button type="button" disabled={logoutState === "pending"} onClick={signOut}>Tentar sair novamente</button></main>;
+
+  if (session?.unavailable) return <main role="alert"><p>Não foi possível verificar sua sessão agora.</p><button type="button" onClick={() => window.location.reload()}>Tentar novamente</button></main>;
+
+  if (invalidSession) return <main role="alert"><p>Não há uma sessão válida para este acesso.</p><a href="/login">Ir para autenticação</a></main>;
 
   const fullBleed = FULL_BLEED.includes(view);
   return <ToastProvider>
