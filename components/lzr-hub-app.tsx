@@ -163,17 +163,17 @@ export function LzrHubApp({ ixcMode = "disabled" }: { ixcMode?: string }) {
             {tabs.map((item) => <a key={item.id} href={`#/${item.id}`} className={item.id === view ? "active" : ""} aria-current={item.id === view ? "page" : undefined}
               onClick={(event) => { event.preventDefault(); navigate(item.id); }}>{item.label}</a>)}
           </nav>}
-          {!blocked && <Screen key={admitted.context} customerAccess={customerAccess} view={view} intent={intent} awaiting={awaitingPolled} onNavigate={navigate} onAwaiting={setAwaitingFromInbox} />}
+          {!blocked && <Screen key={admitted.context} canManageConversation={session?.authenticated === true && permissions?.includes("support.write") === true} customerAccess={customerAccess} view={view} intent={intent} awaiting={awaitingPolled} onNavigate={navigate} onAwaiting={setAwaitingFromInbox} />}
         </main>
       </div>
     </div>
   </ToastProvider>;
 }
 
-function Screen({ customerAccess, view, intent, awaiting, onNavigate, onAwaiting }: { customerAccess:CustomerReadAccess; view: View; intent: NavIntent; awaiting: { count: number; oldest: string | null }; onNavigate: Navigate; onAwaiting: (count: number) => void }) {
+function Screen({ canManageConversation, customerAccess, view, intent, awaiting, onNavigate, onAwaiting }: { canManageConversation:boolean; customerAccess:CustomerReadAccess; view: View; intent: NavIntent; awaiting: { count: number; oldest: string | null }; onNavigate: Navigate; onAwaiting: (count: number) => void }) {
   switch (view) {
     case "dashboard": return <HomeModule awaiting={awaiting} onNavigate={onNavigate} />;
-    case "atendimento": return <AttendanceModule initialConversation={intent.conversation} onAwaiting={onAwaiting} />;
+    case "atendimento": return <AttendanceModule canManageState={canManageConversation} access={customerAccess} initialConversation={intent.conversation} onAwaiting={onAwaiting} />;
     case "training": return <TrainingModule />;
     case "clientes": return <Customer360Module access={customerAccess} />;
     case "chat-interno": return <InternalChatModule />;
