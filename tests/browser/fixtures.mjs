@@ -59,12 +59,13 @@ export function installFixtures(data) {
   window.fetch = async (input, init = {}) => {
     const url = new URL(input, location.origin);
     if (url.origin !== location.origin) { recordError('external'); throw Error('QA_EXTERNAL_BLOCKED'); }
-    if (qa.handoffFetch) {
+    const fixtureFetch = qa.billingFetch || qa.handoffFetch;
+    if (fixtureFetch) {
       try {
-        const response = await qa.handoffFetch(url, init);
-        if (!response) throw Error('QA_UNEXPECTED_HANDOFF_API');
+        const response = await fixtureFetch(url, init);
+        if (!response) throw Error(qa.billingFetch ? 'QA_UNEXPECTED_BILLING_API' : 'QA_UNEXPECTED_HANDOFF_API');
         return response;
-      } catch (error) { recordError('handoff-api:' + url.pathname); throw error; }
+      } catch (error) { recordError((qa.billingFetch ? 'billing-api:' : 'handoff-api:') + url.pathname); throw error; }
     }
     if (url.pathname === '/api/auth/login') {
       const body = JSON.parse(init.body);
