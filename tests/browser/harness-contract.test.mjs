@@ -9,16 +9,17 @@ import { once } from 'node:events';
 import { manageProcessGroup } from '../../scripts/qa-lifecycle.mjs';
 
 const source = (await readFile(new URL('./fixtures.mjs', import.meta.url), 'utf8')).replace('export function', 'function');
+const handoffSource = (await readFile(new URL('./handoff-fixtures.mjs', import.meta.url), 'utf8')).replace('export function', 'function');
 const storage = () => {
   const values = new Map();
   return { getItem: key => values.get(key) ?? null, setItem: (key, value) => values.set(key, value) };
 };
-function document(sessionStorage) {
+function document(sessionStorage, handoffRole) {
   const listeners = new Map(), frames = [];
   const window = { addEventListener: (kind, listener) => listeners.set(kind, listener) };
-  vm.runInNewContext(source + ';installFixtures({a:{customer:{id:"a"}}});', {
-    window, location: { origin: 'http://127.0.0.1:1234', search: '' }, sessionStorage,
-    localStorage: storage(), URL, Response, setTimeout, requestAnimationFrame: callback => frames.push(callback),
+  vm.runInNewContext(source + ';installFixtures({a:{customer:{id:"a"}}});' + (handoffRole ? handoffSource + ';installHandoffFixtures();' : ''), {
+    window, location: { origin: 'http://127.0.0.1:1234', search: handoffRole ? '?handoffRole=' + handoffRole : '' }, sessionStorage,
+    localStorage: storage(), URL, URLSearchParams, Response, setTimeout, requestAnimationFrame: callback => frames.push(callback),
   });
   return { window, frames, listeners };
 }
@@ -31,6 +32,27 @@ test('UI error ledger survives document replacement including global failures', 
   assert.equal(JSON.stringify(next.window.qa.errors()), JSON.stringify([
     'unexpected-api:/api/unexpected', 'error', 'unhandledrejection', 'securitypolicyviolation',
   ]));
+});
+
+test('handoff state requires explicit delivery; unhandled APIs survive in the error ledger', async () => {
+  const shared = storage(), { window, frames } = document(shared, 'writer');
+  const body = { conversationId: 'SYNTHETIC_HANDOFF_A', action: 'claim', takeOver: false };
+  const response = window.fetch('/api/conversations/state', { method: 'POST', body: JSON.stringify(body) });
+  assert.equal((await (await window.fetch('/api/conversations')).json()).items[0].state.assigneeId, null);
+  assert.equal(JSON.stringify(window.qa.handoff.states[0].body), JSON.stringify(body));
+  let completed = false;
+  const release = window.qa.handoff.releaseState(0, 'claimed').then(() => { completed = true; });
+  assert.equal((await (await response).json()).state.assigneeId, 'qa');
+  assert.equal(completed, false); frames.shift()(); assert.equal(completed, false); frames.shift()(); await release;
+  await assert.rejects(window.fetch('/api/conversations/reply', { method: 'POST', body: '{}' }), /QA_UNEXPECTED_HANDOFF_API/);
+  assert.equal(JSON.stringify(document(shared).window.qa.errors()), JSON.stringify(['handoff-api:/api/conversations/reply']));
+});
+
+test('handoff reader fixture carries only actual customer.read and disables reply capability', async () => {
+  const { window } = document(storage(), 'reader');
+  const session = await (await window.fetch('/api/auth/me')).json();
+  assert.deepEqual(session.permissions, ['customer.read']);
+  assert.equal((await (await window.fetch('/api/conversations')).json()).channelState.canReply, false);
 });
 
 test('release does not acknowledge completion before delivery and two render frames', async () => {
