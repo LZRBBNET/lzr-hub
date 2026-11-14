@@ -47,19 +47,23 @@ test('release does not acknowledge completion before delivery and two render fra
   assert.equal(result.delivered, true); assert.equal(result.aborted, true);
 });
 
-test('payment JSON remains held after headers and acknowledges body plus render frames', async () => {
+for (const kind of ['payment', 'session']) test(`${kind} JSON remains held after headers and acknowledges body plus render frames`, async () => {
   const { window, frames } = document(storage()), controller = new AbortController();
-  const response = window.fetch('/api/customers/payments?id=a&invoiceId=a1&page=1', { signal: controller.signal });
-  const headers = window.qa.paymentHeaders(0, 'late');
+  window.qa.holdSession = true;
+  const response = window.fetch(kind === 'payment' ? '/api/customers/payments?id=a&invoiceId=a1&page=1' : '/api/auth/me', { signal: controller.signal });
+  const headers = kind === 'payment' ? window.qa.paymentHeaders(0, 'late') : window.qa.sessionHeaders(0, 'invalid');
+  const releaseBody = () => kind === 'payment' ? window.qa.releasePaymentBody(0) : window.qa.releaseSessionBody(0);
   const received = await response;
   frames.shift()(); frames.shift()(); await headers;
-  await assert.rejects(window.qa.releasePaymentBody(0), /QA_BODY_NOT_STARTED/);
+  await assert.rejects(releaseBody(), /QA_BODY_NOT_STARTED/);
   let parsed = false, settled = false;
   const body = received.json().then(value => { parsed = true; return value; });
-  assert.equal(window.qa.payments[0].bodyStarted, true);
+  assert.equal((kind === 'payment' ? window.qa.payments : window.qa.sessions)[0].bodyStarted, true);
   assert.equal(parsed, false); controller.abort();
-  const released = window.qa.releasePaymentBody(0).then(value => { settled = true; return value; });
-  assert.equal((await body).items[0].id, 'SYNTHETIC_LATE_PAYMENT');
+  const released = releaseBody().then(value => { settled = true; return value; });
+  const payload = await body;
+  if (kind === 'payment') assert.equal(payload.items[0].id, 'SYNTHETIC_LATE_PAYMENT');
+  else assert.equal(payload.authenticated, false);
   assert.equal(settled, false); assert.equal(frames.length, 1);
   frames.shift()(); assert.equal(settled, false); frames.shift()();
   const result = await released;
