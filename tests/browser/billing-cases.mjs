@@ -2,15 +2,20 @@ import assert from 'node:assert/strict';
 
 export async function runBillingCases({ command, evaluate, wait, go, click, button, fill, record }) {
   const body = () => evaluate('return document.body.innerText');
+  const tab = async href => {
+    const selector = `.tabs a[href="${href}"]`;
+    await evaluate(`document.querySelector(${JSON.stringify(selector)}).scrollIntoView({block:'center',inline:'center'});return new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))`);
+    await click(selector);
+  };
   const candidates = () => evaluate("return [...document.querySelectorAll('.stat')].find(s=>s.querySelector('.stat-label')?.textContent.startsWith('Faturas para hoje')).querySelector('.stat-value').textContent");
   const promiseTab = async () => {
-    await click('.tabs a[href="#/acoes-cobranca"]');
+    await tab('#/acoes-cobranca');
     await wait("document.querySelector('[aria-label=Operação]')");
     await click('[aria-label=Operação] button:nth-child(3)');
     await wait("document.body.innerText.includes('Registrar promessa') && document.querySelector('input[type=date]')");
   };
   const ruleTab = async () => {
-    await click('.tabs a[href="#/regua"]');
+    await tab('#/regua');
     await wait("document.querySelector('.stat-value') && document.body.innerText.includes('Disparo de hoje')");
   };
   const dispatch = async (index, outcome) => {

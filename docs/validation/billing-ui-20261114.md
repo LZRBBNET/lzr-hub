@@ -20,6 +20,11 @@ unique query strings create fresh documents for the next scenario. A ninth Node
 contract checks held create response, delivery/frame barrier, fixture state/clock
 reset and forbidden-write ledger persistence across document replacement.
 
+The first CI attempt passed all desktop billing cases, then a narrow-screen tab
+click was intercepted by the fixed header after form scrolling. The harness now
+scrolls the tab to the center and waits two frames before the native WebDriver
+click. It does not use JavaScript click, change CSS, or bypass hit testing.
+
 ## Reconciliation of the original 16-case matrix
 
 The evidence below distinguishes automated client acceptance from backend tests
