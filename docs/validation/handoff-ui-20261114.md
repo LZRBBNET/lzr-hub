@@ -36,3 +36,10 @@ handoff APIs are rejected and recorded even if product code catches the failure.
 Existing sandbox, persistent error ledger, unique-document cases and cleanup stay
 in place; no new dependency/workflow. Automated DOM/state QA is not human visual
 approval, backend authorization, persistence E2E or delivery evidence.
+
+The first browser attempt exposed an incorrect harness assumption: responsive
+CSS hides header status pills/badges on narrow screens. Narrow cases now inspect
+the visible facts panel for handoff/ownership/state; header textContent only
+checks underlying DOM state, not visual visibility. No product CSS was changed.
+An eighth Node contract verifies the reader's actual customer.read permission
+and false reply capability.
