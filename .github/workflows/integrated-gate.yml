@@ -7,6 +7,7 @@ on:
       - 'scripts/qa-integrated*'
       - 'tests/integrated-gate-contract.test.mjs'
       - 'tests/integrated-gate-cleanup.test.mjs'
+      - 'tests/integrated-gate-relay.test.mjs'
 permissions:
   contents: read
 concurrency:
@@ -34,7 +35,7 @@ jobs:
           git show -s --format='tested-merge=%H tree=%T parents=%P'
           git diff --name-only HEAD^1 HEAD | while read -r path; do
             case "$path" in
-              .github/workflows/integrated-gate.yml|scripts/qa-integrated.mjs|scripts/qa-integrated-runner.sh|scripts/qa-integrated-cert.py|tests/integrated-gate-contract.test.mjs|tests/integrated-gate-cleanup.test.mjs) ;;
+              .github/workflows/integrated-gate.yml|scripts/qa-integrated.mjs|scripts/qa-integrated-runner.sh|scripts/qa-integrated-cert.py|tests/integrated-gate-contract.test.mjs|tests/integrated-gate-cleanup.test.mjs|scripts/qa-integrated-relay.py|tests/integrated-gate-relay.test.mjs) ;;
               *) echo 'Unexpected product/config change'; exit 1;;
             esac
           done
@@ -47,7 +48,7 @@ jobs:
       - name: Harness contract and real application artifact
         timeout-minutes: 5
         run: |
-          node --test tests/integrated-gate-contract.test.mjs tests/integrated-gate-cleanup.test.mjs
+          node --test tests/integrated-gate-contract.test.mjs tests/integrated-gate-cleanup.test.mjs tests/integrated-gate-relay.test.mjs
           bash scripts/ci-check.sh synthetic
       - name: Official NSS CLI if missing
         timeout-minutes: 2

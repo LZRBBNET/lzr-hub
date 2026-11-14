@@ -21,6 +21,15 @@ readonly NICK='lzr-integrated-leaf'
 NODE="$(command -v node)"; readonly NODE
 NODE_PATH="$(dirname "$NODE"):/usr/local/bin:/usr/bin:/bin"; readonly NODE_PATH
 
+container_address() {
+  local attachment actual_network address extra
+  [[ $(docker inspect --format '{{len .NetworkSettings.Networks}}' "$CONTAINER") == 1 ]] || return 1
+  attachment=$(docker inspect --format '{{range $name,$config := .NetworkSettings.Networks}}{{$name}} {{$config.IPAddress}}{{end}}' "$CONTAINER")
+  read -r actual_network address extra <<< "$attachment"
+  [[ $actual_network == "$NETWORK" && -z $extra ]] || return 1
+  printf '%s' "$address"
+}
+
 as_test_user() {
   runuser -u "$USER_NAME" -- env -i PATH="$NODE_PATH" HOME="$USER_HOME" \
     USER="$USER_NAME" LOGNAME="$USER_NAME" XDG_CONFIG_HOME="$USER_HOME/.config" \
@@ -41,6 +50,8 @@ phase() {
     if [[ $name == journey && $restarted == false && -f $GATE/restart-request && ! -L $GATE/restart-request ]]; then
       restarted=true
       if timeout 20s docker restart "$CONTAINER" >"$ROOT_STATE/restart.log" 2>&1; then
+        current_ip=$(container_address)
+        [[ $current_ip == "$bridge_ip" ]] || { echo QA_DB_RESTART_ENDPOINT_CHANGED; break; }
         for _ in {1..20}; do
           if docker exec "$CONTAINER" pg_isready -U lzr_synthetic_demo -d lzr_synthetic_demo >/dev/null 2>&1; then
             as_test_user touch "$GATE/restart-complete"
@@ -180,11 +191,29 @@ docker run -d --name "$CONTAINER" --network "$NETWORK" --read-only \
   --tmpfs /tmp:rw,noexec,nosuid,size=64m \
   --tmpfs /var/run/postgresql:rw,noexec,nosuid,size=16m \
   --mount "type=volume,source=$VOLUME,target=/var/lib/postgresql/data" \
-  --publish 127.0.0.1::5432 --env-file "$ROOT_STATE/pg.env" "$IMAGE" \
+  --env-file "$ROOT_STATE/pg.env" "$IMAGE" \
   -c log_statement=none -c log_min_messages=fatal -c log_min_error_statement=panic >/dev/null
-port=$(docker port "$CONTAINER" 5432/tcp)
-[[ $port =~ ^127\.0\.0\.1:([0-9]+)$ ]] || { echo QA_DB_BIND_INVALID; exit 78; }
-port=${BASH_REMATCH[1]}
+# Docker internal-only networks deliberately have no default gateway, so
+# --publish is ignored. Retain no-egress isolation and relay host loopback to
+# this container's verified single private bridge endpoint instead.
+[[ $(docker network inspect --format '{{.Internal}}' "$NETWORK") == true ]] || { echo QA_DB_NETWORK_INVALID; exit 78; }
+[[ $(docker inspect --format '{{len .NetworkSettings.Networks}}' "$CONTAINER") == 1 ]] || { echo QA_DB_NETWORK_INVALID; exit 78; }
+bridge_ip=$(container_address)
+python3 - "$bridge_ip" <<'PYIP'
+import ipaddress,sys
+address=ipaddress.ip_address(sys.argv[1])
+assert address.version==4 and any(address in ipaddress.ip_network(n) for n in ['10.0.0.0/8','172.16.0.0/12','192.168.0.0/16'])
+PYIP
+as_test_user python3 "$REPO/scripts/qa-integrated-relay.py" "$bridge_ip" "$GATE/relay-port" \
+  >"$ROOT_STATE/relay.stdout" 2>"$ROOT_STATE/relay.stderr" &
+relay_pid=$!
+port=''
+for _ in {1..50}; do
+  kill -0 "$relay_pid" 2>/dev/null || { echo QA_DB_RELAY_FAILED; exit 1; }
+  if [[ -f $GATE/relay-port && ! -L $GATE/relay-port ]]; then port=$(cat "$GATE/relay-port"); break; fi
+  sleep 0.1
+done
+[[ $port =~ ^[0-9]+$ && $port -gt 1023 && $port -lt 65536 ]] || { echo QA_DB_BIND_INVALID; exit 78; }
 python3 - "$ROOT_STATE/pg.env" "$GATE/state.json" "$port" <<'PY'
 import json,os,sys
 settings=dict(line.strip().split('=',1) for line in open(sys.argv[1]))
