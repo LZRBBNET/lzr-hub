@@ -43,3 +43,5 @@ the visible facts panel for handoff/ownership/state; header textContent only
 checks underlying DOM state, not visual visibility. No product CSS was changed.
 An eighth Node contract verifies the reader's actual customer.read permission
 and false reply capability.
+The panel's finite slide-in animation is awaited before the WebDriver displayed
+assertion; checking immediately after the click failed during its entrance.

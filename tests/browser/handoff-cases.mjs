@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 export async function runHandoffCases({ command, evaluate, wait, go, click, button, record }) {
   const body = () => evaluate('return document.body.innerText');
   const visibleFacts = async () => {
+    await wait("document.getAnimations().filter(a=>a.effect.getTiming().iterations!==Infinity).every(a=>a.playState!=='running')");
     const element = await command('/element', { using: 'css selector', value: '.facts' });
     assert.equal(await command(`/element/${element['element-6066-11e4-a52e-4f735466cecf']}/displayed`, undefined, 'GET'), true);
     return evaluate("return document.querySelector('.facts').innerText");
