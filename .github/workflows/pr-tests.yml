@@ -25,6 +25,9 @@ jobs:
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: '24.22.1'
+      - name: Require sandboxed browser (no security fallback)
+        timeout-minutes: 2
+        run: env -i PATH="$PATH" timeout --signal=TERM --kill-after=10s 90s node scripts/qa-browser.mjs
       - name: Install locked dependencies (no lifecycle scripts)
         timeout-minutes: 10
         run: bash scripts/ci-check.sh install
