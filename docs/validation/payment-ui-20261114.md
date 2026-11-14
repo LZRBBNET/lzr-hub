@@ -33,3 +33,9 @@ Independent read-only review found no blocker. Switching/closing unmounts the
 keyed payment state: these cases prove no visible stale-data leak in the composed
 UI, not isolated coverage of every post-JSON guard in a still-mounted component.
 They do not cover actual pagination or backend ownership validation.
+
+The first CI attempt exposed same-URL fragment navigation retaining the prior
+document between payment cases. Each case now uses a distinct query string and
+asserts an empty detail-request queue before interacting. The error ledger stays
+in sessionStorage across these document replacements. Cleanup completed on that
+failed attempt; product code was not changed.

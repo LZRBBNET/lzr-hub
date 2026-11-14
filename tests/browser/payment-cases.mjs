@@ -2,8 +2,11 @@ import assert from 'node:assert/strict';
 
 // Actual InvoicePaymentPages inside Customer360Module; only API responses are doubles.
 export async function runPaymentCases({ command, evaluate, wait, go, click, button, record }) {
+  let caseNumber = 0;
   const openA = async () => {
-    await go('/#/clientes'); await wait("document.querySelectorAll('button.tr.stack-sm').length===2");
+    // A unique query forces a new document; same-URL hash navigation may retain state.
+    await go(`/?paymentCase=${++caseNumber}#/clientes`); await wait("document.querySelectorAll('button.tr.stack-sm').length===2");
+    assert.equal(await evaluate('return qa.pending.length'), 0);
     await click('button.tr.stack-sm'); await wait('qa.pending.length===1');
     await evaluate("return qa.release(0,'810001')");
     await wait("document.querySelector('.invoice-payments button')");
