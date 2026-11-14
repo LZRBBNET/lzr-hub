@@ -70,7 +70,7 @@ try {
       await command(`/element/${id}/value`, { text });
     };
     const button = async text => {
-      const result = await command('/element', { using: 'xpath', value: `//button[normalize-space(.)='${text}']` });
+      const result = await command('/element', { using: 'xpath', value: `//button[normalize-space(.)='${text}' or @aria-label='${text}']` });
       await command(`/element/${result['element-6066-11e4-a52e-4f735466cecf']}/click`, {});
     };
     const record = async (id, extra = {}) => {
