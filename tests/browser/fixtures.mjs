@@ -91,6 +91,7 @@ export function installFixtures(data) {
     }
     if (url.pathname === '/api/conversations') return Response.json({ items: [] });
     if (url.pathname === '/api/customers' || url.pathname === '/api/customers/payments') {
+      if (url.pathname === '/api/customers' && !url.searchParams.has('id') && qa.searchFetch) return qa.searchFetch(url);
       if (url.pathname === '/api/customers' && !url.searchParams.has('id')) return Response.json({ items: Object.values(data).map(v => v.customer), total: 2, pageSize: 10, scope: 'allowlist', mode: 'demo' });
       // Deliberately ignore abort: exercise a transport/body completing too late.
       let acknowledge;
