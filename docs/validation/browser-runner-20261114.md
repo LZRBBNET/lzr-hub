@@ -52,7 +52,9 @@ Automated browser assertions cover:
 - L02: width/overflow, field width, columns and keyboard Tab at 320/390/768/1440.
 - C03: B remains after A completes late (desktop; narrow closes modal to select B).
 - C04: close discards late detail; reopening starts a new read.
-- S01: invalid initial admission while detail is pending redirects to login.
+- S01: invalid initial admission while detail is pending redirects to login;
+  the persisted marker proves response release before navigation, NOT completion
+  of the old document's handler/render. This case does not prove that stronger claim.
 - S04: logout 503 removes UI, retry succeeds; late detail cannot restore UI.
 
 C03/C04/S01/S04 run at 1440 and 390 CSS pixels. This is a priority subset of
@@ -67,3 +69,29 @@ launching Chromium. Two preparation failures were corrected before publication:
 the fixture builder requires a readonly-shaped snapshot before setting the UI
 demo label; esbuild's Unicode escaping made a literal accented string check
 inappropriate. No production code was changed to satisfy the harness.
+
+## Independent harness review
+
+Read-only independent review of `8811450` identified three P2 test-reliability
+issues despite its green CI: per-document error arrays lost evidence across
+navigation; fixed waits/immediate checks could precede stale-response processing;
+and shutdown could miss Chrome descendants or skip cleanup on SIGTERM.
+
+The correction is limited to the harness:
+- Error/rejection/CSP and unexpected-API evidence persists in sessionStorage
+  across same-origin navigation and is checked cumulatively in every case.
+- C03/C04/S04 explicitly await fixture delivery, two animation frames and a
+  subsequent task before inspecting the DOM. This is a finite settling barrier,
+  not a claim about arbitrarily delayed future work. S01 retains the narrower
+  release-before-navigation claim above.
+- Driver runs in its own process group. Graceful DELETE is bounded to 3 seconds;
+  failure still terminates the owned group and removes its profile. Cleanup is
+  idempotent, registered for SIGTERM/SIGINT, and server cleanup remains independent.
+  Errors preserve the original failure; logs do not assert browser cleanup success
+  if it failed. SIGKILL/host termination cannot run JavaScript cleanup and still
+  relies on the ephemeral runner's teardown.
+
+Four focused Node regression tests exercise persisted errors across documents,
+the awaited release barrier, failed graceful shutdown/idempotence, and SIGTERM
+cleanup with exit 143. These run without a browser in Cloud and before UI tests
+in the existing CI step. No product, dependency, sandbox or extra scenario change.

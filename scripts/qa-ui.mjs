@@ -7,6 +7,7 @@ import { once } from 'node:events';
 import { join } from 'node:path';
 import { Customer360Service } from '../lib/platform/customer360-service.ts';
 import { openBrowser } from './qa-browser.mjs';
+import { registerCleanup } from './qa-lifecycle.mjs';
 
 const data = {};
 for (const id of ['810001', '810002']) {
@@ -42,6 +43,12 @@ const server = createServer((request, response) => {
 server.listen(0, '127.0.0.1'); await once(server, 'listening');
 const origin = `http://127.0.0.1:${server.address().port}`;
 let browser;
+let serverClosing;
+const closeServer = () => serverClosing ??= new Promise(resolve => {
+  server.closeAllConnections(); server.close(resolve);
+});
+const unregisterServer = registerCleanup(closeServer);
+let failure;
 const evidence = [];
 try {
   if (process.argv.includes('--build-only')) {
@@ -77,7 +84,7 @@ try {
       await command(`/element/${result['element-6066-11e4-a52e-4f735466cecf']}/click`, {});
     };
     const record = async (id, extra = {}) => {
-      assert.deepEqual(await evaluate('return window.qa.unexpected'), []);
+      assert.deepEqual(await evaluate('return window.qa.errors()'), []);
       evidence.push({ id, ...extra, result: 'pass' }); console.log(JSON.stringify(evidence.at(-1)));
     };
     await go('/login');
@@ -107,31 +114,31 @@ try {
       // On narrow screens the modal occludes the list: close it before selecting B.
       if (width === 390) await button('Fechar');
       await click('button.tr.stack-sm:nth-of-type(2)'); await wait('qa.pending.length===2');
-      await evaluate("qa.release(1,'810002'); return true");
+      await evaluate("return qa.release(1,'810002')");
       const detail = width === 390 ? '.modal[open]' : '.customer-detail';
       await wait(`document.querySelector('${detail}')?.innerText.includes('Cadastro fictício 810002')`);
-      await evaluate("qa.release(0,'810001'); return true");
-      await new Promise(resolve => setTimeout(resolve, 150));
+      assert.equal((await evaluate("return qa.release(0,'810001')")).delivered, true);
       assert.equal(await evaluate('return qa.pending[0].signal.aborted'), true);
       assert.ok(await evaluate(`return document.querySelector('${detail}').innerText.includes('Cadastro fictício 810002')`));
       assert.ok(await evaluate(`return !document.querySelector('${detail}').innerText.includes('Cadastro fictício 810001')`));
       await record('C03', { width, staleResponseDiscarded: true });
       await button('Fechar'); await click('button.tr.stack-sm'); await wait('qa.pending.length===3');
-      await button('Fechar'); await evaluate("qa.release(2,'810001'); return true");
-      await new Promise(resolve => setTimeout(resolve, 100));
+      await button('Fechar');
+      assert.equal((await evaluate("return qa.release(2,'810001')")).delivered, true);
       assert.equal(await evaluate(`return document.querySelector('${detail}')`), null);
       await click('button.tr.stack-sm'); await wait('qa.pending.length===4');
-      await evaluate("qa.release(3,'810001'); return true");
+      await evaluate("return qa.release(3,'810001')");
       await wait(`document.querySelector('${detail}').innerText.includes('Cadastro fictício 810001')`);
       await record('C04', { width, closedResponseDiscarded: true, newRead: true });
 
       await go('/?holdMe=1#/clientes'); await wait("qa.me && document.querySelector('button.tr.stack-sm')");
       await click('button.tr.stack-sm'); await wait('qa.pending.length===1');
-      await evaluate("sessionStorage.removeItem('qa-late-s01'); qa.me(); setTimeout(()=>{qa.release(0,'810001'); sessionStorage.setItem('qa-late-s01','delivered');},0); return true");
+      // Navigation can destroy this document: claim release, not handler/render completion.
+      await evaluate("sessionStorage.removeItem('qa-late-s01'); qa.me(); setTimeout(()=>{qa.pending[0].resolve(Response.json(fixtureData['810001'])); sessionStorage.setItem('qa-late-s01','released');},0); return true");
       await wait("location.pathname==='/login'");
-      assert.equal(await evaluate("return sessionStorage.getItem('qa-late-s01')"), 'delivered');
+      assert.equal(await evaluate("return sessionStorage.getItem('qa-late-s01')"), 'released');
       assert.equal(await evaluate("return document.querySelector('.app-shell')"), null);
-      await record('S01', { width, invalidInitialAdmission: true, lateDetailAbsent: true });
+      await record('S01', { width, invalidInitialAdmission: true, releasedBeforeNavigation: true, previousDocumentCompletion: 'not asserted' });
 
       await go('/#/clientes'); await wait("document.querySelector('button.tr.stack-sm')");
       await click('button.tr.stack-sm'); await wait('qa.pending.length===1');
@@ -141,7 +148,7 @@ try {
       const logout = await command('/element', { using: 'xpath', value: "//*[@role='menuitem' and contains(.,'Sair')]" });
       await command(`/element/${logout['element-6066-11e4-a52e-4f735466cecf']}/click`, {});
       await wait("document.body.innerText.includes('pode continuar ativa')");
-      await evaluate("qa.release(0,'810001'); return true");
+      assert.equal((await evaluate("return qa.release(0,'810001')")).delivered, true);
       assert.equal(await evaluate("return document.querySelector('.app-shell')"), null);
       await evaluate('qa.logoutFails=false; return true'); await button('Tentar sair novamente');
       await wait("location.pathname==='/login'");
@@ -153,10 +160,17 @@ try {
     assert.deepEqual(unexpected, []);
     console.log(JSON.stringify({ result: 'pass', scope: 'real client components + compiled CSS; mocked APIs; NOT persistence E2E or human visual approval', cases: evidence.length }));
   }
-} finally {
-  try { if (browser) await browser.close(); }
+} catch (error) { failure = error; throw error; }
+finally {
+  try {
+    if (browser) await browser.close();
+    console.log(`UI browser cleanup: ${browser ? 'session/profile closed' : 'not launched'}.`);
+  } catch (error) {
+    console.error('UI browser cleanup failed.');
+    if (!failure) throw error;
+  }
   finally {
-    server.closeAllConnections(); await new Promise(resolve => server.close(resolve));
-    console.log(`UI cleanup: browser ${browser ? 'session/profile closed' : 'not launched'}; loopback server closed; no database created.`);
+    await closeServer(); unregisterServer();
+    console.log('UI server cleanup: loopback server closed; no database created.');
   }
 }

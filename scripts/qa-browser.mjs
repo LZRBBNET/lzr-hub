@@ -2,12 +2,13 @@
 // Never fall back to disabling browser sandboxing or changing host security.
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createServer } from 'node:net';
 import { once } from 'node:events';
 import { pathToFileURL } from 'node:url';
+import { manageProcessGroup } from './qa-lifecycle.mjs';
 
 export async function openBrowser() {
   const reservation = createServer();
@@ -17,30 +18,23 @@ export async function openBrowser() {
   await new Promise(resolve => reservation.close(resolve));
   const profile = await mkdtemp(join(tmpdir(), 'lzr-browser-'));
   const driver = spawn('/usr/bin/chromedriver', [`--port=${port}`, '--allowed-ips=127.0.0.1'], {
-    env: { PATH: process.env.PATH, LANG: 'C.UTF-8' }, stdio: ['ignore', 'pipe', 'pipe'],
+    env: { PATH: process.env.PATH, LANG: 'C.UTF-8' }, detached: true, stdio: ['ignore', 'pipe', 'pipe'],
   });
   let failure, session;
   driver.on('error', error => { failure = error; });
   driver.stdout.resume(); driver.stderr.resume();
-  const closed = new Promise(resolve => driver.once('close', resolve));
-  const request = async (path, body, method = body === undefined ? 'GET' : 'POST') => {
+  const request = async (path, body, method = body === undefined ? 'GET' : 'POST', timeout = 20000) => {
     const response = await fetch(`http://127.0.0.1:${port}${path}`, {
       method, headers: { 'content-type': 'application/json' },
-      ...(body === undefined ? {} : { body: JSON.stringify(body) }), signal: AbortSignal.timeout(20000),
+      ...(body === undefined ? {} : { body: JSON.stringify(body) }), signal: AbortSignal.timeout(timeout),
     });
     const result = await response.json();
     if (!response.ok || result.value?.error) throw Error(JSON.stringify(result.value));
     return result.value;
   };
-  const close = async () => {
-    try { if (session) await request(`/session/${session}`, undefined, 'DELETE'); }
-    finally {
-      if (driver.exitCode === null && driver.signalCode === null) driver.kill('SIGTERM');
-      const timer = setTimeout(() => driver.kill('SIGKILL'), 2000);
-      await closed; clearTimeout(timer);
-      await rm(profile, { recursive: true, force: true });
-    }
-  };
+  const close = manageProcessGroup(driver, profile, async () => {
+    if (session) await request(`/session/${session}`, undefined, 'DELETE', 3000);
+  });
   try {
     let ready = false;
     for (let attempt = 0; attempt < 50; attempt++) {
@@ -67,7 +61,10 @@ export async function openBrowser() {
     assert.match(sandbox, /PID namespaces\s+Yes/i, 'PID namespace sandbox must be active');
     assert.match(sandbox, /Network namespaces\s+Yes/i, 'Network namespace sandbox must be active');
     return { command, evaluate, close };
-  } catch (error) { await close(); throw error; }
+  } catch (error) {
+    try { await close(); } catch { console.error('Browser cleanup failed; preserving original error.'); }
+    throw error;
+  }
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {

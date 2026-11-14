@@ -1,13 +1,27 @@
 // UI-only API doubles. No handler, account, cookie or persistence E2E claim.
 export function installFixtures(data) {
-  const qa = window.qa = { pending: [], unexpected: [], me: null, logoutFails: false };
+  const ledgerKey = 'qa-errors';
+  const errors = () => JSON.parse(sessionStorage.getItem(ledgerKey) || '[]');
+  const recordError = kind => sessionStorage.setItem(ledgerKey, JSON.stringify([...errors(), kind]));
+  const qa = window.qa = { pending: [], errors, me: null, logoutFails: false };
+  for (const kind of ['error', 'unhandledrejection', 'securitypolicyviolation']) {
+    window.addEventListener(kind, () => recordError(kind));
+  }
   const valid = { authRequired: true, authenticated: true, permissions: ['customer.read','support.write'],
     user: { id: 'qa', name: 'Operador Fictício', email: 'qa@example.invalid', role: 'Supervisor' } };
   const invalid = { authRequired: true, authenticated: false, permissions: [] };
-  qa.release = (index, id) => qa.pending[index].resolve(Response.json(data[id]));
+  qa.release = async (index, id) => {
+    const pending = qa.pending[index];
+    pending.resolve(Response.json(data[id]));
+    await pending.delivered;
+    // Let application continuations and React paint work run before assertions.
+    await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    await new Promise(resolve => setTimeout(resolve, 0));
+    return { delivered: true, aborted: pending.signal.aborted };
+  };
   window.fetch = async (input, init = {}) => {
     const url = new URL(input, location.origin);
-    if (url.origin !== location.origin) { qa.unexpected.push('external'); throw Error('QA_EXTERNAL_BLOCKED'); }
+    if (url.origin !== location.origin) { recordError('external'); throw Error('QA_EXTERNAL_BLOCKED'); }
     if (url.pathname === '/api/auth/login') {
       const body = JSON.parse(init.body);
       const ok = body.email === 'qa@example.invalid' && body.password === 'fictitious-only';
@@ -26,8 +40,12 @@ export function installFixtures(data) {
     if (url.pathname === '/api/customers') {
       if (!url.searchParams.has('id')) return Response.json({ items: Object.values(data).map(v => v.customer), total: 2, pageSize: 10, scope: 'allowlist', mode: 'demo' });
       // Deliberately ignore abort: exercise a transport/body completing too late.
-      return new Promise(resolve => qa.pending.push({ resolve, id: url.searchParams.get('id'), signal: init.signal }));
+      let acknowledge;
+      const delivered = new Promise(resolve => { acknowledge = resolve; });
+      const response = await new Promise(resolve => qa.pending.push({ resolve, delivered, id: url.searchParams.get('id'), signal: init.signal }));
+      acknowledge();
+      return response;
     }
-    qa.unexpected.push(url.pathname); throw Error('QA_UNEXPECTED_API');
+    recordError('unexpected-api:' + url.pathname); throw Error('QA_UNEXPECTED_API');
   };
 }
