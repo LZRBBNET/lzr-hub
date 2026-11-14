@@ -10,14 +10,15 @@ import { manageProcessGroup } from '../../scripts/qa-lifecycle.mjs';
 
 const source = (await readFile(new URL('./fixtures.mjs', import.meta.url), 'utf8')).replace('export function', 'function');
 const handoffSource = (await readFile(new URL('./handoff-fixtures.mjs', import.meta.url), 'utf8')).replace('export function', 'function');
+const billingSource = (await readFile(new URL('./billing-fixtures.mjs', import.meta.url), 'utf8')).replace('export function', 'function');
 const storage = () => {
   const values = new Map();
   return { getItem: key => values.get(key) ?? null, setItem: (key, value) => values.set(key, value) };
 };
-function document(sessionStorage, handoffRole) {
+function document(sessionStorage, handoffRole, billing = false) {
   const listeners = new Map(), frames = [];
   const window = { addEventListener: (kind, listener) => listeners.set(kind, listener) };
-  vm.runInNewContext(source + ';installFixtures({a:{customer:{id:"a"}}});' + (handoffRole ? handoffSource + ';installHandoffFixtures();' : ''), {
+  vm.runInNewContext(source + ';installFixtures({a:{customer:{id:"a"}}});' + (handoffRole ? handoffSource + ';installHandoffFixtures();' : '') + (billing ? billingSource + ';installBillingFixtures();' : ''), {
     window, location: { origin: 'http://127.0.0.1:1234', search: handoffRole ? '?handoffRole=' + handoffRole : '' }, sessionStorage,
     localStorage: storage(), URL, URLSearchParams, Response, setTimeout, requestAnimationFrame: callback => frames.push(callback),
   });
@@ -53,6 +54,25 @@ test('handoff reader fixture carries only actual customer.read and disables repl
   const session = await (await window.fetch('/api/auth/me')).json();
   assert.deepEqual(session.permissions, ['customer.read']);
   assert.equal((await (await window.fetch('/api/conversations')).json()).channelState.canReply, false);
+});
+
+test('billing create is held until delivery; fixture clock/state are isolated and forbidden writes persist', async () => {
+  const shared = storage(), { window, frames } = document(shared, null, true);
+  const before = Date.now(); window.qa.billing.setClock('2000-01-01T00:00:00Z');
+  assert.equal(window.qa.billing.clock(), '2000-01-01T00:00:00Z'); assert.ok(Date.now() >= before);
+  const body = { action: 'create', invoiceId: '901', customerId: '10', promisedFor: '2026-11-20' };
+  const response = window.fetch('/api/billing/promises', { method: 'POST', body: JSON.stringify(body) });
+  assert.equal((await (await window.fetch('/api/billing/promises')).json()).pending.length, 0);
+  let complete = false;
+  const released = window.qa.billing.release(0, 'created').then(result => { complete = true; return result; });
+  assert.equal((await (await response).json()).promise.invoiceId, '901');
+  assert.equal(complete, false); frames.shift()(); assert.equal(complete, false); frames.shift()(); await released;
+  assert.equal((await (await window.fetch('/api/billing/promises')).json()).pending.length, 1);
+  await assert.rejects(window.fetch('/api/billing/invoices/reissue', { method: 'POST', body: '{}' }), /QA_UNEXPECTED_BILLING_API/);
+  const fresh = document(shared, null, true).window;
+  assert.equal((await (await fresh.fetch('/api/billing/promises')).json()).pending.length, 0);
+  assert.equal(fresh.qa.billing.clock(), '2026-11-16T15:00:00Z');
+  assert.equal(JSON.stringify(fresh.qa.errors()), JSON.stringify(['billing-api:/api/billing/invoices/reissue']));
 });
 
 test('release does not acknowledge completion before delivery and two render frames', async () => {
