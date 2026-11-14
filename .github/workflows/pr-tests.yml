@@ -43,3 +43,6 @@ jobs:
       - name: Synthetic Node build and four artifact checks
         timeout-minutes: 5
         run: bash scripts/ci-check.sh synthetic
+      - name: Sandboxed client UI with fictitious API responses
+        timeout-minutes: 3
+        run: env -i PATH="$PATH" timeout --signal=TERM --kill-after=10s 150s node --experimental-strip-types scripts/qa-ui.mjs
