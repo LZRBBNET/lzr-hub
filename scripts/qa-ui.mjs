@@ -10,6 +10,7 @@ import { openBrowser } from './qa-browser.mjs';
 import { registerCleanup } from './qa-lifecycle.mjs';
 import { runPaymentCases } from '../tests/browser/payment-cases.mjs';
 import { runReadmissionCases } from '../tests/browser/readmission-cases.mjs';
+import { runHandoffCases } from '../tests/browser/handoff-cases.mjs';
 
 const data = {};
 for (const id of ['810001', '810002']) {
@@ -163,6 +164,7 @@ try {
     }
     await runPaymentCases({ command, evaluate, wait, go, click, button, record });
     await runReadmissionCases({ command, evaluate, wait, go, click, button, record });
+    await runHandoffCases({ command, evaluate, wait, go, click, button, record });
     assert.deepEqual(unexpected, []);
     console.log(JSON.stringify({ result: 'pass', scope: 'real client components + compiled CSS; mocked APIs; NOT persistence E2E or human visual approval', cases: evidence.length }));
   }

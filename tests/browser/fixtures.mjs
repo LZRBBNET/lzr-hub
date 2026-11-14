@@ -59,6 +59,13 @@ export function installFixtures(data) {
   window.fetch = async (input, init = {}) => {
     const url = new URL(input, location.origin);
     if (url.origin !== location.origin) { recordError('external'); throw Error('QA_EXTERNAL_BLOCKED'); }
+    if (qa.handoffFetch) {
+      try {
+        const response = await qa.handoffFetch(url, init);
+        if (!response) throw Error('QA_UNEXPECTED_HANDOFF_API');
+        return response;
+      } catch (error) { recordError('handoff-api:' + url.pathname); throw error; }
+    }
     if (url.pathname === '/api/auth/login') {
       const body = JSON.parse(init.body);
       const ok = body.email === 'qa@example.invalid' && body.password === 'fictitious-only';
