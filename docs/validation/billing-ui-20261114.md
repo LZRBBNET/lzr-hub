@@ -34,7 +34,7 @@ and deployed acceptance. No browser run here is human visual approval or DB E2E.
 | --- | --- |
 | L01 | Valid/invalid mocked login and navigation passed (#80); real cookies/auth persistence remain homologation work. Pending/double-submit variants not claimed. |
 | L02 | Geometry at 320/390/768/1440 and forward Tab passed (#80); complete keyboard/a11y and human visual review remain. |
-| C01 | Customer A/B selection and real detail/modal exercised by C03/C04; exact search/debounce and original 10/501/901 scenario not separately accepted. |
+| C01 | #85 did not separately accept search/debounce. The subsequent focused gate is documented in [customer-search-ui-20261114.md](customer-search-ui-20261114.md); original 10/501/901 backend scenario remains distinct. |
 | C02 | Empty/unknown/error payment pages without false zero passed (#81); invoice-page scope explicit. |
 | C03 | Late detail and payment transport/JSON switching passed (#80–81); not every late error variant. |
 | C04 | Close/reopen and late payment body discard passed (#80–81); complete keyboard/focus audit not claimed. |

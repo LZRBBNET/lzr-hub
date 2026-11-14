@@ -11,6 +11,31 @@ import { manageProcessGroup } from '../../scripts/qa-lifecycle.mjs';
 const source = (await readFile(new URL('./fixtures.mjs', import.meta.url), 'utf8')).replace('export function', 'function');
 const handoffSource = (await readFile(new URL('./handoff-fixtures.mjs', import.meta.url), 'utf8')).replace('export function', 'function');
 const billingSource = (await readFile(new URL('./billing-fixtures.mjs', import.meta.url), 'utf8')).replace('export function', 'function');
+const searchSource = (await readFile(new URL('./search-fixtures.mjs', import.meta.url), 'utf8')).replace('export function', 'function');
+
+test('search release waits for actual JSON consumption and frames; fixture does not discard old searches', async () => {
+  const frames = [], window = { qa: {}, addEventListener() {} };
+  vm.runInNewContext(searchSource + ';installSearchFixtures({a:{customer:{id:"a"}},b:{customer:{id:"b"}}});', {
+    window, Response, performance, setTimeout, requestAnimationFrame: callback => frames.push(callback),
+  });
+  const qa = window.qa;
+  const old = qa.searchFetch(new URL('http://localhost/api/customers?q=old&risk=all&page=1'));
+  const current = qa.searchFetch(new URL('http://localhost/api/customers?q=new&risk=all&page=1'));
+  let completed = false;
+  const release = qa.releaseSearch(1, ['b']).then(() => { completed = true; });
+  const response = await current;
+  await new Promise(resolve => setTimeout(resolve, 0));
+  assert.equal(completed, false); assert.equal(frames.length, 0);
+  assert.equal((await response.json()).items[0].id, 'b');
+  await new Promise(resolve => setTimeout(resolve, 0));
+  assert.equal(completed, false); frames.shift()(); assert.equal(completed, false); frames.shift()();
+  await release; assert.equal(completed, true);
+  const lateRelease = qa.releaseSearch(0, ['a']);
+  assert.equal((await (await old).json()).items[0].id, 'a');
+  await new Promise(resolve => setTimeout(resolve, 0)); frames.shift()(); frames.shift()(); await lateRelease;
+  await assert.rejects(qa.releaseSearch(0, ['a']), /QA_SEARCH_RELEASE_INVALID/);
+  assert.equal(qa.searches[0].query, 'old'); assert.equal(qa.searches[1].query, 'new');
+});
 const storage = () => {
   const values = new Map();
   return { getItem: key => values.get(key) ?? null, setItem: (key, value) => values.set(key, value) };
