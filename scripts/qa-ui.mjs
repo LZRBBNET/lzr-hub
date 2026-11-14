@@ -70,6 +70,9 @@ try {
       await command(`/element/${id}/value`, { text });
     };
     const button = async text => {
+      // Native clicks must wait for finite dialog/menu entrance animations;
+      // loading skeletons may intentionally animate forever.
+      await wait("document.getAnimations().filter(a=>a.effect.getTiming().iterations!==Infinity).every(a=>a.playState!=='running')");
       const result = await command('/element', { using: 'xpath', value: `//button[normalize-space(.)='${text}' or @aria-label='${text}']` });
       await command(`/element/${result['element-6066-11e4-a52e-4f735466cecf']}/click`, {});
     };
@@ -124,8 +127,9 @@ try {
 
       await go('/?holdMe=1#/clientes'); await wait("qa.me && document.querySelector('button.tr.stack-sm')");
       await click('button.tr.stack-sm'); await wait('qa.pending.length===1');
-      await evaluate("qa.me(); setTimeout(()=>qa.release(0,'810001'),0); return true");
+      await evaluate("sessionStorage.removeItem('qa-late-s01'); qa.me(); setTimeout(()=>{qa.release(0,'810001'); sessionStorage.setItem('qa-late-s01','delivered');},0); return true");
       await wait("location.pathname==='/login'");
+      assert.equal(await evaluate("return sessionStorage.getItem('qa-late-s01')"), 'delivered');
       assert.equal(await evaluate("return document.querySelector('.app-shell')"), null);
       await record('S01', { width, invalidInitialAdmission: true, lateDetailAbsent: true });
 
