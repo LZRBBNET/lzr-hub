@@ -47,6 +47,25 @@ test('release does not acknowledge completion before delivery and two render fra
   assert.equal(result.delivered, true); assert.equal(result.aborted, true);
 });
 
+test('payment JSON remains held after headers and acknowledges body plus render frames', async () => {
+  const { window, frames } = document(storage()), controller = new AbortController();
+  const response = window.fetch('/api/customers/payments?id=a&invoiceId=a1&page=1', { signal: controller.signal });
+  const headers = window.qa.paymentHeaders(0, 'late');
+  const received = await response;
+  frames.shift()(); frames.shift()(); await headers;
+  await assert.rejects(window.qa.releasePaymentBody(0), /QA_BODY_NOT_STARTED/);
+  let parsed = false, settled = false;
+  const body = received.json().then(value => { parsed = true; return value; });
+  assert.equal(window.qa.payments[0].bodyStarted, true);
+  assert.equal(parsed, false); controller.abort();
+  const released = window.qa.releasePaymentBody(0).then(value => { settled = true; return value; });
+  assert.equal((await body).items[0].id, 'SYNTHETIC_LATE_PAYMENT');
+  assert.equal(settled, false); assert.equal(frames.length, 1);
+  frames.shift()(); assert.equal(settled, false); frames.shift()();
+  const result = await released;
+  assert.equal(result.bodyDelivered, true); assert.equal(result.aborted, true);
+});
+
 test('failed graceful shutdown kills own process group and removes profile, idempotently', async () => {
   const profile = await mkdtemp(join(tmpdir(), 'qa-cleanup-test-'));
   const child = spawn(process.execPath, ['-e', 'setInterval(()=>{},1000)'], { detached: true, stdio: 'ignore' });
