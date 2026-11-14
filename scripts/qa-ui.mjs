@@ -8,11 +8,14 @@ import { join } from 'node:path';
 import { Customer360Service } from '../lib/platform/customer360-service.ts';
 import { openBrowser } from './qa-browser.mjs';
 import { registerCleanup } from './qa-lifecycle.mjs';
+import { runPaymentCases } from '../tests/browser/payment-cases.mjs';
 
 const data = {};
 for (const id of ['810001', '810002']) {
   const snapshot = { customer: { id, name: `Cadastro fictício ${id}`, document: 'SYNTHETIC', phone: '—', email: '—', address: '—', city: '—', neighborhood: '—', status: 'S' },
-    contracts: [], plan: null, invoices: [], payments: [], serviceOrders: [], connection: null,
+    contracts: [], plan: null,
+    invoices: [{ id: id + '1', customerId: id, status: 'A', dueAt: '2026-11-01', value: 40, valueSource: 'open-balance' }],
+    payments: [], serviceOrders: [], connection: null,
     partialSources: [], metrics: { totalLatencyMs: 0, blockLatencies: {} }, fetchedAt: '2026-11-14T12:00:00Z', mode: 'staging-readonly', cache: 'miss' };
   data[id] = await new Customer360Service(undefined, { getSnapshot: async () => snapshot }, [id], false).get(id);
   data[id].mode = 'demo';
@@ -157,6 +160,7 @@ try {
       // Restore a fictitious UI session for the next viewport, never a server token.
       await evaluate("localStorage.setItem('qa-session','yes'); return true");
     }
+    await runPaymentCases({ command, evaluate, wait, go, click, button, record });
     assert.deepEqual(unexpected, []);
     console.log(JSON.stringify({ result: 'pass', scope: 'real client components + compiled CSS; mocked APIs; NOT persistence E2E or human visual approval', cases: evidence.length }));
   }
