@@ -1,6 +1,7 @@
 "use client";
 
 import { DeliveryReconciliation } from "./delivery-reconciliation";
+import type { CustomerReadAccess } from "@/lib/platform/customer-session-admission";
 import { Fragment, useEffect, useRef, useState } from "react";
 import { containsHomologationText } from "@/lib/platform/reply-templates-shared";
 import { needsReply, waitTone, windowOpen, type EffectiveState, type StateAction } from "@/lib/platform/conversation-state-shared";
@@ -102,7 +103,14 @@ function usedSuggestions(messages:ConversationMessage[]) {
   return used;
 }
 
-export function AttendanceModule({ initialConversation, onAwaiting }: { initialConversation?: string; onAwaiting?: (count:number) => void }) {
+export function AttendanceModule({ canManageState = false, access, initialConversation, onAwaiting }: { canManageState?: boolean; access?: Pick<CustomerReadAccess, "generation" | "current">; initialConversation?: string; onAwaiting?: (count:number) => void }) {
+  const stateScope = useRef({ active: true, allowed: canManageState, request: 0 });
+  stateScope.current.allowed = canManageState;
+  useEffect(() => {
+    const scope = stateScope.current;
+    scope.active = true;
+    return () => { scope.active = false; };
+  }, []);
   const [items,setItems] = useState<ConversationSummary[]>([]);
   const [channelState,setChannelState] = useState<ChannelState>({enabled:false,autoReply:false,canReply:false});
   const [viewer,setViewer] = useState<Viewer|null>(null);
@@ -280,12 +288,17 @@ export function AttendanceModule({ initialConversation, onAwaiting }: { initialC
 
   async function changeState(action:StateAction, force = false) {
     const item = selectedRef.current;
-    if (!item || stateBusy) return;
+    const generation = access?.generation;
+    const admitted = () => stateScope.current.active && stateScope.current.allowed && (!access || access.current(generation!));
+    if (!item || stateBusy || !admitted()) return;
+    const request = ++stateScope.current.request;
+    const current = () => admitted() && stateScope.current.request === request;
     setStateBusy(true);
     try {
       const response = await fetch("/api/conversations/state", { method:"POST", headers:{"content-type":"application/json"},
         body:JSON.stringify({ conversationId:item.externalConversationId, action, takeOver:force }) });
       const payload = await response.json().catch(() => ({})) as { error?:string; state?:EffectiveState|null };
+      if (!current()) return;
       if (response.status===409 && payload.state?.assigneeName) { setTakeOver({ name:payload.state.assigneeName }); return; }
       if (!response.ok || !payload.state) { toast(payload.error ?? "Não consegui mudar a conversa.", "bad"); return; }
       const updated = { ...item, state:payload.state };
@@ -301,8 +314,8 @@ export function AttendanceModule({ initialConversation, onAwaiting }: { initialC
         if (next && queue!=="resolvidas") open(next);
       }
       void loadList("force");
-    } catch { toast("Não consegui falar com o servidor.", "bad"); }
-    finally { setStateBusy(false); }
+    } catch { if (current()) toast("Não consegui falar com o servidor.", "bad"); }
+    finally { if (stateScope.current.active && stateScope.current.request === request) setStateBusy(false); }
   }
 
   function insertReply(content:string) {
@@ -464,17 +477,17 @@ export function AttendanceModule({ initialConversation, onAwaiting }: { initialC
           {selected.handoff && !resolvedNow && <Badge tone="warn">IA pediu humano</Badge>}
           {resolvedNow
             ? <><span className="state-pill ok"><Icon name="check" size={14} />Resolvida{conversationState?.resolvedBy ? ` por ${firstName(conversationState.resolvedBy)}` : ""}</span>
-                <button type="button" className="button secondary small" disabled={stateBusy} onClick={()=>void changeState("reopen")}><Icon name="refresh" size={14} />Reabrir</button></>
+                {canManageState && <button type="button" className="button secondary small" disabled={stateBusy} onClick={()=>void changeState("reopen")}><Icon name="refresh" size={14} />Reabrir</button>}</>
             : ownerIsMe
               ? <><span className="state-pill mine"><span className="owner-dot" />Com você</span>
-                  <button type="button" className="button ghost small" disabled={stateBusy} onClick={()=>void changeState("release")} title="A conversa volta a não ter responsável"><Icon name="bot" size={14} />Devolver à IA</button>
-                  <button type="button" className="button small" disabled={stateBusy} onClick={()=>void changeState("resolve")}><Icon name="check" size={14} />Resolver</button></>
+                  {canManageState && <button type="button" className="button ghost small" disabled={stateBusy} onClick={()=>void changeState("release")} title="A conversa volta a não ter responsável"><Icon name="bot" size={14} />Devolver à IA</button>}
+                  {canManageState && <button type="button" className="button small" disabled={stateBusy} onClick={()=>void changeState("resolve")}><Icon name="check" size={14} />Resolver</button>}</>
               : ownerIsOther
                 ? <><span className="state-pill"><span className="owner-dot other" />Com {firstName(conversationState?.assigneeName)}</span>
-                    <button type="button" className="button secondary small" disabled={stateBusy} onClick={()=>void changeState("claim")}><Icon name="hand" size={14} />Assumir</button></>
+                    {canManageState && <button type="button" className="button secondary small" disabled={stateBusy} onClick={()=>void changeState("claim")}><Icon name="hand" size={14} />Assumir</button>}</>
                 : <><span className="state-pill bot"><Icon name="bot" size={14} />Com a IA</span>
-                    <button type="button" className="button small" disabled={stateBusy} onClick={()=>void changeState("claim")} title="Você passa a ser o responsável; a IA só sugere"><Icon name="hand" size={14} />Assumir</button>
-                    <button type="button" className="icon-button" disabled={stateBusy} onClick={()=>void changeState("resolve")} aria-label="Resolver sem assumir" title="Resolver"><Icon name="check" size={17} /></button></>}
+                    {canManageState && <button type="button" className="button small" disabled={stateBusy} onClick={()=>void changeState("claim")} title="Você passa a ser o responsável; a IA só sugere"><Icon name="hand" size={14} />Assumir</button>}
+                    {canManageState && <button type="button" className="icon-button" disabled={stateBusy} onClick={()=>void changeState("resolve")} aria-label="Resolver sem assumir" title="Resolver"><Icon name="check" size={17} /></button>}</>}
           <button type="button" className={`icon-button ${details?"pressed":""}`} onClick={()=>setDetails((value)=>!value)} aria-pressed={details} aria-label="Mostrar detalhes do cliente" title="Detalhes do cliente"><Icon name="panel" /></button>
         </div>}
       </header>
@@ -521,7 +534,7 @@ export function AttendanceModule({ initialConversation, onAwaiting }: { initialC
         onSlashMove={(delta)=>setSlashIndex(Math.max(0, Math.min(slashMatches.length - 1, slashActive + delta)))}
         onSlashClose={()=>setSlashClosed(true)}
         onPick={(content)=>setDraft(content)} onInsert={insertReply} onSend={()=>void send()}
-        onResolve={resolvedNow ? undefined : ()=>void changeState("resolve")} />}
+        onResolve={!canManageState || resolvedNow ? undefined : ()=>void changeState("resolve")} />}
     </section>
 
     {details && <aside className="inbox-details" aria-label="Detalhes do cliente">
@@ -557,7 +570,7 @@ export function AttendanceModule({ initialConversation, onAwaiting }: { initialC
       </>}
     </aside>}
 
-    <Modal open={!!takeOver} title="Assumir a conversa de um colega?" onClose={()=>setTakeOver(null)}
+    <Modal open={canManageState && !!takeOver} title="Assumir a conversa de um colega?" onClose={()=>setTakeOver(null)}
       footer={<><button className="button secondary" onClick={()=>setTakeOver(null)}>Cancelar</button><button className="button" disabled={stateBusy} onClick={()=>void changeState("claim", true)}>Assumir mesmo assim</button></>}>
       <p><strong>{takeOver?.name}</strong> está com esta conversa. Se você assumir, passa a ser o responsável — e a troca fica registrada na auditoria.</p>
       <p className="hint" style={{marginTop:10}}>Vale combinar antes no Chat da equipe: dois atendentes respondendo o mesmo cliente confundem quem está do outro lado.</p>

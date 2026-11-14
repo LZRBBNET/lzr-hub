@@ -1,11 +1,12 @@
 // Explicit UI doubles, not a backend authorization or persistence implementation.
 export function installHandoffFixtures() {
-  const readOnly = new URLSearchParams(location.search).get('handoffRole') === 'reader';
+  const role = new URLSearchParams(location.search).get('handoffRole');
+  const readOnly = role !== 'writer';
   const id = 'SYNTHETIC_HANDOFF_A', channel = 'qa-synthetic';
   const viewer = { id: 'qa', name: 'Operador Fictício' };
   const at = new Date().toISOString();
   const initial = { status: 'open', reopened: false, assigneeId: null, assigneeName: null, assignedAt: null, resolvedAt: null, resolvedBy: null };
-  const state = { ...initial };
+  const state = { ...initial, ...(role === 'reader-resolved' ? { status: 'resolved', resolvedAt: at, resolvedBy: viewer.name } : role === 'reader-owned' ? { assigneeId: viewer.id, assigneeName: viewer.name, assignedAt: at } : {}) };
   const qa = window.qa;
   qa.handoff = { states: [], summaries: [], reads: 0 };
   const messages = [
@@ -47,7 +48,7 @@ export function installHandoffFixtures() {
         return Response.json({ messages, audit: { intent: 'human_handoff', finalStatus: 'handoff', handoff: true, handoffReason: 'human_requested', intentSource: 'rules', intentConfidence: null, intentModel: null, appVersion: 'qa', correlationId: 'SYNTHETIC', createdAt: at },
           replyWindow: { lastCustomerAt: at, closesAt: new Date(Date.now() + 3600000).toISOString(), open: true } });
       }
-      return Response.json({ available: true, viewer, channelState: { enabled: true, autoReply: false, canReply: !readOnly }, items: [{ channel, externalConversationId: id, displayName: 'Conversa Fictícia A', lastMessage: messages[1].content, lastCustomerMessage: messages[0].content, lastRole: 'suggestion', lastAt: at, lastCustomerAt: at, messages: 2, handoff: true, finalStatus: 'handoff', intent: 'human_handoff', state: { ...state } }] });
+      return Response.json({ available: true, viewer, channelState: { enabled: false, autoReply: false, canReply: false }, items: [{ channel, externalConversationId: id, displayName: 'Conversa Fictícia A', lastMessage: messages[1].content, lastCustomerMessage: messages[0].content, lastRole: 'suggestion', lastAt: at, lastCustomerAt: at, messages: 2, handoff: true, finalStatus: 'handoff', intent: 'human_handoff', state: { ...state } }] });
     }
     if (url.pathname === '/api/agent/replies') return Response.json({ items: [] });
     if (url.pathname === '/api/conversations/state' && init.method === 'POST') return hold(qa.handoff.states, JSON.parse(init.body));
