@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { randomUUID } from "node:crypto";
 import { getDb } from "@/db";
 import { getIxcRuntime } from "@/lib/integrations/ixc/runtime";
+import { billingAmount } from "@/lib/platform/billing-amount";
 import { businessToday } from "@/lib/platform/billing-service";
 import {
   DbPaymentPromiseRepository, PaymentPromiseValidationError, parsePromisedFor, reviewPendingPromises,
@@ -37,6 +38,34 @@ async function loadInvoiceStatusByCustomer(customerId: string, correlationId: st
   if (!runtime?.provider) return new Map();
   const snapshot = await runtime.provider.getSnapshot(customerId, correlationId).catch(() => null);
   return new Map((snapshot?.invoices ?? []).map((invoice) => [invoice.id, invoice.status]));
+}
+
+/** Fresh, complete, customer-scoped evidence for review only. Unknown is never paid. */
+async function loadConfirmedReviewStatuses(customerId: string, correlationId: string): Promise<Map<string, string>> {
+  try {
+    const provider = getIxcRuntime().provider;
+    if (!provider) return new Map();
+    const requestedAt = Date.now();
+    const snapshot = await provider.getSnapshot(customerId, correlationId, true);
+    const observedAt = typeof snapshot.fetchedAt === "string" ? Date.parse(snapshot.fetchedAt) : NaN;
+    const coverage = snapshot.coverage?.invoices;
+    if (!Number.isFinite(observedAt) || observedAt < requestedAt || observedAt > Date.now()
+      || snapshot.cache !== "miss" || snapshot.customer?.id !== customerId
+      || !Array.isArray(snapshot.invoices) || !Array.isArray(snapshot.partialSources)
+      || snapshot.partialSources.includes("invoices") || coverage?.complete !== true
+      || !Number.isSafeInteger(coverage.total) || coverage.total !== snapshot.invoices.length
+      || coverage.read !== snapshot.invoices.length) return new Map();
+    const statuses = new Map<string, string>();
+    const seen = new Set<string>();
+    for (const invoice of snapshot.invoices) {
+      if (!invoice || typeof invoice.id !== "string" || !invoice.id || invoice.customerId !== customerId || seen.has(invoice.id)) return new Map();
+      seen.add(invoice.id);
+      const balance = invoice.valueSource === "open-balance" ? billingAmount(invoice.value, invoice.valueSource) : null;
+      if (invoice.status === "R" && balance === 0) statuses.set(invoice.id, "R");
+      if (invoice.status === "A" && balance !== null && balance > 0) statuses.set(invoice.id, "A");
+    }
+    return statuses;
+  } catch { return new Map(); }
 }
 
 export async function POST(request: Request) {
@@ -81,14 +110,19 @@ export async function POST(request: Request) {
     const byCustomer = new Map<string, string[]>();
     for (const promise of pending) byCustomer.set(promise.customerId, [...(byCustomer.get(promise.customerId) ?? []), promise.invoiceId]);
 
-    const statusByInvoice = new Map<string, string>();
-    for (const customerId of byCustomer.keys()) {
-      const statuses = await loadInvoiceStatusByCustomer(customerId, correlationId);
-      for (const [invoiceId, status] of statuses) statusByInvoice.set(invoiceId, status);
-    }
-
     const today = businessToday(new Date());
-    const result = reviewPendingPromises(pending, statusByInvoice, today);
+    const result = { fulfilled: [] as string[], broken: [] as string[], stillPending: [] as string[] };
+    // Never share invoice evidence across customer identities.
+    for (const customerId of byCustomer.keys()) {
+      const statuses = await loadConfirmedReviewStatuses(customerId, correlationId);
+      const reviewed = reviewPendingPromises(pending.filter((promise) => promise.customerId === customerId), statuses, today);
+      result.fulfilled.push(...reviewed.fulfilled);
+      result.broken.push(...reviewed.broken);
+      result.stillPending.push(...reviewed.stillPending);
+    }
+    const admitted = await authorize(request, "billing.write-demo");
+    if (!admitted.allowed) return NextResponse.json({ error: admitted.error }, { status: admitted.status });
+    if (guard.user?.id !== admitted.user?.id) return NextResponse.json({ error: "Seu acesso mudou. Atualize a página." }, { status: 403 });
     for (const id of result.fulfilled) await repository.updateStatus(id, "fulfilled");
     for (const id of result.broken) await repository.updateStatus(id, "broken");
 
