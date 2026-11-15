@@ -86,3 +86,36 @@ sanitizada, encerramento/timeout, concorrência RO e launcher autenticado. A pro
 PostgreSQL real é separada dos clientes fictícios e não pode ser substituída por
 mocks. Sem imagem/binário local permitido, permanece pendente e impede alegar
 validação operacional completa. Não abrir rede ou baixar imagem sem autorização.
+
+## Diagnóstico sanitizado de `unknown`
+
+Um resultado `unknown` pode incluir `phase` e `reason`, sempre como par de enums
+fechado. Não é uma mensagem do driver nem SQLSTATE. As fases são `worker-start`,
+`connect`, `transaction`, `identity`, `catalog`, `reservation`, `completion`,
+`journal`, `close` e `ipc`. Cada fase aceita somente os motivos expressamente
+mapeados no código; campos adicionais, pares inválidos e diagnósticos anexados a
+estados de sucesso são recusados na projeção IPC.
+
+A exposição adicional é deliberadamente limitada: indica a etapa que não pôde
+ser concluída e uma categoria, portanto pode revelar progresso interno. Não
+publicar esses logs como endpoint. Não inclui host, usuário, URL, dados, OID de
+inspect, tentativa, conteúdo de marcador, hash, timestamp, contagem, stack ou
+mensagem de exceção. `identity-observed` conserva somente a exceção de OID já
+existente em identify; nenhum novo valor de banco é divulgado.
+
+`query-failed` não distingue rede, permissão, timeout ou erro do servidor;
+`unexpected-shape` inclui falhas não classificadas durante validação. Nenhuma
+categoria prova corrupção, titularidade ou conclusão de uma tentativa anterior.
+Um `close/close-failed` substitui inclusive um resultado estrutural que havia
+sido obtido; não presumir que fechamento incerto foi bem-sucedido.
+
+O filho continua enviando uma única mensagem, somente após `client.end()`
+resolver ou falhar. O supervisor só publica após `close` do filho e descarta
+resultados em saída anormal/IPC inválido. Sem confirmação de fechamento, não
+inicia o launcher concorrente. Os quatro indicadores de autorização/reconciliação
+permanecem false. Nenhuma consulta, retry, privilégio, janela ou guarda foi
+adicionada ou relaxada. Diagnóstico melhor não autoriza nova execução remota.
+
+O launcher normal após inspeção continua sendo a aplicação autenticada, não um
+modo global somente leitura: login, auditoria e operações autorizadas podem
+escrever. As guardas de inicialização/setup fechados continuam obrigatórias.
