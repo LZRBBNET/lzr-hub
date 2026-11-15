@@ -44,7 +44,7 @@ async function browser() {
   let session, failed=false;child.on('error',()=>{failed=true;});
   const request=async(path,body,method=body===undefined?'GET':'POST')=>{
     const response=await fetch(`http://127.0.0.1:${port}${path}`,{method,headers:{'content-type':'application/json'},...(body===undefined?{}:{body:JSON.stringify(body)}),signal:AbortSignal.timeout(10000)});
-    const payload=await response.json();if(!response.ok||payload.value?.error){const error=Error('GATE_WEBDRIVER_COMMAND_FAILED');error.certCode=payload.value?.message?.match(/net::(ERR_CERT_(?:AUTHORITY_INVALID|COMMON_NAME_INVALID|DATE_INVALID))/)?.[1];throw error;}return payload.value;
+    const payload=await response.json();if(!response.ok||payload.value?.error){const error=Error('GATE_WEBDRIVER_COMMAND_FAILED');error.safeCode=['no such element','element click intercepted','stale element reference','javascript error','unknown command','invalid argument','timeout','element not interactable'].includes(payload.value?.error)?payload.value.error.replaceAll(' ','-'):'webdriver-other';error.certCode=payload.value?.message?.match(/net::(ERR_CERT_(?:AUTHORITY_INVALID|COMMON_NAME_INVALID|DATE_INVALID))/)?.[1];throw error;}return payload.value;
   };
   const close=manageProcessGroup(child,profile,async()=>{if(session)await request(`/session/${session}`,undefined,'DELETE');});
   try {
@@ -135,7 +135,7 @@ async function journey() {
     };
     const click=async(selector)=>{const e=await command('/element',{using:'css selector',value:selector});await command(`/element/${e['element-6066-11e4-a52e-4f735466cecf']}/click`,{});};
     const fill=async(selector,text)=>{const e=await command('/element',{using:'css selector',value:selector});const id=e['element-6066-11e4-a52e-4f735466cecf'];await command(`/element/${id}/clear`,{});await command(`/element/${id}/value`,{text});};
-    const button=async(text)=>{const e=await command('/element',{using:'xpath',value:`//button[normalize-space(.)='${text}' or @aria-label='${text}']`});await command(`/element/${e['element-6066-11e4-a52e-4f735466cecf']}/click`,{});};
+    const button=async(text)=>{await wait("document.getAnimations().filter(a=>a.effect.getTiming().iterations!==Infinity).every(a=>a.playState!=='running')");const e=await command('/element',{using:'xpath',value:`//button[normalize-space(.)='${text}' or @aria-label='${text}']`});await command(`/element/${e['element-6066-11e4-a52e-4f735466cecf']}/click`,{});};
     return {command,evaluate,wait,api,click,fill,button};
   };
   try {
@@ -151,15 +151,22 @@ async function journey() {
     assert.equal((await t.api('/api/auth/me')).body.authenticated,true);
     const cookies=await t.command('/cookie');const cookie=cookies.find(x=>x.name==='lzr_session');assert.ok(cookie?.secure&&cookie.httpOnly);assert.equal(cookie.sameSite,'Lax');
     assert.equal((await t.api('/api/customers')).status,403);
-    assert.equal((await t.api('/api/auth/password',{currentPassword:password,newPassword:nextPassword})).status,200);
+    await t.wait("document.querySelector('dialog[open] input[autocomplete=current-password]')");
+    await t.fill('dialog[open] input[autocomplete=current-password]',password);
+    await t.fill('dialog[open] input[placeholder="mínimo 10 caracteres"]',nextPassword);
+    await t.fill('dialog[open] label.field:last-of-type input',nextPassword);
+    await t.button('Trocar senha');await t.wait("document.body.innerText.includes('Senha trocada.')");await t.button('Entrar');
+    await t.wait("!document.querySelector('dialog[open]')");
+    assert.equal((await t.api('/api/auth/me')).body.mustChangePassword,false);
     await t.command('/url',{url:origin+'/#/clientes'});await t.wait("document.querySelector('button.tr.stack-sm')");record('login-secure-cookie-and-password-change');
     stage='customer360';
     const customer=await t.api('/api/customers?id=10');assert.equal(customer.status,200);assert.equal(customer.body.customer.id,'10');
     for(const width of [1440,390]){
+      stage=`customer360-${width}-resize`;
       await t.command('/goog/cdp/execute',{cmd:'Emulation.setDeviceMetricsOverride',params:{width,height:900,deviceScaleFactor:1,mobile:false}});
-      await t.command('/url',{url:origin+'/#/clientes'});await t.wait("document.querySelector('button.tr.stack-sm')");await t.click('button.tr.stack-sm');await t.wait("document.body.innerText.includes('Plano sintético')");
+      stage=`customer360-${width}-open`;await t.command('/url',{url:origin+'/#/clientes'});await t.wait("document.querySelector('button.tr.stack-sm')");await t.click('button.tr.stack-sm');await t.wait("document.body.innerText.includes('Plano sintético')");
       assert.ok(await t.evaluate("return document.body.innerText.includes('Fonte sintética')"));
-      assert.equal(await t.evaluate('return document.documentElement.scrollWidth'),width);await t.button('Fechar');
+      assert.equal(await t.evaluate('return document.documentElement.scrollWidth'),width);stage=`customer360-${width}-close`;await t.button('Fechar');
       record('customer360-real-app-layout',{width});
     }
     stage='handoff';await t.command('/goog/cdp/execute',{cmd:'Emulation.setDeviceMetricsOverride',params:{width:1440,height:900,deviceScaleFactor:1,mobile:false}});
@@ -211,4 +218,4 @@ try {
     while(Date.now()<until)await delay(Math.min(1000,until-Date.now()));
     await tlsCheck('tls-same-leaf-expired-refused','cert.pem','key.pem',origin,false);
   }else if(phase==='cleanup')await cleanup();else throw Error('GATE_PHASE_INVALID');
-}catch(error){const line=Number(error.stack?.match(/qa-integrated\.mjs:(\d+):/)?.[1]??0);console.error(JSON.stringify({gate:'integrated',phase,stage,result:'failed',line,actual:typeof error.actual==='number'?error.actual:undefined,expected:typeof error.expected==='number'?error.expected:undefined}));process.exitCode=1;}
+}catch(error){const line=Number(error.stack?.match(/qa-integrated\.mjs:(\d+):/)?.[1]??0);console.error(JSON.stringify({gate:'integrated',phase,stage,result:'failed',error:error.safeCode,line,actual:typeof error.actual==='number'?error.actual:undefined,expected:typeof error.expected==='number'?error.expected:undefined}));process.exitCode=1;}
