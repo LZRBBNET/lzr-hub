@@ -47,3 +47,13 @@ test('launcher emits exactly once and starts only after supervised child close; 
  const p=runInspectionStart(s,{artifact:async()=>{},now:()=>time,inspect:(src,plan)=>superviseInspection(src,plan,{now:()=>time,spawn:(_file,_args,opts)=>{assert.deepEqual(opts.stdio,['ignore','ignore','ignore','ipc']);child=new EventEmitter();child.kill=()=>{};return child;}}),start:async()=>{starts++;},emit:v=>emitted.push(v)});
  while(!child)await new Promise(r=>setImmediate(r));child.emit('message',unknownReport('identity','identity-mismatch'));await Promise.resolve();assert.equal(starts,0);assert.equal(emitted.length,0);child.emit('close',0);await p;assert.equal(starts,1);assert.deepEqual(emitted,[unknownReport('identity','identity-mismatch')]);safe(emitted[0]);
 });
+
+test('catalog subdivision IPC accepts only closed pairs on unknown with four false fields',async()=>{
+ for(const reason of ['invalid-marker-catalog','marker-without-reservation','unexpected-inventory','completion-without-journal','journal-without-completion']){
+  const valid=unknownReport('catalog',reason);assert.deepEqual(safe(projectReport(valid,'inspect')),valid);
+  const s=source(),plan={...inspectionPlan(s,time),mode:'inspect',oid:'12345'};let child;
+  const pending=superviseInspection(s,plan,{now:()=>time,spawn:()=>{child=new EventEmitter();child.kill=()=>{};return child;}});
+  child.emit('message',valid);child.emit('close',0);assert.deepEqual(safe(await pending),valid);
+  for(const invalid of [{...valid,phase:'identity'},{...valid,phase:'ipc'},{...valid,reason:reason+secret},{...valid,state:'absence-observed'},{...valid,details:secret},{...valid,initializationAllowed:true}])assert.deepEqual(safe(projectReport(invalid,'inspect')),unknownReport('ipc','invalid-message'));
+ }
+});
