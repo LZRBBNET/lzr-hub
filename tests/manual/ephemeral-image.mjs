@@ -26,7 +26,7 @@ try{
   for(const line of result.stdout.trim().split('\n')){const row=JSON.parse(line);assert.ok(typeof row.stage==='string'&&typeof row.pass==='boolean');assert.ok(Object.keys(row).every(k=>['stage','pass','reason','resourceGate','visibleScope','freeViabilityProven','observed'].includes(k)));record({cycle,...row});assert.ok(row.pass);}
   if(cycle===1){await docker(['cp',name+':/run/lzr/test-session',temporary+'/session']);await chmod(temporary+'/session',0o600);}
  }
- record({stage:'outcome',pass:false,functionalPass:true,resourceGate:'unverified',freeViabilityProven:false});
+ record({stage:'outcome',scope:'image-and-resource-gate',status:'blocked',pass:false,functionalPass:true,resourceGate:'unverified',freeViabilityProven:false});
 }catch(error){failed=true;if(stage==='build'){const text=String(error.stderr)+String(error.stdout);record({stage:'build-diagnostic',pass:false,steps:text.split('\n').filter(l=>/^#[0-9]+ \[/.test(l)).map(l=>l.replace(/https?:\/\/[^ ]+/g,'<endpoint>')).slice(-4),errors:text.split('\n').filter(l=>l.startsWith('ERROR:')).map(l=>l.replace(/https?:\/\/[^ ]+/g,'<endpoint>').replace(/127\.0\.0\.1:[0-9]+/g,'localhost:<port>').replace(/\/tmp\/[^ :]+/g,'<temporary-path>').replace(/\b(?:[0-9]{1,3}\.){3}[0-9]{1,3}:[0-9]+/g,'<ip>:<port>')).slice(-2)});}record({stage,pass:false,reason:['ENOENT','EACCES','ERR_ASSERTION'].includes(error.code)?error.code:stage==='build'?['not supported','permission denied','connection refused','failed to dial','not found','buildx','buildkit','403 Forbidden','401 Unauthorized','failed to solve'].find(x=>(String(error.stderr)+String(error.stdout)).includes(x))??'unclassified-build':'other'});if(error.stdout)for(const line of error.stdout.trim().split('\n')){try{const row=JSON.parse(line);if(Object.keys(row).every(k=>['stage','pass','reason'].includes(k))&&typeof row.stage==='string'&&typeof row.pass==='boolean')record(row);}catch{}}}
 finally{
  cleaning=true;let containers=true,files=true,imageRemoved=false;
@@ -35,5 +35,8 @@ finally{
  for(const path of [context,temporary].filter(Boolean))try{await rm(path,{recursive:true,force:true});try{await access(path);files=false;}catch(e){if(e.code!=='ENOENT')files=false;}}catch{files=false;}
  record({stage:'cleanup',pass:containers&&files&&imageRemoved,containersRemoved:containers,filesRemoved:files,imageRemoved});
  if(!containers||!files||!imageRemoved||interrupted)failed=true;
+ record({stage:'final-verdict',scope:'image-and-resource-gate',status:failed?'failed':'blocked',pass:false,exitCode:failed?1:2});
  await writeFile('/workspace/evidence/ephemeral-image-results.json',JSON.stringify(evidence,null,2)+'\n');
-}process.exitCode=failed?1:0;
+}
+// 0 is deliberately unavailable: this harness cannot yet prove its resource gate.
+process.exitCode=failed?1:2;
