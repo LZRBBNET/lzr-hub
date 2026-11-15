@@ -34,7 +34,7 @@ try{
   for(const line of result.stdout.trim().split('\n')){const row=JSON.parse(line);assert.ok(typeof row.stage==='string'&&typeof row.pass==='boolean');assert.ok(Object.keys(row).every(k=>['stage','pass','reason','resourceGate','visibleScope','freeViabilityProven','observed'].includes(k)));record({cycle,...row});assert.ok(row.pass);}
   if(cycle===1){stage='capture-private-session';retainedSession=await captureSession(name,{PATH:process.env.PATH,HOME:process.env.HOME,DOCKER_CONFIG:temporary+'/docker-config'});}
  }
- record({stage:'outcome',pass:true,baselineReproduced:baseline,functionalPass:!baseline,imageValidation:false,resourceGate:'unverified',freeViabilityProven:false});
+ record({stage:'outcome',scope:'host-mounted-runtime-only',status:baseline?'baseline-reproduced':'functional-only',pass:true,baselineReproduced:baseline,functionalPass:!baseline,imageValidation:false,resourceGate:'unverified',freeViabilityProven:false});
 }catch(error){failed=true;record({stage,pass:false,reason:['ENOENT','EACCES','ERR_ASSERTION'].includes(error.code)?error.code:'other'});if(error.stdout)for(const line of error.stdout.trim().split('\n')){try{const row=JSON.parse(line);if(Object.keys(row).every(k=>['stage','pass','reason'].includes(k))&&typeof row.stage==='string'&&typeof row.pass==='boolean')record(row);}catch{}}}
 finally{
  retainedSession?.fill(0);retainedSession=undefined;cleaning=true;let containers=true,files=true,imageRemoved=false;
