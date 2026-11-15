@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { desc, eq, and } from "drizzle-orm";
 import { paymentPromises } from "../../db/schema.ts";
-import { businessToday, isOpenInvoice } from "./billing-service.ts";
+import { businessToday } from "./billing-service.ts";
 
 /**
  * Promessa de pagamento (issue #16, item 2). Registrada e avaliada só contra
@@ -95,7 +95,9 @@ export class MemoryPaymentPromiseRepository implements PaymentPromiseRepository 
  * histórico não muda de novo.
  */
 export function evaluatePendingPromise(promise: { promisedFor: string }, invoiceStatus: string | undefined, today: string): PromiseStatus {
-  if (invoiceStatus === undefined || !isOpenInvoice(invoiceStatus)) return "fulfilled";
+  // Only confirmed receipt closes a promise; absence/cancellation is not payment.
+  if (invoiceStatus === "R") return "fulfilled";
+  if (invoiceStatus !== "A") return "pending";
   if (promise.promisedFor < today) return "broken";
   return "pending";
 }

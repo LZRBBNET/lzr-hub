@@ -21,11 +21,11 @@ test("formato inválido é recusado", () => {
   assert.throws(() => parsePromisedFor("06/08/2026", NOW), PaymentPromiseValidationError);
 });
 
-test("fatura fechada cumpre a promessa, mesmo antes da data prometida", () => {
-  assert.equal(evaluatePendingPromise(promise({ promisedFor: "2026-08-20" }), "P", "2026-08-06"), "fulfilled");
+test("fatura recebida confirmada cumpre a promessa, mesmo antes da data prometida", () => {
+  assert.equal(evaluatePendingPromise(promise({ promisedFor: "2026-08-20" }), "R", "2026-08-06"), "fulfilled");
 });
-test("fatura sem status conhecido (não achada) também conta como cumprida — não há dívida para cobrar", () => {
-  assert.equal(evaluatePendingPromise(promise(), undefined, "2026-08-06"), "fulfilled");
+for (const status of [undefined, "", "C", "P", "unknown", "cancelada", "A?", "recebido"]) test(`status inconclusivo mantém pendência ativa ou expirada: ${status}`, () => {
+  for (const promisedFor of ["2026-08-01", "2026-08-10"]) assert.equal(evaluatePendingPromise(promise({ promisedFor }), status, "2026-08-06"), "pending");
 });
 test("data vencida com fatura ainda aberta quebra a promessa", () => {
   assert.equal(evaluatePendingPromise(promise({ promisedFor: "2026-08-01" }), "A", "2026-08-06"), "broken");
@@ -43,7 +43,7 @@ test("reviewPendingPromises separa cumpridas, quebradas e pendentes sem tocar o 
     promise({ id: "quebrada", invoiceId: "inv-b", promisedFor: "2026-08-01" }),
     promise({ id: "pendente", invoiceId: "inv-c", promisedFor: "2026-08-20" }),
   ];
-  const statusPorFatura = new Map([["inv-a", "P"], ["inv-b", "A"], ["inv-c", "A"]]);
+  const statusPorFatura = new Map([["inv-a", "R"], ["inv-b", "A"], ["inv-c", "A"]]);
   const result = reviewPendingPromises(promises, statusPorFatura, "2026-08-06");
   assert.deepEqual(result.fulfilled, ["cumprida"]);
   assert.deepEqual(result.broken, ["quebrada"]);
