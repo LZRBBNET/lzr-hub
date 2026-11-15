@@ -1,0 +1,62 @@
+name: Minimal inspection diagnostics (synthetic only)
+on:
+  pull_request:
+    branches: [review/first-access-ro-composed-20261113]
+permissions:
+  contents: read
+concurrency:
+  group: inspection-diagnostics-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+jobs:
+  diagnostics:
+    if: github.event.repository.private == false
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+          fetch-depth: 2
+      - name: Exact base and minimal delta
+        env:
+          EXPECTED_BASE: ${{ github.event.pull_request.base.sha }}
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          test "$EXPECTED_BASE" = ac4c4b09ae6fda175b0c77ed54100eb92c472e6b
+          test "$(git rev-parse HEAD^1)" = "$EXPECTED_BASE"
+          test "$(git rev-parse HEAD^2)" = "$EXPECTED_HEAD"
+          test "$(git rev-parse HEAD^1^{tree})" = e3f50a73611f0f8f80594155851003686cb4e1c2
+          git show -s --format='tested-merge=%H tree=%T parents=%P'
+          git diff --name-only HEAD^1 HEAD | while read -r path; do
+            case "$path" in
+              .github/workflows/inspection-diagnostics.yml|docs/runbooks/synthetic-operational-inspection.md|lib/platform/synthetic-operational-inspection.ts|scripts/synthetic-inspect-start.mjs|tests/synthetic-operational-inspection.test.mjs|tests/synthetic-inspection-diagnostics.test.mjs|tests/synthetic-inspection-worker-diagnostics.test.mjs) ;;
+              *) echo 'Unexpected delta'; exit 1;;
+            esac
+          done
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '24.22.1'
+      - name: Locked install without lifecycle hooks
+        timeout-minutes: 8
+        run: env -i PATH="$PATH" CI=true npm_config_ignore_scripts=true NODE_USE_SYSTEM_CA=1 npm run install:ci
+      - name: Types lint and injected-failure regression tests
+        timeout-minutes: 4
+        run: |
+          env -i PATH="$PATH" CI=true TZ=UTC bash -eu <<'CLEAN'
+          npm run typecheck
+          npm run lint
+          node --experimental-strip-types --test tests/synthetic-operational-inspection.test.mjs tests/synthetic-inspection-diagnostics.test.mjs tests/synthetic-inspection-worker-diagnostics.test.mjs
+          CLEAN
+      - name: Actual synthetic artifact and disabled-wrapper smoke
+        timeout-minutes: 3
+        run: |
+          env -i PATH="$PATH" CI=true TZ=UTC bash -eu <<'CLEAN'
+          export NODE_ENV=production FEATURE_AUTH=true FEATURE_IXC_FULL_BASE=false
+          export FEATURE_SYNTHETIC_INVOICES=true DEMO_DATASET=isolated-invoices-v1
+          export SYNTHETIC_WEB_DEMO=true SYNTHETIC_DATABASE_CONFIRMATION=isolated-synthetic-postgres-v1
+          export SYNTHETIC_DEMO_ORIGIN=https://demo.example.invalid
+          export FEATURE_N8N_AUTOREPLY=false FEATURE_ATTENDANT_REPLY=false
+          export FEATURE_LLM_INTENT=false FEATURE_COPILOT_LLM=false FEATURE_TELEGRAM_ALERTS=false
+          bash scripts/sites-env.sh -- bash scripts/staging-env.sh node --experimental-strip-types scripts/synthetic-web.mjs build
+          env -i PATH="$PATH" TZ=UTC timeout --signal=TERM --kill-after=5s 60s node --experimental-strip-types --test tests/synthetic-operational-artifact.mjs
+          CLEAN
