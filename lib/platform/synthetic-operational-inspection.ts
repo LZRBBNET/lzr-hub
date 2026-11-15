@@ -16,12 +16,12 @@ export const COMPLETION_SQL = 'SELECT CASE WHEN length(attempt)<=79 THEN attempt
 export const JOURNAL_SQL = `SELECT CASE WHEN length(hash)=64 THEN hash END AS hash,CASE WHEN length(created_at::text)<=16 THEN created_at::text END AS stamp FROM drizzle.__drizzle_migrations ORDER BY id LIMIT ${manifest.length+1}`;
 export type InspectionConfig = { mode:'identify'|'inspect'; host:string; database:string; user:string; password:string; oid?:string; expires:number };
 export type InspectionDiagnosticPhase = 'worker-start'|'connect'|'transaction'|'identity'|'catalog'|'reservation'|'completion'|'journal'|'close'|'ipc';
-export type InspectionDiagnosticReason = 'setup-failed'|'connection-failed'|'query-failed'|'deadline'|'identity-mismatch'|'unexpected-shape'|'unexpected-structure'|'marker-mismatch'|'journal-mismatch'|'close-failed'|'child-failed'|'missing-message'|'invalid-message';
+export type InspectionDiagnosticReason = 'setup-failed'|'connection-failed'|'query-failed'|'deadline'|'identity-mismatch'|'unexpected-shape'|'unexpected-structure'|'invalid-marker-catalog'|'marker-without-reservation'|'unexpected-inventory'|'completion-without-journal'|'journal-without-completion'|'marker-mismatch'|'journal-mismatch'|'close-failed'|'child-failed'|'missing-message'|'invalid-message';
 const diagnosticPairs: Readonly<Record<InspectionDiagnosticPhase, readonly InspectionDiagnosticReason[]>> = {
  'worker-start':['setup-failed'],connect:['connection-failed'],
  transaction:['query-failed','deadline','unexpected-shape'],
  identity:['query-failed','deadline','unexpected-shape','identity-mismatch'],
- catalog:['query-failed','deadline','unexpected-shape','unexpected-structure'],
+ catalog:['query-failed','deadline','unexpected-shape','unexpected-structure','invalid-marker-catalog','marker-without-reservation','unexpected-inventory','completion-without-journal','journal-without-completion'],
  reservation:['query-failed','deadline','unexpected-shape','marker-mismatch'],
  completion:['query-failed','deadline','unexpected-shape','marker-mismatch'],
  journal:['query-failed','deadline','unexpected-shape','journal-mismatch'],
@@ -91,20 +91,20 @@ export async function inspectOperational(client:ReadClient,config:InspectionConf
   if(rows.length!==1||identity.database!==config.database||identity.owner!==config.user||!validOid(identity.oid)||(config.mode==='inspect'&&identity.oid!==config.oid))failInspection('identity','identity-mismatch');
   if(config.mode==='identify'){await query('COMMIT','transaction');return report('identity-observed',identity.oid as string);}
   const tables=await query(TABLES_SQL,'catalog');
-  if(tables.length>3||tables.some(t=>t.kind!=='r'||t.rls!==false||!((t.schema==='public'&&['synthetic_init_reservation','synthetic_init_completion'].includes(String(t.name)))||(t.schema==='drizzle'&&t.name==='__drizzle_migrations')))||new Set(tables.map(t=>t.name)).size!==tables.length)failInspection('catalog','unexpected-structure');
+  if(tables.length>3||tables.some(t=>t.kind!=='r'||t.rls!==false||!((t.schema==='public'&&['synthetic_init_reservation','synthetic_init_completion'].includes(String(t.name)))||(t.schema==='drizzle'&&t.name==='__drizzle_migrations')))||new Set(tables.map(t=>t.name)).size!==tables.length)failInspection('catalog','invalid-marker-catalog');
   const has=(n:string)=>tables.some(t=>t.name===n);let state:InspectionReport['state'];
   if(!has('synthetic_init_reservation')){
-   if(tables.length)failInspection('catalog','unexpected-structure');const empty=await query(EMPTY_SQL,'catalog');if(empty.length!==1||empty[0].objects!==0)failInspection('catalog','unexpected-structure');state='absence-observed';
+   if(tables.length)failInspection('catalog','marker-without-reservation');const empty=await query(EMPTY_SQL,'catalog');if(empty.length!==1||empty[0].objects!==0)failInspection('catalog','unexpected-inventory');state='absence-observed';
   }else{
    const digest=createHash('sha256').update(JSON.stringify(manifest)).digest('hex');
    const reservation=await query(RESERVATION_SQL,'reservation'),r=reservation[0];
    if(reservation.length!==1||typeof r.attempt!=='string'||!/^synthetic-init-[a-z0-9-]{8,64}$/.test(r.attempt)||r.manifest!==digest||typeof r.stamp!=='string'||!Number.isFinite(Date.parse(r.stamp))||new Date(r.stamp).toISOString()!==r.stamp)failInspection('reservation','marker-mismatch');
    if(has('synthetic_init_completion')){
-    if(!has('__drizzle_migrations'))failInspection('catalog','unexpected-structure');const completion=await query(COMPLETION_SQL,'completion'),c=completion[0];
+    if(!has('__drizzle_migrations'))failInspection('catalog','completion-without-journal');const completion=await query(COMPLETION_SQL,'completion'),c=completion[0];
     if(completion.length!==1||c.attempt!==r.attempt||c.manifest!==digest||c.stamp!==r.stamp)failInspection('completion','marker-mismatch');
     const journal=await query(JOURNAL_SQL,'journal');if(journal.length!==manifest.length||journal.some((j,i)=>j.hash!==manifest[i].sha256||j.stamp!==String(manifest[i].when)))failInspection('journal','journal-mismatch');state='completion-structural';
    }else{
-    if(has('__drizzle_migrations'))failInspection('catalog','unexpected-structure');const empty=await query(RESERVED_EMPTY_SQL,'catalog');if(empty.length!==1||empty[0].objects!==0)failInspection('catalog','unexpected-structure');state='reservation-structural';
+    if(has('__drizzle_migrations'))failInspection('catalog','journal-without-completion');const empty=await query(RESERVED_EMPTY_SQL,'catalog');if(empty.length!==1||empty[0].objects!==0)failInspection('catalog','unexpected-inventory');state='reservation-structural';
    }
   }
   await query('COMMIT','transaction');return report(state);

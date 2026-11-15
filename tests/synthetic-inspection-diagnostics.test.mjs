@@ -28,7 +28,7 @@ function safe(result,phase,reason){
 test('closed diagnostics accept exact pairs, never arbitrary phase/reason or secret values',()=>{
  const pairs={
   'worker-start':['setup-failed'],connect:['connection-failed'],transaction:['query-failed','deadline','unexpected-shape'],
-  identity:['query-failed','deadline','unexpected-shape','identity-mismatch'],catalog:['query-failed','deadline','unexpected-shape','unexpected-structure'],
+  identity:['query-failed','deadline','unexpected-shape','identity-mismatch'],catalog:['query-failed','deadline','unexpected-shape','unexpected-structure','invalid-marker-catalog','marker-without-reservation','unexpected-inventory','completion-without-journal','journal-without-completion'],
   reservation:['query-failed','deadline','unexpected-shape','marker-mismatch'],completion:['query-failed','deadline','unexpected-shape','marker-mismatch'],
   journal:['query-failed','deadline','unexpected-shape','journal-mismatch'],close:['close-failed'],ipc:['child-failed','missing-message','invalid-message'],
  };
@@ -61,8 +61,8 @@ test('deadline and malformed response are separate from backend query errors at 
 test('identity/catalog/marker/journal mismatches distinguish safe branch outcomes without returned values',async()=>{
  const cases=[
   ['identity','identity-mismatch',f=>f.rows.get(IDENTITY_ONLY_SQL)[0].owner=canary],
-  ['catalog','unexpected-structure',f=>f.rows.get(TABLES_SQL)[0].kind='v'],
-  ['catalog','unexpected-structure',f=>f.rows.set(TABLES_SQL,[{schema:'public',name:canary,kind:'r',rls:false}])],
+  ['catalog','invalid-marker-catalog',f=>f.rows.get(TABLES_SQL)[0].kind='v'],
+  ['catalog','invalid-marker-catalog',f=>f.rows.set(TABLES_SQL,[{schema:'public',name:canary,kind:'r',rls:false}])],
   ['reservation','marker-mismatch',f=>f.rows.get(RESERVATION_SQL)[0].manifest=canary],
   ['completion','marker-mismatch',f=>f.rows.get(COMPLETION_SQL)[0].attempt=canary],
   ['journal','journal-mismatch',f=>f.rows.get(JOURNAL_SQL)[0].hash=canary],
@@ -76,4 +76,14 @@ test('query bytes remain pinned and success shapes do not gain diagnostics',asyn
   assert.equal(f.calls[0],'BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY');assert.equal(f.calls.at(-1),'COMMIT');
   assert.ok(f.calls.every(sql=>/^(SELECT|BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY|SET LOCAL|COMMIT)/.test(sql)));
  }
+});
+
+test('catalog subdivisions preserve all structural refusals and suppress returned values',async()=>{
+ const table=(name)=>({schema:name==='__drizzle_migrations'?'drizzle':'public',name,kind:'r',rls:false});
+ const check=async(kind,mutate,reason)=>{const f=fixture(kind);mutate(f);safe(await inspectOperational(f.client,f.config,()=>time),'catalog',reason);assert.ok(!f.calls.includes('COMMIT'));};
+ for(const mutate of [f=>f.rows.get(TABLES_SQL)[0].rls=true,f=>f.rows.get(TABLES_SQL)[0].kind='v',f=>f.rows.get(TABLES_SQL).push({...f.rows.get(TABLES_SQL)[0]}),f=>f.rows.get(TABLES_SQL)[0].schema=canary])await check('complete',mutate,'invalid-marker-catalog');
+ for(const name of ['synthetic_init_completion','__drizzle_migrations'])await check('empty',f=>f.rows.set(TABLES_SQL,[table(name)]),'marker-without-reservation');
+ for(const [kind,sql]of [['empty',EMPTY_SQL],['reserved',RESERVED_EMPTY_SQL]])for(const rows of [[],[{objects:1}],[{objects:'0'}],[{objects:canary}],[{objects:null}],[{}],[{objects:0},{objects:0}]])await check(kind,f=>f.rows.set(sql,rows),'unexpected-inventory');
+ await check('reserved',f=>f.rows.get(TABLES_SQL).push(table('synthetic_init_completion')),'completion-without-journal');
+ await check('reserved',f=>f.rows.get(TABLES_SQL).push(table('__drizzle_migrations')),'journal-without-completion');
 });
