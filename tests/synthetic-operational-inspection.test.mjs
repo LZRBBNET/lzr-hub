@@ -1,6 +1,6 @@
 import test from 'node:test';import assert from 'node:assert/strict';import {createHash} from 'node:crypto';import {EventEmitter} from 'node:events';import {readFileSync} from 'node:fs';import {spawnSync} from 'node:child_process';
 import {stagingDemoRequirements} from '../lib/runtime/staging-demo.ts';
-import {inspectionPlan,inspectOperational,report,IDENTITY_ONLY_SQL,TABLES_SQL,RESERVATION_SQL,COMPLETION_SQL,JOURNAL_SQL} from '../lib/platform/synthetic-operational-inspection.ts';
+import {inspectionPlan,inspectOperational,report,unknownReport,IDENTITY_ONLY_SQL,TABLES_SQL,RESERVATION_SQL,COMPLETION_SQL,JOURNAL_SQL} from '../lib/platform/synthetic-operational-inspection.ts';
 import {EMPTY_SQL,RESERVED_EMPTY_SQL} from '../lib/platform/synthetic-inspection-sql.ts';
 import manifest from '../lib/platform/synthetic-schema-manifest.json' with {type:'json'};
 import {runInspectionStart,superviseInspection,projectReport} from '../scripts/synthetic-inspect-start.mjs';
@@ -59,8 +59,8 @@ test('expired before query and expiry during response never advance inspection',
  assert.equal((await inspectOperational(client,g.config,()=>clock)).state,'unknown');assert.equal(g.calls.length,1);
 });
 test('raw DB exception and arbitrary report keys never escape projection',async()=>{
- const f=fixture();const r=await inspectOperational({query:async()=>{throw Error('invented-private-value');}},f.config,()=>time);assert.deepEqual(r,report('unknown'));
- for(const value of [{...report('identity-observed','12345'),secret:'invented-private-value'},report('identity-observed','oops'),{...report('unknown'),oid:'12345'},report('identity-observed','12345')])assert.deepEqual(projectReport(value,'inspect'),report('unknown'));
+ const f=fixture();const r=await inspectOperational({query:async()=>{throw Error('invented-private-value');}},f.config,()=>time);assert.deepEqual(r,unknownReport('transaction','query-failed'));
+ for(const value of [{...report('identity-observed','12345'),secret:'invented-private-value'},report('identity-observed','oops'),{...report('unknown'),oid:'12345'},report('identity-observed','12345')])assert.deepEqual(projectReport(value,'inspect'),unknownReport('ipc','invalid-message'));
 });
 test('supervisor waits for closed child, suppresses streams and rejects duplicate IPC',async()=>{
  for(const duplicate of [false,true]){const f=fixture();let child,options;const pending=superviseInspection(f.s,f.config,{now:()=>time,spawn:(_file,args,opts)=>{assert.deepEqual(args,['--worker']);options=opts;child=new EventEmitter();child.kill=()=>{};return child;}});
