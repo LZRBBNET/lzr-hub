@@ -55,7 +55,7 @@ jobs:
           export FEATURE_SYNTHETIC_INVOICES=true DEMO_DATASET=isolated-invoices-v1
           export SYNTHETIC_WEB_DEMO=true SYNTHETIC_DATABASE_CONFIRMATION=isolated-synthetic-postgres-v1
           export SYNTHETIC_DEMO_ORIGIN=https://demo.example.invalid
-          export FEATURE_N8N_AUTOREPLY=false FEATURE_ATTENDANT_REPLY=false
+          export FEATURE_N8N_CHANNEL=false FEATURE_N8N_AUTOREPLY=false FEATURE_ATTENDANT_REPLY=false
           export FEATURE_LLM_INTENT=false FEATURE_COPILOT_LLM=false FEATURE_TELEGRAM_ALERTS=false
           bash scripts/sites-env.sh -- bash scripts/staging-env.sh node --experimental-strip-types scripts/synthetic-web.mjs build
           env -i PATH="$PATH" TZ=UTC timeout --signal=TERM --kill-after=5s 60s node --experimental-strip-types --test tests/synthetic-operational-artifact.mjs
