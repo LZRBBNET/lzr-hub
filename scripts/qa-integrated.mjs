@@ -166,7 +166,8 @@ async function journey() {
       await t.command('/goog/cdp/execute',{cmd:'Emulation.setDeviceMetricsOverride',params:{width,height:900,deviceScaleFactor:1,mobile:false}});
       stage=`customer360-${width}-open`;await t.command('/url',{url:origin+'/#/clientes'});await t.wait("document.querySelector('button.tr.stack-sm')");await t.click('button.tr.stack-sm');await t.wait("document.body.innerText.includes('Plano sintético')");
       assert.ok(await t.evaluate("return document.body.innerText.includes('Fonte sintética')"));
-      assert.equal(await t.evaluate('return document.documentElement.scrollWidth'),width);stage=`customer360-${width}-close`;await t.button('Fechar');
+      assert.equal(await t.evaluate('return window.innerWidth'),width);
+      assert.ok(await t.evaluate('return document.documentElement.scrollWidth<=document.documentElement.clientWidth'),'no horizontal overflow');stage=`customer360-${width}-close`;await t.button('Fechar');
       record('customer360-real-app-layout',{width});
     }
     stage='handoff';await t.command('/goog/cdp/execute',{cmd:'Emulation.setDeviceMetricsOverride',params:{width:1440,height:900,deviceScaleFactor:1,mobile:false}});
