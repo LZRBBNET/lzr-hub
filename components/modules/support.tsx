@@ -312,6 +312,8 @@ function NewServiceOrder({open,onClose}:{open:boolean;onClose:()=>void}){
       <button className="button secondary" disabled={busy} onClick={()=>void consult()}>Consultar tentativa</button>
       {(result?.key===attempt&&(result?.status==="success"||result?.status==="blocked"))&&<button className="button secondary" disabled={busy} onClick={newAttempt}>Encerrar tentativa e iniciar outra</button>}
     </Notice>}
+    {error&&<p className="form-error">{error}</p>}
+      {result&&<div className={`result-box span-2 ${result.status==="success"?"ok":"bad"}`}><strong>{result.status==="success"?"OS aberta no IXC.":result.status==="blocked"?"Bloqueado.":"Resultado não confirmado."}</strong><p>{result.detail}</p></div>}
     {!catalog&&<Loading rows={2}/>}
     {catalog&&!catalog.available&&<Notice tone="bad" more="Nenhuma lista de exemplo é mostrada: escolher um assunto inventado abriria chamado na fila errada.">Abrir OS pela tela está indisponível: {catalog.detail}.</Notice>}
     {catalog?.available&&<div className="form-grid">
@@ -323,8 +325,8 @@ function NewServiceOrder({open,onClose}:{open:boolean;onClose:()=>void}){
         <select value={form.subjectId} onChange={e=>setForm(f=>({...f,subjectId:e.target.value}))}><option value="">Escolha o assunto…</option>{catalog.subjects.map(s=><option key={s.id} value={s.id}>{s.name}</option>)}</select></label>
       <label className="field span-2"><span>O que o cliente relatou</span><textarea rows={4} value={form.message} placeholder="O técnico chega sabendo só o que estiver escrito aqui." onChange={e=>setForm(f=>({...f,message:e.target.value}))}/></label>
       <p className="field-hint span-2">A filial vem do cadastro do cliente no IXC, não daqui — o grupo tem 21 e o chamado precisa nascer na certa.</p>
-      {error&&<p className="form-error span-2">{error}</p>}
-      {result&&<div className={`result-box span-2 ${result.status==="success"?"ok":"bad"}`}><strong>{result.status==="success"?"OS aberta no IXC.":result.status==="blocked"?"Bloqueado.":"Resultado não confirmado."}</strong><p>{result.detail}</p></div>}
+
+
     </div>}
   </Modal>;
 }
