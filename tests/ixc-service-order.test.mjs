@@ -8,7 +8,7 @@ import {
 
 const options = (fetcher) => ({ baseUrl: "https://ixc-bridge.exemplo.com.br", token: "token-teste", fetcher });
 const input = (over = {}) => ({
-  customerId: "21857", subjectId: "27", sectorId: "1", branchId: "1", priority: "1",
+  customerId: "21857", contractId: "321", confirmedContract: { id: "321", customerId: "21857", status: "A" }, subjectId: "27", sectorId: "1", branchId: "1", priority: "1",
   message: "Cliente relata lentidão desde ontem à noite", ...over,
 });
 
@@ -23,6 +23,8 @@ test("monta a requisição como a coleção Postman documenta", async () => {
   assert.equal(body.tipo, "C", "OS de cliente, não de estrutura");
   assert.equal(body.id_assunto, "27");
   assert.equal(body.id_cliente, "21857");
+  assert.equal(body.id_contrato_kit, "321");
+  assert.equal(body.id_contrato, undefined);
   assert.equal(body.id_filial, "1");
   assert.equal(body.origem_endereco, "M", "usa o endereço do cadastro — sem isso o técnico não sabe para onde ir");
   assert.equal(body.setor, "1");
@@ -89,7 +91,7 @@ test("cliente com OS aberta do mesmo assunto não recebe outra", () => {
 });
 
 const orderRequest = (over = {}) => ({
-  customerId: "21857", subjectId: "27", sectorId: "1", branchId: "1", priority: "1",
+  customerId: "21857", contractId: "321", confirmedContract: { id: "321", customerId: "21857", status: "A" }, subjectId: "27", sectorId: "1", branchId: "1", priority: "1",
   message: "Cliente relata lentidão desde ontem", idempotencyKey: "os-1", correlationId: "corr-1",
   requestedBy: "vinicius@bbnet.dev",
   knownSubjectIds: new Set(["27"]), knownSectorIds: new Set(["1"]), openSubjects: new Set(),

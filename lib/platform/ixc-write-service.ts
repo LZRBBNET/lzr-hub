@@ -285,6 +285,8 @@ export function assertRenegotiationPolicy(input: {
 
 export interface ServiceOrderRequest {
   customerId: string;
+  contractId: string;
+  confirmedContract: { id: string; customerId: string; status: string };
   subjectId: string;
   sectorId: string;
   branchId: string | undefined;
@@ -305,6 +307,16 @@ export interface ServiceOrderRequest {
  * inclusive o que foi bloqueado. Auditoria existe para provar decisão, não só
  * sucesso.
  */
+export function serviceOrderLedgerResult(row: IxcWriteLedgerRow): ReissueResult & { serviceOrderId?: string; contractId?: string } {
+  if (row.status !== "success") return { status: row.status, detail: row.detail ?? "Resultado não confirmado." };
+  try {
+    const value = JSON.parse(row.detail ?? "");
+    if (/^[1-9]\d{0,31}$/.test(value.serviceOrderId) && /^[1-9]\d{0,31}$/.test(value.contractId) && typeof value.detail === "string")
+      return { status: "success", detail: value.detail, serviceOrderId: value.serviceOrderId, contractId: value.contractId };
+  } catch { /* Legacy success has no verified contract metadata. */ }
+  return { status: "unknown", detail: "Registro legado sem vínculo de contrato confirmado; reconciliação necessária." };
+}
+
 export async function requestServiceOrderOpen(
   request: ServiceOrderRequest,
   repository: IxcWriteOperationsRepository,
@@ -312,13 +324,13 @@ export async function requestServiceOrderOpen(
 ): Promise<ReissueResult> {
   // Bind a key to the original payload without storing the sensitive message.
   const fingerprint = createHash("sha256").update(JSON.stringify([
-    request.customerId, request.subjectId, request.sectorId, request.branchId,
+    request.customerId, request.contractId, request.subjectId, request.sectorId, request.branchId,
     request.priority, request.message,
   ])).digest("hex");
-  const scope = `assunto:${request.subjectId}:${fingerprint}`;
+  const scope = `assunto:${request.subjectId}:contrato:${request.contractId}:${fingerprint}`;
   const replay = (row: IxcWriteLedgerRow): ReissueResult => row.requestedBy !== request.requestedBy || row.customerId !== request.customerId || row.invoiceId !== scope
     ? { status: "unknown", replay: true, detail: "Chave já usada para outro pedido. Consulte o resultado original." }
-    : { status: row.status, replay: true, detail: row.detail ?? "Consulte a operação antes de qualquer novo envio." };
+    : { ...serviceOrderLedgerResult(row), replay: true };
   const existing = await repository.findByIdempotencyKey("service_order.open", request.idempotencyKey);
   if (existing) return replay(existing);
   // Durable reservation must commit before any external side effect.
@@ -329,6 +341,8 @@ export async function requestServiceOrderOpen(
     return winner ? replay(winner) : { status: "unknown", replay: true, detail: "Reserva existente; reconciliação necessária." };
   }
   try {
+    if (!request.contractId || request.confirmedContract?.id !== request.contractId || request.confirmedContract.customerId !== request.customerId || request.confirmedContract.status !== "A")
+      throw new IxcWritePolicyError("Contrato ativo pertencente ao cliente não confirmado; pedidos legados sem contrato são recusados.");
     assertServiceOrderPolicy(request);
     if (process.env.FEATURE_IXC_WRITE !== "true") throw new IxcWritePolicyError("FEATURE_IXC_WRITE desligada — escrita real no IXC não está ligada");
   } catch (error) {
@@ -353,7 +367,7 @@ export async function requestServiceOrderOpen(
     // Do not interpret arbitrary JSON or HTTP 200 as proof of creation.
     if (!/^[1-9]\d{0,31}$/.test(id)) throw new Error("UNCONFIRMED_RESPONSE");
     const detail = `OS retornada pelo IXC: ${id}. Confira o vínculo e estado no ERP.`;
-    await repository.finishClaim(request.idempotencyKey, "success", detail);
+    await repository.finishClaim(request.idempotencyKey, "success", JSON.stringify({ detail, serviceOrderId: id, contractId: request.contractId }));
     return { status: "success", detail, raw: { id } };
   } catch {
     // Includes lost responses and ledger failure after a remote success.

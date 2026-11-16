@@ -248,7 +248,7 @@ type OsCatalog={available:boolean;detail?:string;subjects:{id:string;name:string
  */
 function NewServiceOrder({open,onClose}:{open:boolean;onClose:()=>void}){
   const [catalog,setCatalog]=useState<OsCatalog|null>(null);
-  const [form,setForm]=useState({customerId:"",subjectId:"",sectorId:"",message:""});
+  const [form,setForm]=useState({customerId:"",contractId:"",subjectId:"",sectorId:"",message:""});
   const [busy,setBusy]=useState(false);
   const [result,setResult]=useState<{status:string;detail:string;key:string}|null>(null);
   const [error,setError]=useState<string|null>(null);
@@ -278,7 +278,7 @@ function NewServiceOrder({open,onClose}:{open:boolean;onClose:()=>void}){
   }
   function newAttempt(){
     try {if(result&&result.key===attempt&&releaseServiceOrderAttempt(localStorage,result.status,result.key)){
-      setAttempt(null);setResult(null);setForm({customerId:"",subjectId:"",sectorId:"",message:""});
+      setAttempt(null);setResult(null);setForm({customerId:"",contractId:"",subjectId:"",sectorId:"",message:""});
     }} catch {setError("Não foi possível encerrar a tentativa neste navegador.");}
   }
 
@@ -305,7 +305,7 @@ function NewServiceOrder({open,onClose}:{open:boolean;onClose:()=>void}){
   }
 
   function close(){setResult(null);setError(null);onClose()}
-  const ready=form.customerId.trim()&&form.subjectId&&form.sectorId&&form.message.trim().length>=10;
+  const ready=form.customerId.trim()&&form.contractId.trim()&&form.subjectId&&form.sectorId&&form.message.trim().length>=10;
   return <Modal open={open} title="Abrir ordem de serviço no IXC" onClose={close} wide
     footer={catalog?.available&&<><button className="button secondary" disabled={busy} onClick={close}>{result?.status==="success"?"Fechar":"Cancelar"}</button>{result?.status!=="success"&&<button className="button" disabled={busy||!ready||!!attempt||!storageReady} onClick={()=>void submit()}>{busy?"Enviando…":"Abrir OS"}</button>}</>}>
     {attempt&&<Notice tone="warn" more="Uma tentativa está registrada neste navegador. Resultado incerto exige conferência no IXC, sem novo envio.">
@@ -319,6 +319,7 @@ function NewServiceOrder({open,onClose}:{open:boolean;onClose:()=>void}){
     {catalog?.available&&<div className="form-grid">
       {!catalog.writeEnabled&&<div className="span-2"><Notice tone="warn">A escrita no IXC está desligada neste ambiente (FEATURE_IXC_WRITE): o pedido será recusado.</Notice></div>}
       <label className="field"><span>Código do cliente no IXC</span><input data-autofocus value={form.customerId} placeholder="ex.: 21857" onChange={e=>setForm(f=>({...f,customerId:e.target.value}))}/></label>
+      <label className="field"><span>Contrato selecionado no IXC</span><input value={form.contractId} onChange={e=>setForm(f=>({...f,contractId:e.target.value}))} placeholder="Código do contrato ativo"/></label>
       <label className="field"><span>Setor que vai atender</span>
         <select value={form.sectorId} onChange={e=>setForm(f=>({...f,sectorId:e.target.value}))}><option value="">Escolha o setor…</option>{catalog.sectors.map(s=><option key={s.id} value={s.id}>{s.name}</option>)}</select></label>
       <label className="field span-2"><span>Assunto ({catalog.subjects.length} do IXC)</span>

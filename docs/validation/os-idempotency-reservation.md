@@ -14,15 +14,15 @@ Consultar o ledger pelo botão, preservando chave/correlationId. Se pending/unkn
 
 ## Bloqueios do piloto
 
-O POST atual não recebe/transmite vínculo de contrato. A coleção oficial expõe id_contrato_kit na criação, cuja semântica ainda não foi demonstrada; não substituir por id_contrato por inferência. O endpoint oficial de encerramento foi localizado, mas faltam os requisitos condicionais e efeitos descritos abaixo. O catálogo expõe apenas id/nome e não comprova ausência de workflows ou despacho. Nome de assunto “teste” ou setor “Administrativo” não é evidência suficiente.
+O POST passa a exigir contractId, validá-lo por leitura exata e enviá-lo como id_contrato_kit. A semântica foi confirmada pela wiki oficial, conforme evidência abaixo. O endpoint oficial de encerramento foi localizado, mas faltam os requisitos condicionais e efeitos descritos abaixo. O catálogo expõe apenas id/nome e não comprova ausência de workflows ou despacho. Nome de assunto “teste” ou setor “Administrativo” não é evidência suficiente.
 
 A extração textual de https://api-provedor.ixcsoft.com.br/ retornou vazia. Posteriormente a coordenação abriu a coleção JavaScript pelo navegador oficial e encontrou Sistema > Suporte > Ordem de serviço > Ações > Finalizar: POST /webservice/v1/su_oss_chamado_fechar. Evidência recebida da coordenação, sem nova chamada ao IXC pelo executor. A coleção Postman não está presente no checkout.
 
 O exemplo de encerramento lista id_chamado, id_tarefa_atual, eh_tarefa_decisao, sequencia_atual, proxima_sequencia_forcada, finaliza_processo_aux, gera_comissao_aux, id_processo, data_inicio, data_final, id_resposta, mensagem, id_tecnico, id_equipe, gera_comissao, status, data, id_evento, id_su_diagnostico, justificativa_sla_atrasado, id_evento_status, id_proxima_tarefa, id_proxima_tarefa_aux, latitude, longitude e gps_time. Todos aparecem vazios, exceto status F; não há resposta exemplar. Isso não demonstra quais campos podem ser omitidos nem autoriza enviar vazios: processo, próxima tarefa, comissão e eventos podem ter efeitos condicionais.
 
-Na criação POST su_oss_chamado, a coleção contém id_contrato_kit (não id_contrato). Obrigatórios marcados: tipo C, id_assunto, id_cliente, id_filial, origem_endereco M, prioridade 1, setor e status A. Não inferir que id_contrato_kit seja o contrato selecionado no piloto.
+Na criação POST su_oss_chamado, a coleção contém id_contrato_kit (não id_contrato). Obrigatórios marcados: tipo C, id_assunto, id_cliente, id_filial, origem_endereco M, prioridade 1, setor e status A. A wiki oficial posteriormente confirmou que id_contrato_kit se relaciona ao id da tabela cliente_contrato; o código agora usa esse vínculo explicitamente.
 
-Evidência mínima restante: semântica oficial de id_contrato_kit e regra de propriedade; obrigatoriedade condicional, omissão segura, efeitos e resposta do endpoint de encerramento; leitura por ID que confirme cliente/vínculo/status; configuração real e revisada de assunto/setor demonstrando ausência de despacho, agendamento, mensagens, comissão e outras automações. Endpoint encontrado não equivale a operação segura demonstrada. Nenhuma OS do piloto deve ser criada antes disso.
+Evidência mínima restante: obrigatoriedade condicional, omissão segura, efeitos e resposta do endpoint de encerramento; validação operacional da leitura por ID que confirma cliente/vínculo/status (implementada e testada apenas com dados sintéticos); configuração real e revisada de assunto/setor demonstrando ausência de despacho, agendamento, mensagens, comissão e outras automações. Endpoint encontrado não equivale a operação segura demonstrada. Nenhuma OS do piloto deve ser criada antes disso.
 
 ## Verificação
 
@@ -41,3 +41,17 @@ Compatibilidade: operation/status são text, sem enum/check nessa migração, po
 GET: exige customer.read e ixc.write, sessão identificada, mesmo e-mail autor, e responde no-store; chave inexistente/de outro autor retorna unknown sem detalhe do registro. A chave do navegador é global à origem: trocar de conta não expõe a operação de outro autor, mas pode exigir voltar à conta original para consultá-la. Não há desbloqueio por troca de conta.
 
 Validação adicional limitada ao novo delta: corridas de chaves distintas, replay incerto, resultado antigo após recarga e substituição da chave entre leitura e conclusão, além da concorrência da mesma chave. Typecheck e lint direcionado. Não encontrados psql, postgres ou socket local de PostgreSQL; nenhum ambiente PostgreSQL isolado disponível foi identificado. Não houve teste concorrente real no banco, criação de serviço, uso de banco de produção ou instalação. A revisão foi feita em uma segunda passagem pelo mesmo executor, não por outro revisor humano/agente.
+
+## Vínculo explícito de contrato
+
+Evidência oficial recebida da coordenação por navegação em https://wikiapiprovedor.ixcsoft.com.br/index.php# > Suporte > Ordens de serviço > id_contrato_kit: “Relacionado com o campo id da tabela cliente_contrato”; campo de busca avançada, não obrigatório no ERP. O LZR torna esse vínculo obrigatório para impedir a abertura ambígua do piloto.
+
+A UI pede o código do contrato escolhido. POST exige contractId e faz leitura exata, sem cache de snapshot, de cliente_contrato.id, com filtro de cliente e limite 2. Só aceita página completa com total 1, ID exato, id_cliente correspondente e status A. A política também verifica o objeto confirmado pelo provider. O payload de criação envia id_contrato_kit, nunca id_contrato. Cliente/contrato podem mudar no ERP entre leitura e escrita; não se afirma transação distribuída.
+
+O fingerprint da tentativa inclui contrato. O ledger de sucesso guarda somente mensagem local e IDs de OS/contrato em JSON; legado sem esses metadados é unknown. Consultar uma tentativa com IDs confirmados faz leitura exata de su_oss_chamado.id, filtrada por id_cliente e id_contrato_kit; confirma propriedade, vínculo e estado presente no retorno. Falha, ausência, vínculo divergente ou múltiplos resultados não liberam reserva. Sem ID retornado não há busca ampla: permanece necessária reconciliação manual auditada. O mapper preserva contractId a partir exclusivamente de id_contrato_kit.
+
+Compatibilidade: chamadas legadas sem contractId são recusadas (400 na rota; recusa antes do transporte no cliente). Não há fallback para o primeiro contrato, snapshot parcial ou vínculo presumido. Nenhuma coluna/migração nova. Reservas de escopo continuam por cliente/assunto, de forma conservadora, mesmo entre contratos diferentes.
+
+Divergência documental ainda aberta: wiki apresenta prioridade N e coleção anterior apresenta 1. O código conserva o padrão anterior 1; não se considera a equivalência resolvida. Não houve implementação de encerramento nem criação real. Configuração sem despacho e requisitos condicionais de encerramento seguem bloqueantes.
+
+Testes sintéticos focalizados: contrato ausente/inativo/estrangeiro, resultado múltiplo/incompleto, envio de id_contrato_kit, recusa do legado antes de transporte e reconciliação com vínculo ausente/divergente. Nenhum cliente real foi consultado nesta implementação.

@@ -568,6 +568,26 @@ export class IxcReadonlyProvider {
       this.cache.set(customerId,snapshot);this.emit("ixc.snapshot",correlationId,this.now()-started,"success",{partial:settled.some((item)=>item.status==="rejected")});return snapshot;
     }catch(error){this.emit("ixc.snapshot",correlationId,this.now()-started,"failed",{error:error instanceof Error?error.name:"unknown"});throw error;}
   }
+  /** Fresh, exact read; never use a partial/cached snapshot to authorize a write. */
+  async getServiceOrderContract(customerId:string,contractId:string,correlationId:string){
+    if(!/^[1-9]\d{0,31}$/.test(contractId))throw new IxcReadonlyError("IXC_CONTRACT_UNCONFIRMED");
+    const page=await this.readPage("listContracts","cliente_contrato","cliente_contrato.id",contractId,correlationId,2,customerId,
+      {oper:"=",gridParam:[{TB:"cliente_contrato.id_cliente",OP:"=",P:customerId}]});
+    const row=page.records[0];
+    if(!page.coverage.complete||page.coverage.total!==1||page.records.length!==1||String(row.id)!==contractId||String(row.id_cliente)!==customerId||row.status!=="A")
+      throw new IxcReadonlyError("IXC_CONTRACT_UNCONFIRMED");
+    return {id:contractId,customerId,status:"A" as const};
+  }
+  /** Reconcile a known OS only; a missing/ambiguous response never releases a reservation. */
+  async reconcileServiceOrder(customerId:string,contractId:string,orderId:string,correlationId:string){
+    if(![customerId,contractId,orderId].every(id=>/^[1-9]\d{0,31}$/.test(id)))throw new IxcReadonlyError("IXC_OS_UNCONFIRMED");
+    const page=await this.readPage("listServiceOrders","su_oss_chamado","su_oss_chamado.id",orderId,correlationId,2,customerId,
+      {oper:"=",gridParam:[{TB:"su_oss_chamado.id_cliente",OP:"=",P:customerId},{TB:"su_oss_chamado.id_contrato_kit",OP:"=",P:contractId}]});
+    const row=page.records[0];
+    if(!page.coverage.complete||page.coverage.total!==1||page.records.length!==1||String(row.id)!==orderId||String(row.id_cliente)!==customerId||String(row.id_contrato_kit)!==contractId||typeof row.status!=="string"||!row.status.trim())
+      throw new IxcReadonlyError("IXC_OS_UNCONFIRMED");
+    return {id:orderId,customerId,contractId,status:row.status};
+  }
   invalidate(customerId:string){this.guard.assertCustomer(customerId);this.cache.delete(customerId);}
   private async resolveCityName(cityCode:string,correlationId:string,customerId:string):Promise<string|undefined>{
     const cached=this.cityCache.get(cityCode);if(cached)return cached;

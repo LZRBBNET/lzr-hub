@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import { getDb } from "@/db";
 import { getIxcRuntime } from "@/lib/integrations/ixc/runtime";
 import { openServiceOrder } from "@/lib/integrations/ixc/write-client";
-import { DbIxcWriteOperationsRepository, requestServiceOrderOpen } from "@/lib/platform/ixc-write-service";
+import { DbIxcWriteOperationsRepository, requestServiceOrderOpen, serviceOrderLedgerResult } from "@/lib/platform/ixc-write-service";
 import { logUnauthenticatedAction } from "@/lib/platform/audit-log";
 import { authorize } from "@/lib/platform/session-guard";
 
@@ -28,7 +28,18 @@ export async function GET(request: Request) {
     if (!writeGuard.user?.email) return NextResponse.json({ error: "Sessão autenticada obrigatória" }, { status: 401 });
     const row = await new DbIxcWriteOperationsRepository(await getDb()).findByIdempotencyKey("service_order.open", key);
     if (!row || row.requestedBy !== writeGuard.user?.email) return NextResponse.json({ status: "unknown", detail: "Resultado não localizado para este operador. Não reenviar; confira a operação com o administrador." }, { headers: { "Cache-Control": "no-store" } });
-    return NextResponse.json({ status: row.status, detail: row.detail, correlationId: row.correlationId }, { headers: { "Cache-Control": "no-store" } });
+    const result = serviceOrderLedgerResult(row);
+    if (result.status === "success" && result.serviceOrderId && result.contractId) {
+      try {
+        const provider = getIxcRuntime().provider;
+        if (!provider) throw new Error("IXC_UNAVAILABLE");
+        const order = await provider.reconcileServiceOrder(row.customerId, result.contractId, result.serviceOrderId, randomUUID());
+        return NextResponse.json({ ...result, order, remoteMatch: true, correlationId: row.correlationId }, { headers: { "Cache-Control": "no-store" } });
+      } catch {
+        return NextResponse.json({ status: "unknown", remoteMatch: false, detail: "Não foi possível confirmar OS, cliente e contrato no IXC. Não reenviar." }, { headers: { "Cache-Control": "no-store" } });
+      }
+    }
+    return NextResponse.json(result, { headers: { "Cache-Control": "no-store" } });
   }
 
   let runtime;
@@ -60,15 +71,16 @@ export async function POST(request: Request) {
   const body = await request.json().catch(() => null) as Record<string, unknown> | null;
   const text = (key: string) => typeof body?.[key] === "string" ? (body[key] as string).trim() : "";
   const customerId = text("customerId");
+  const contractId = text("contractId");
   const subjectId = text("subjectId");
   const sectorId = text("sectorId");
   const message = text("message");
   const idempotencyKey = text("idempotencyKey");
-  // Prioridade tem default porque o IXC exige o campo e "normal" é a escolha
-  // sem surpresa; assunto e setor não têm default nenhum, de propósito.
+  // Preserve the existing collection value. Official wiki uses N instead of 1;
+  // equivalence is unresolved and must be checked before a real pilot write.
   const priority = text("priority") || "1";
-  if (!customerId || !subjectId || !sectorId || !idempotencyKey) {
-    return NextResponse.json({ error: "Campos obrigatórios: customerId, subjectId, sectorId, idempotencyKey" }, { status: 400 });
+  if (!customerId || !/^[1-9]\d{0,31}$/.test(contractId) || !subjectId || !sectorId || !idempotencyKey) {
+    return NextResponse.json({ error: "Campos obrigatórios: customerId, contractId (contrato selecionado), subjectId, sectorId, idempotencyKey" }, { status: 400 });
   }
 
   let runtime;
@@ -79,11 +91,13 @@ export async function POST(request: Request) {
   // Tudo que a política usa é relido do IXC agora: filial do cliente, catálogo
   // e OS já abertas. Aceitar qualquer um deles do corpo deixaria quem chama
   // contornar a regra dizendo o que lhe convém.
-  const [snapshot, subjects, sectors] = await Promise.all([
+  const [snapshot, subjects, sectors, confirmedContract] = await Promise.all([
     runtime.provider.getSnapshot(customerId, correlationId).catch(() => null),
     runtime.provider.listOsSubjects(correlationId).catch(() => null),
     runtime.provider.listSectors(correlationId).catch(() => null),
+    runtime.provider.getServiceOrderContract(customerId, contractId, correlationId).catch(() => null),
   ]);
+  if (!confirmedContract) return NextResponse.json({ error: "Contrato ativo pertencente ao cliente não confirmado no IXC" }, { status: 409 });
   if (!snapshot) return NextResponse.json({ error: "Cadastro não encontrado no IXC" }, { status: 404 });
   if (!subjects || !sectors) return NextResponse.json({ error: "O IXC não devolveu o catálogo — não dá para validar assunto e setor" }, { status: 503 });
 
@@ -98,7 +112,7 @@ export async function POST(request: Request) {
 
   const result = await requestServiceOrderOpen(
     {
-      customerId, subjectId, sectorId, priority, message, idempotencyKey, correlationId,
+      customerId, contractId, confirmedContract, subjectId, sectorId, priority, message, idempotencyKey, correlationId,
       branchId: snapshot.customer.branchId,
       requestedBy: guard.user?.email ?? "não identificado",
       knownSubjectIds: new Set(subjects.map((item) => item.id)),
@@ -108,7 +122,7 @@ export async function POST(request: Request) {
     new DbIxcWriteOperationsRepository(await getDb()),
     (corr) => openServiceOrder(
       { baseUrl: runtime.config.ixcBaseUrl!, token: runtime.config.ixcToken! },
-      { customerId, subjectId, sectorId, branchId: snapshot.customer.branchId ?? "", priority, message },
+      { customerId, contractId, subjectId, sectorId, branchId: snapshot.customer.branchId ?? "", priority, message },
       corr,
     ),
   );
