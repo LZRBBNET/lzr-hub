@@ -45,7 +45,7 @@ test("o rascunho leva vencimento, valor, situação e a linha digitável quando 
 
 /* ------------------------------------------------------------ fluxo --- */
 
-function montar({ autoReply = true, sendData = false, identificado = true, documento = "529.982.247-25", faturas, documentOf, budgetMs } = {}) {
+function montar({ autoReply = true, sendData = false, identificado = true, documento = "529.982.247-25", faturas, documentOf, budgetMs, pixCode } = {}) {
   const channel = new MemoryChannelRepository();
   const tickets = new MemoryTicketRepository();
   const claims = new MemoryReplyRepository();
@@ -61,6 +61,7 @@ function montar({ autoReply = true, sendData = false, identificado = true, docum
   const lookup = {
     documentOf: documentOf ?? (async () => { leituras.documento++; return documento; }),
     openInvoices: async () => { leituras.faturas++; return faturas ?? [{ id: "77", dueAt: "2026-10-10", value: 99.9, paymentCode: "34191.79001" }]; },
+    ...(pixCode ? { pixCode } : {}),
   };
   let n = 0;
   const receber = async (text) => {
@@ -182,4 +183,37 @@ test("número de 11 dígitos que não é CPF só conta como \"CPF errado\" quand
   assert.ok(!telefone.suggestion.includes("não parece um CPF"), "sem pedido de CPF, é só um número");
   assert.equal(ticket().selfService, null);
   assert.equal(enviados.length, 0);
+});
+
+
+/* --------------------------------------------------------------- PIX --- */
+
+const PIX = "00020126970014br.gov.bcb.pix2575qrcodes.exemplo/cobv/abc5204000053039865404099.905802BR6304ABCD";
+
+test("com o titular confirmado, o rascunho leva o PIX copia e cola da fatura que vence primeiro", async () => {
+  const pedidos = [];
+  const { receber, ticket, enviados } = montar({ sendData: true, pixCode: async (id) => { pedidos.push(id); return { copyPaste: PIX, expiresAt: "19/01/2027 00:00:00" }; } });
+  await receber("quero a segunda via do boleto");
+  await receber(CPF);
+  assert.deepEqual(pedidos, ["77"], "PIX só da que vence primeiro, e só depois do titular confirmado");
+  assert.equal(ticket().selfService.pix.copyPaste, PIX);
+  assert.match(enviados[1], /PIX copia e cola da que vence primeiro \(R\$\s?99,90\):\n0002012697/);
+  assert.doesNotMatch(enviados[1], /Linha digitável/, "com PIX, a linha digitável não vai junto");
+});
+
+test("PIX que falha não derruba a segunda via: titular confirmado, rascunho sem o código", async () => {
+  const { receber, ticket } = montar({ pixCode: async () => { throw new Error("IXC_PIX_RECUSADO"); } });
+  await receber("quero a segunda via do boleto");
+  await receber(CPF);
+  assert.equal(ticket().selfService.step, "verified");
+  assert.equal(ticket().selfService.pix, null);
+  assert.doesNotMatch(ticket().selfService.draft, /PIX/);
+});
+
+test("CPF de outra pessoa nem chega a gerar PIX", async () => {
+  let chamadas = 0;
+  const { receber } = montar({ pixCode: async () => { chamadas++; return { copyPaste: PIX, expiresAt: null }; } });
+  await receber("quero a segunda via do boleto");
+  await receber(OUTRO_CPF);
+  assert.equal(chamadas, 0);
 });

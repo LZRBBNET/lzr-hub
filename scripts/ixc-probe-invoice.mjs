@@ -12,6 +12,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { createIxcFetcher, resolveIxcHttpMethod } from "../lib/integrations/ixc/http.ts";
 import { IxcReadonlyProvider } from "../lib/integrations/ixc/readonly-provider.ts";
 import { ixcInvoiceLookup, verifyHolder } from "../lib/platform/triage-service.ts";
+import { fetchPixCode } from "../lib/integrations/ixc/write-client.ts";
 
 const TEST_CUSTOMER = "21857";
 
@@ -31,7 +32,7 @@ const token = process.env.IXC_API_TOKEN || fromEnvFile("IXC_API_TOKEN");
 if (!baseUrl || !token || baseUrl.includes("localhost")) { console.error("Faltam IXC_BASE_URL e IXC_API_TOKEN reais no .env.local."); process.exit(1); }
 
 const provider = new IxcReadonlyProvider({ baseUrl, token, allowedCustomerIds: [TEST_CUSTOMER], fetcher: createIxcFetcher(resolveIxcHttpMethod(process.env.IXC_HTTP_METHOD)) });
-const lookup = ixcInvoiceLookup(provider, "probe-invoice");
+const lookup = ixcInvoiceLookup(provider, "probe-invoice", (invoiceId, corr) => fetchPixCode({ baseUrl, token }, invoiceId, corr));
 const ticket = { ixcCustomerId: TEST_CUSTOMER };
 
 const document = (await lookup.documentOf(TEST_CUSTOMER)) ?? "";

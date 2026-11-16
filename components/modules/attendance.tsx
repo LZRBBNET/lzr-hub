@@ -707,6 +707,7 @@ function InvoiceBlock({ ticket, onUse }: { ticket:TicketSummary; onUse?:(text:st
     <h4>Segunda via <Badge tone={self.step==="verified" ? "ok" : self.step==="mismatch" ? "bad" : "warn"}>{INVOICE_STEP_LABELS[self.step] ?? self.step}</Badge></h4>
     {self.invoices && (self.invoices.length===0 ? <p>Nenhuma fatura em aberto no IXC.</p>
       : <ul>{self.invoices.map((item) => <li key={item.id}>Fatura {item.id} · vence {item.dueAt ? item.dueAt.slice(0,10).split("-").reverse().join("/") : "sem data"} · {item.value!==null ? item.value.toLocaleString("pt-BR",{style:"currency",currency:"BRL"}) : "valor não informado"}{item.overdue ? " · vencida" : ""}{item.paymentCode ? "" : " · sem linha digitável no IXC"}</li>)}</ul>)}
+    {self.step==="verified" && (self.invoices?.length ?? 0) > 0 && <p>{self.pix ? `PIX gerado no IXC para a fatura ${self.pix.invoiceId}${self.pix.expiresAt ? `, vale até ${self.pix.expiresAt.slice(0,10)}` : ""}.` : "O IXC não devolveu o PIX: o rascunho vai sem o código."}</p>}
     {self.draft && <>
       <p><strong>A IA mandaria:</strong></p>
       <pre className="draft-preview">{self.draft}</pre>

@@ -200,6 +200,8 @@ export interface InvoiceLookup {
   /** CPF/CNPJ gravado no cadastro (com ou sem máscara). Lança se o IXC não responder. */
   documentOf(ixcCustomerId: string): Promise<string | undefined>;
   openInvoices(ixcCustomerId: string): Promise<Array<{ id: string; dueAt?: string; value?: number; paymentCode?: string }>>;
+  /** PIX copia-e-cola de uma fatura (`get_pix`). Ausente = sem PIX no rascunho. */
+  pixCode?(invoiceId: string): Promise<{ copyPaste: string; expiresAt: string | null }>;
 }
 
 export interface InvoiceOptions {
@@ -237,7 +239,13 @@ export async function verifyHolder(ticket: TicketRow, digits: string, invoice: I
       id: item.id, dueAt: item.dueAt ?? null, value: item.value ?? null,
       overdue: !!item.dueAt && item.dueAt.slice(0, 10) < today, paymentCode: item.paymentCode ?? null,
     }));
-    return { step: "verified", at, attempts, invoices, draft: invoiceDraft(invoices) };
+    // PIX só da que vence primeiro, e só depois do titular confirmado. Se o IXC
+    // não devolver, a conferência continua valendo: o rascunho sai sem o código.
+    let pix: InvoiceSelfService["pix"] = null;
+    if (invoices[0] && invoice.lookup.pixCode) {
+      try { pix = { invoiceId: invoices[0].id, ...(await withinBudget(invoice.lookup.pixCode(invoices[0].id), budget)) }; } catch { pix = null; }
+    }
+    return { step: "verified", at, attempts, invoices, pix, draft: invoiceDraft(invoices, pix) };
   } catch {
     return { step: "unavailable", at, attempts };
   }
@@ -247,8 +255,10 @@ export async function verifyHolder(ticket: TicketRow, digits: string, invoice: I
 export function ixcInvoiceLookup(
   provider: { getCustomerRecord(customerId: string, correlationId: string): Promise<Record<string, unknown> | undefined>; listOpenInvoicesOf(customerId: string, correlationId: string): Promise<Array<{ id: string; dueAt?: string; value?: number; paymentCode?: string }>> },
   correlationId: string,
+  pixCode?: (invoiceId: string, correlationId: string) => Promise<{ copyPaste: string; expiresAt: string | null }>,
 ): InvoiceLookup {
   return {
+    ...(pixCode ? { pixCode: (invoiceId: string) => pixCode(invoiceId, correlationId) } : {}),
     documentOf: async (customerId) => {
       const document = String((await provider.getCustomerRecord(customerId, correlationId))?.cnpj_cpf ?? "").trim();
       return document || undefined;

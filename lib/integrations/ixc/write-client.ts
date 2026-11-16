@@ -84,6 +84,51 @@ export async function fetchBoletoSecondCopy(
 }
 
 /**
+ * Código PIX de uma fatura que já existe — o botão "Copiar código PIX" do IXC.
+ *
+ * Contrato da coleção Postman ("Contas a Receber → Botões → Copiar código PIX"):
+ *   POST {baseUrl}/webservice/v1/get_pix   { id_areceber }
+ * Resposta **provada** na fatura de teste 2098068 (16/11/2026): `type: "success"`
+ * e o código em `pix.dadosPix.pixCopiaECola` (o mesmo de `pix.qrCode.qrcode`),
+ * validade em `pix.dadosPix.expiracaoPix`. A chamada gera a cobrança no banco na
+ * primeira vez; as seguintes devolvem a mesma.
+ *
+ * A resposta traz também `devedor.cpf` e `devedor.nome`. Daqui só saem o código
+ * e a validade: o resto é descartado aqui, para não haver caminho de o CPF
+ * parar em log, banco ou rascunho.
+ */
+export interface PixCode { copyPaste: string; expiresAt: string | null }
+
+export async function fetchPixCode(options: IxcWriteClientOptions, invoiceId: string, correlationId: string): Promise<PixCode> {
+  const fetcher = options.fetcher ?? fetch;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), options.timeoutMs ?? 8000);
+  let response: Response;
+  try {
+    response = await fetcher(`${options.baseUrl}/webservice/v1/get_pix`, {
+      method: "POST",
+      headers: { Authorization: `Basic ${basicCredential(options.token)}`, "content-type": "application/json", "x-correlation-id": correlationId },
+      body: JSON.stringify({ id_areceber: invoiceId }),
+      signal: controller.signal,
+    });
+  } catch (error) {
+    throw new IxcWriteClientError(error instanceof Error && error.name === "AbortError" ? "IXC_TIMEOUT" : "IXC_NETWORK_ERROR");
+  } finally {
+    clearTimeout(timer);
+  }
+  if (!response.ok) throw new IxcWriteClientError(`IXC_HTTP_${response.status}`);
+  let parsed: Record<string, unknown>;
+  try { parsed = JSON.parse(await response.text()); } catch { throw new IxcWriteClientError("IXC_RESPOSTA_INESPERADA"); }
+  if (!parsed || typeof parsed !== "object" || parsed.type === "error") throw new IxcWriteClientError("IXC_PIX_RECUSADO");
+  const pix = (parsed.pix ?? {}) as Record<string, Record<string, unknown>>;
+  const copyPaste = String(pix.dadosPix?.pixCopiaECola ?? pix.qrCode?.qrcode ?? "").trim();
+  // O BR Code começa por "000201"; qualquer outra coisa não é código que o cliente consiga pagar.
+  if (!copyPaste.startsWith("000201")) throw new IxcWriteClientError("IXC_PIX_SEM_CODIGO");
+  const expires = String(pix.dadosPix?.expiracaoPix ?? "").trim();
+  return { copyPaste, expiresAt: expires || null };
+}
+
+/**
  * Abertura de ordem de serviço.
  *
  * Contrato confirmado na coleção Postman "API - IXC Provedor" → Suporte →

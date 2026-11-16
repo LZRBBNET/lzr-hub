@@ -14,6 +14,7 @@ import { DbConversationStateRepository } from "@/lib/platform/conversation-state
 import { DbReplyRepository } from "@/lib/platform/attendant-reply-service";
 import { metaAutoReplyOptions } from "@/lib/platform/meta-auto-reply-service";
 import { metaSendConfigFromEnv } from "@/lib/integrations/meta/cloud-client";
+import { fetchPixCode } from "@/lib/integrations/ixc/write-client";
 import { DbTicketRepository, ixcDiagnose, ixcInvoiceLookup, startTriage } from "@/lib/platform/triage-service";
 import { DbIncidentsRepository } from "@/lib/platform/incidents-service";
 
@@ -101,13 +102,16 @@ export async function POST(request: Request) {
     };
     // Atendimento, protocolo e cliente identificado — uma consulta ao IXC por
     // atendimento, que a captação de lead aproveita em vez de repetir.
-    const provider = getIxcRuntime().provider;
+    const { provider, config: ixcConfig } = getIxcRuntime();
     const triage = await startTriage(tickets, {
       channel: CHANNEL_NAME, conversationId: message.phone, lookup: lookupCustomer,
       // Atendimento técnico de cliente identificado ganha diagnóstico (contrato, login, massiva, OS aberta).
       diagnose: provider ? ixcDiagnose(provider, new DbIncidentsRepository(db), correlationId) : undefined,
       // Segunda via: confere o titular pelo CPF. Os dados da fatura só saem pela IA com FEATURE_AI_INVOICE.
-      invoice: provider ? { lookup: ixcInvoiceLookup(provider, correlationId), sendData: aiInvoiceEnabled() } : undefined,
+      invoice: provider ? {
+        lookup: ixcInvoiceLookup(provider, correlationId, (invoiceId, corr) => fetchPixCode({ baseUrl: ixcConfig.ixcBaseUrl!, token: ixcConfig.ixcToken! }, invoiceId, corr)),
+        sendData: aiInvoiceEnabled(),
+      } : undefined,
     });
     // `wamid` é a chave de idempotência: a Meta reenvia o webhook quando não
     // recebe 200, e sem isso a reentrega viraria atendimento em dobro.

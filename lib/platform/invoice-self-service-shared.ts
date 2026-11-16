@@ -28,6 +28,8 @@ export interface InvoiceSelfService {
   attempts: number;
   /** Faturas em aberto do titular confirmado. Ausente antes da confirmação. */
   invoices?: InvoicePreviewItem[];
+  /** PIX copia-e-cola da fatura que vence primeiro. Nulo = o IXC não devolveu (o rascunho segue sem ele). */
+  pix?: { invoiceId: string; copyPaste: string; expiresAt: string | null } | null;
   /** O que a IA mandaria ao cliente com a fatura — rascunho para o atendente enquanto o envio não é ligado. */
   draft?: string;
 }
@@ -65,11 +67,14 @@ const day = (iso: string) => iso.replace(/^(\d{4})-(\d{2})-(\d{2}).*$/, "$3/$2/$
  * o IXC devolve, a linha digitável. Nada de PIX enquanto o formato do `get_pix`
  * não for provado com uma fatura real.
  */
-export function invoiceDraft(invoices: InvoicePreviewItem[]): string {
+export function invoiceDraft(invoices: InvoicePreviewItem[], pix?: InvoiceSelfService["pix"]): string {
   if (invoices.length === 0) return "Titular confirmado! Não encontrei fatura em aberto no seu cadastro. Se você recebeu uma cobrança, me mande uma foto que um atendente confere.";
   const lines = invoices.slice(0, 5).map((invoice) => `• vence ${invoice.dueAt ? day(invoice.dueAt) : "sem data"} — ${invoice.value !== null ? money(invoice.value) : "valor não informado"}${invoice.overdue ? " (vencida)" : ""}`);
   const first = invoices[0];
-  const code = first.paymentCode ? `\n\nLinha digitável da que vence primeiro:\n${first.paymentCode}` : "";
+  // PIX primeiro: fatura de gateway (o caso da BBNET) não tem linha digitável no IXC.
+  const code = pix && pix.invoiceId === first.id
+    ? `\n\nPIX copia e cola da que vence primeiro${first.value !== null ? ` (${money(first.value)})` : ""}:\n${pix.copyPaste}`
+    : first.paymentCode ? `\n\nLinha digitável da que vence primeiro:\n${first.paymentCode}` : "";
   const intro = invoices.length === 1 ? "Titular confirmado! Você tem 1 fatura em aberto:" : `Titular confirmado! Você tem ${invoices.length} faturas em aberto:`;
   return `${intro}\n${lines.join("\n")}${code}`;
 }
