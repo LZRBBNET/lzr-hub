@@ -490,6 +490,12 @@ export const supportTickets = pgTable("support_tickets", {
    * Fica gravado porque o IXC tem limite por minuto: abrir a conversa não refaz a consulta.
    */
   diagnosis: jsonb("diagnosis"),
+  /**
+   * Segunda via com confirmação do titular: etapa, tentativas, faturas lidas do
+   * IXC e o rascunho — ver `invoice-self-service-shared.ts`. O CPF **não** fica
+   * aqui: só o resultado da conferência.
+   */
+  selfService: jsonb("self_service"),
 }, (table) => [
   uniqueIndex("support_tickets_open_idx").on(table.channel, table.externalConversationId).where(sql`${table.status} = 'open'`),
   uniqueIndex("support_tickets_protocol_idx").on(table.protocol),

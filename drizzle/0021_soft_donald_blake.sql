@@ -1,0 +1,1 @@
+ALTER TABLE "support_tickets" ADD COLUMN "self_service" jsonb;

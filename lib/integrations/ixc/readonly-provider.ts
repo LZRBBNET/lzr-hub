@@ -464,6 +464,16 @@ export class IxcReadonlyProvider {
       openServiceOrders:orders.filter((raw)=>String(raw.status??"")!=="F").map((raw)=>({id:String(raw.id??""),status:String(raw.status??""),subjectId:text(raw,"id_assunto"),openedAt:text(raw,"data_abertura")})),
     };
   }
+  /**
+   * Faturas em aberto de um cliente, da que vence primeiro. Mesmo filtro do
+   * "Financeiro do cliente" da coleção Postman da IXC: liberada (a não liberada
+   * fica oculta até para o próprio IXC) e nem recebida nem cancelada. Uma consulta.
+   */
+  async listOpenInvoicesOf(customerId:string,correlationId:string,limit=10){
+    const filters:GridFilter[]=[{TB:"fn_areceber.liberado",OP:"=",P:"S"},{TB:"fn_areceber.status",OP:"=",P:"A"}];
+    const {records}=await this.readPage("listInvoices",endpoints.listInvoices,"fn_areceber.id_cliente",customerId,correlationId,limit,customerId,{oper:"=",sortname:"fn_areceber.data_vencimento",sortorder:"asc",gridParam:filters});
+    return records.map(IxcInvoiceMapper.map);
+  }
   /** Contagem de faturas em aberto na base inteira: uma consulta, sem varrer registro. */
   async countOpenInvoices(correlationId:string){
     return (await this.readPage("listInvoices",endpoints.listInvoices,"fn_areceber.status","A",correlationId,1,"",{oper:"=",sortname:"fn_areceber.id"})).total;

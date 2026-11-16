@@ -447,7 +447,8 @@ button.list-item:hover { background: var(--hover); }
 .diagnosis-block { margin-top: 12px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface-2); font-size: 13px; }
 .diagnosis-block h4 { display: flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 600; color: var(--muted); margin-bottom: 8px; }
 .diagnosis-block ul { margin: 0 0 8px; padding-left: 18px; display: grid; gap: 4px; }
-.diagnosis-block p { margin: 0; }
+.diagnosis-block p { margin: 0 0 6px; }
+.draft-preview { margin: 0 0 8px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); white-space: pre-wrap; font: inherit; font-size: 12px; }
 .facts > div { display: flex; justify-content: space-between; gap: 14px; padding: 8px 0; border-bottom: 1px solid var(--line-soft); font-size: 13px; }
 .facts > div:last-child { border-bottom: 0; }
 .facts > div.stacked { display: grid; gap: 4px; }

@@ -113,9 +113,32 @@ export interface TriageHooks {
   menuChoice(text: string): Intent | undefined;
   /** A pergunta do assunto, quando a IA não tem certeza e ainda não perguntou neste atendimento. */
   clarification(classified: Classification): { text: string } | undefined;
+  /**
+   * A fala é a resposta a algo que a IA pediu (o CPF da segunda via): é tratada
+   * antes do classificador — que nem chega a ver o documento.
+   */
+  intercept?(text: string, context: { autoReply: boolean }): Promise<TriageTurn | undefined>;
+  /** Depois de saber o assunto: um passo de autoatendimento no lugar da resposta aprovada (pedir o CPF, conferir o titular). */
+  afterClassify?(classified: Classification, context: { text: string; autoReply: boolean }): Promise<TriageTurn | undefined>;
   /** O que vai no fim da primeira resposta do atendimento (o protocolo). */
   footer(): string | undefined;
   record(entry: { intent: string; source: string; confidence: number; clarifying: boolean; delivered: boolean; protocolIncluded: boolean }): Promise<void>;
+}
+
+/**
+ * Um turno que a triagem conduz sem o pipeline: a pergunta do assunto, o pedido
+ * do CPF, a conferência do titular. `after` recebe se o texto chegou ao cliente
+ * — "a IA pediu o CPF" só é verdade se o pedido saiu.
+ */
+export interface TriageTurn {
+  text: string;
+  /** Desfecho quando o texto sai; sem envio, é sugestão. */
+  status: string;
+  intent: Intent;
+  /** Como o turno aparece na auditoria ("Pedido do CPF ENVIADO…"). */
+  label: string;
+  clarifying?: boolean;
+  after?(delivered: boolean): Promise<void>;
 }
 
 type Delivery = { sent: true; messageId?: string; text?: string } | { sent: false; failure?: Extract<AutoReplyDelivery, { sent: false }> };
@@ -248,6 +271,10 @@ export async function processChannelMessage(
     return rated;
   }
 
+  // A resposta a um pedido da IA (o CPF) é conduzida pela triagem, sem classificador.
+  const intercepted = await options.triage?.intercept?.(input.text, { autoReply: options.autoReply });
+  if (intercepted) return triageTurn(repository, input, metrics, options, intercepted, { intent: intercepted.intent, confidence: 1, source: "flow" });
+
   // O assunto escolhido no menu da triagem dispensa o classificador: o cliente disse.
   const menuIntent = options.triage?.menuChoice(input.text);
   // Classifica antes de rodar o pipeline: sem chave configurada isto cai na
@@ -261,16 +288,13 @@ export async function processChannelMessage(
   // modo observação o atendente lê a conversa e não precisa de menu.
   const clarification = !menuIntent && options.autoReply ? options.triage?.clarification(classified) : undefined;
   if (clarification) {
-    const footer = options.triage?.footer();
-    const question = footer ? `${clarification.text}\n\n${footer}` : clarification.text;
-    const delivery = await deliver(options, input, question);
-    const response = await recordTurn(repository, input, metrics, {
-      content: delivery.sent ? delivery.text ?? question : question, delivery, status: delivery.sent ? CLARIFYING_STATUS : SUGGESTED_STATUS,
-      intent: classified.intent, handoff: false, handoffReason: null, classified, label: "Pergunta do assunto",
-    });
-    await options.triage?.record({ intent: classified.intent, source: classified.source, confidence: classified.confidence, clarifying: true, delivered: delivery.sent, protocolIncluded: !!footer });
-    return response;
+    return triageTurn(repository, input, metrics, options, { text: clarification.text, status: CLARIFYING_STATUS, intent: classified.intent, label: "Pergunta do assunto", clarifying: true }, classified);
   }
+
+  // Assunto com autoatendimento (segunda via): pedir o CPF ou conferir o titular
+  // no lugar da resposta aprovada, que só promete um atendente.
+  const step = await options.triage?.afterClassify?.(classified, { text: input.text, autoReply: options.autoReply });
+  if (step) return triageTurn(repository, input, metrics, options, step, classified);
 
   const result = runAgentPipeline(input.text, history, {
     channel: "whatsapp",
@@ -302,6 +326,27 @@ export async function processChannelMessage(
     intent: result.intent, handoff: result.handoff.required, handoffReason: result.handoff.reason, classified, label: "Resposta",
   });
   await options.triage?.record({ intent: result.intent, source: classified.source, confidence: classified.confidence, clarifying: false, delivered: delivery.sent, protocolIncluded: !!footer });
+  return response;
+}
+
+/** Envia (ou sugere) e grava um turno conduzido pela triagem, com o protocolo se for a primeira fala da IA no atendimento. */
+async function triageTurn(
+  repository: ChannelRepository,
+  input: ChannelMessageInput,
+  metrics: SupportMetricsRepository | undefined,
+  options: ChannelOptions,
+  turn: TriageTurn,
+  classified: Classification,
+): Promise<ChannelResponse> {
+  const footer = options.triage?.footer();
+  const text = footer ? `${turn.text}\n\n${footer}` : turn.text;
+  const delivery = await deliver(options, input, text);
+  const response = await recordTurn(repository, input, metrics, {
+    content: delivery.sent ? delivery.text ?? text : text, delivery, status: delivery.sent ? turn.status : SUGGESTED_STATUS,
+    intent: turn.intent, handoff: false, handoffReason: null, classified, label: turn.label,
+  });
+  await options.triage?.record({ intent: turn.intent, source: classified.source, confidence: classified.confidence, clarifying: !!turn.clarifying, delivered: delivery.sent, protocolIncluded: !!footer });
+  await turn.after?.(delivery.sent).catch(() => undefined);
   return response;
 }
 

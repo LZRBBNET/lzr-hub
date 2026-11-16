@@ -4,7 +4,12 @@ import { supportTickets } from "../../db/schema.ts";
 import { REPLY_WINDOW_MS } from "./conversation-state-shared.ts";
 import { diagnoseConnection, type ConnectionDiagnosis, type DiagnosisInput } from "./connection-diagnosis-shared.ts";
 import type { IncidentsRepository } from "./incidents-service.ts";
-import type { TriageHooks } from "./n8n-channel-service.ts";
+import type { TriageHooks, TriageTurn } from "./n8n-channel-service.ts";
+import type { Intent } from "../agent/types.ts";
+import {
+  ASK_CPF_TEXT, INVALID_CPF_TEXT, INVOICE_INTENTS, MAX_CPF_ATTEMPTS, MISMATCH_TEXT, UNAVAILABLE_TEXT, VERIFIED_HANDOFF_TEXT,
+  extractDocument, invoiceDraft, type InvoiceSelfService,
+} from "./invoice-self-service-shared.ts";
 import {
   CLARIFY_BELOW, CLARIFY_TEXT, DIAGNOSABLE_INTENTS, formatProtocol, menuChoice, protocolFooter, queueForIntent,
   type TicketIdentification, type TicketStage, type TicketSummary,
@@ -60,7 +65,7 @@ export async function openOrContinueTicket(
     id: randomUUID(), channel: input.channel, conversationId: input.conversationId, status: "open",
     openedAt: iso(at), lastCustomerAt: iso(at), closedAt: null, closedReason: null,
     identification: "pending", ixcCustomerId: null, intent: null, intentSource: null, intentConfidence: null,
-    queue: null, stage: "new", protocolSentAt: null, diagnosis: null,
+    queue: null, stage: "new", protocolSentAt: null, diagnosis: null, selfService: null,
   };
   const created = await repository.create(row);
   if (!created) {
@@ -190,12 +195,140 @@ export async function diagnoseTicket(repository: TicketRepository, ticket: Ticke
   }
 }
 
+/** O que a segunda via precisa do IXC. Injetado, como o diagnóstico: a triagem não conhece o IXC. */
+export interface InvoiceLookup {
+  /** CPF/CNPJ gravado no cadastro (com ou sem máscara). Lança se o IXC não responder. */
+  documentOf(ixcCustomerId: string): Promise<string | undefined>;
+  openInvoices(ixcCustomerId: string): Promise<Array<{ id: string; dueAt?: string; value?: number; paymentCode?: string }>>;
+}
+
+export interface InvoiceOptions {
+  lookup: InvoiceLookup;
+  /**
+   * `FEATURE_AI_INVOICE`: a IA manda vencimento, valor e linha digitável ao
+   * cliente. Desligada, ela só confirma o titular e o atendente envia — com o
+   * rascunho pronto na ficha.
+   */
+  sendData: boolean;
+  budgetMs?: number;
+  now?: () => number;
+}
+
+function withinBudget<T>(promise: Promise<T>, ms: number): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  return Promise.race([promise, new Promise<T>((_, reject) => { timer = setTimeout(() => reject(new Error("IXC lento")), ms); })]).finally(() => clearTimeout(timer));
+}
+
+/**
+ * Confere o titular: o CPF informado tem de ser o do cadastro que o telefone da
+ * conversa identificou. Confere → lê as faturas em aberto. O IXC lento ou fora
+ * do ar vira "não consegui consultar", nunca "não confere" — acusar o cliente de
+ * errar o próprio CPF por falha nossa seria mentir para ele.
+ */
+export async function verifyHolder(ticket: TicketRow, digits: string, invoice: InvoiceOptions, attempts: number): Promise<InvoiceSelfService> {
+  const now = (invoice.now ?? Date.now)();
+  const at = iso(now);
+  const budget = invoice.budgetMs ?? DIAGNOSIS_BUDGET_MS;
+  try {
+    const document = await withinBudget(invoice.lookup.documentOf(ticket.ixcCustomerId ?? ""), budget);
+    if (!document || document.replace(/\D/g, "") !== digits) return { step: "mismatch", at, attempts };
+    const today = at.slice(0, 10);
+    const invoices = (await withinBudget(invoice.lookup.openInvoices(ticket.ixcCustomerId ?? ""), budget)).map((item) => ({
+      id: item.id, dueAt: item.dueAt ?? null, value: item.value ?? null,
+      overdue: !!item.dueAt && item.dueAt.slice(0, 10) < today, paymentCode: item.paymentCode ?? null,
+    }));
+    return { step: "verified", at, attempts, invoices, draft: invoiceDraft(invoices) };
+  } catch {
+    return { step: "unavailable", at, attempts };
+  }
+}
+
+/** A leitura de verdade para a segunda via: o documento do cadastro e as faturas em aberto, uma consulta cada. */
+export function ixcInvoiceLookup(
+  provider: { getCustomerRecord(customerId: string, correlationId: string): Promise<Record<string, unknown> | undefined>; listOpenInvoicesOf(customerId: string, correlationId: string): Promise<Array<{ id: string; dueAt?: string; value?: number; paymentCode?: string }>> },
+  correlationId: string,
+): InvoiceLookup {
+  return {
+    documentOf: async (customerId) => {
+      const document = String((await provider.getCustomerRecord(customerId, correlationId))?.cnpj_cpf ?? "").trim();
+      return document || undefined;
+    },
+    openInvoices: (customerId) => provider.listOpenInvoicesOf(customerId, correlationId),
+  };
+}
+
+/** A IA pediu o CPF e ainda espera — a resposta a isso não pode cair na regra "uma por espera". */
+export function awaitingCpf(ticket: TicketRow): boolean {
+  const step = ticket.selfService?.step;
+  return step === "awaiting_cpf" || (step === "invalid_cpf" && (ticket.selfService?.attempts ?? 0) < MAX_CPF_ATTEMPTS);
+}
+
+/**
+ * Os passos da segunda via. Só existem com o cliente identificado pelo telefone:
+ * sem cadastro do número, não há com o que conferir o CPF, e o atendimento segue
+ * para o financeiro como antes.
+ */
+function invoiceSteps(repository: TicketRepository, ticket: TicketRow, invoice: InvoiceOptions | undefined): Pick<TriageHooks, "intercept" | "afterClassify"> {
+  const canVerify = () => !!invoice && ticket.identification === "identified" && !!ticket.ixcCustomerId
+    && ticket.selfService?.step !== "verified" && ticket.selfService?.step !== "mismatch";
+  const save = (state: InvoiceSelfService) => repository.update(ticket.id, { selfService: state });
+
+  async function holderTurn(found: { digits?: string; invalid?: boolean }, intent: Intent, autoReply: boolean): Promise<TriageTurn> {
+    const attempts = (ticket.selfService?.attempts ?? 0) + 1;
+    const at = iso((invoice?.now ?? Date.now)());
+    if (!found.digits) {
+      const last = attempts >= MAX_CPF_ATTEMPTS;
+      return {
+        text: last ? "Não consegui confirmar o titular. Um atendente vai te ajudar por aqui." : INVALID_CPF_TEXT,
+        status: last ? "replied" : "waiting_customer", intent, label: last ? "Conferência do titular" : "Pedido do CPF",
+        after: async () => { await save({ step: "invalid_cpf", at, attempts }); },
+      };
+    }
+    // A conferência aconteceu, a resposta chegando ou não ao cliente: grava já.
+    const state = await verifyHolder(ticket, found.digits, invoice as InvoiceOptions, attempts);
+    await save(state).catch(() => undefined);
+    const text = state.step === "verified"
+      // Modo observação: o rascunho com a fatura vai para o atendente, que confere e envia.
+      ? (!autoReply || invoice?.sendData ? state.draft ?? VERIFIED_HANDOFF_TEXT : VERIFIED_HANDOFF_TEXT)
+      : state.step === "mismatch" ? MISMATCH_TEXT : UNAVAILABLE_TEXT;
+    return { text, status: "replied", intent, label: "Conferência do titular" };
+  }
+
+  return {
+    // A resposta ao pedido do CPF — ou o CPF mandado num atendimento que já é de fatura.
+    intercept: async (text, { autoReply }) => {
+      if (!canVerify() || !(awaitingCpf(ticket) || INVOICE_INTENTS.has(ticket.intent ?? ""))) return undefined;
+      const found = extractDocument(text);
+      // Número que não fecha como CPF só é "CPF errado" se a IA pediu o CPF; fora
+      // disso é outro número qualquer (um telefone com DDD também tem 11 dígitos).
+      if (!found.digits && !(found.invalid && awaitingCpf(ticket))) return undefined;
+      const intent = (INVOICE_INTENTS.has(ticket.intent ?? "") ? ticket.intent : "financial_invoice") as Intent;
+      return holderTurn(found, intent, autoReply);
+    },
+    afterClassify: async (classified, { text, autoReply }) => {
+      if (!INVOICE_INTENTS.has(classified.intent) || !canVerify()) return undefined;
+      const found = extractDocument(text);
+      if (found.digits) return holderTurn(found, classified.intent, autoReply);
+      // Sem documento na fala, a IA pede — só quando é ela quem fala. No modo
+      // observação a ficha mostra ao atendente que o CPF ainda falta.
+      if (!autoReply) return undefined;
+      const at = iso((invoice?.now ?? Date.now)());
+      return {
+        text: ASK_CPF_TEXT, status: "waiting_customer", intent: classified.intent, label: "Pedido do CPF",
+        after: async (delivered) => { if (delivered) await save({ step: "awaiting_cpf", at, attempts: 0 }); },
+      };
+    },
+  };
+}
+
 /**
  * Como a triagem entra no canal: menu, pergunta do assunto, protocolo na primeira
- * resposta e o registro da decisão. Falha ao gravar nunca derruba o atendimento.
+ * resposta, os passos da segunda via e o registro da decisão. Falha ao gravar
+ * nunca derruba o atendimento.
  */
-export function triageHooks(repository: TicketRepository, ticket: TicketRow, diagnose?: Diagnose): TriageHooks {
+export function triageHooks(repository: TicketRepository, ticket: TicketRow, diagnose?: Diagnose, invoice?: InvoiceOptions): TriageHooks {
   return {
+    ...invoiceSteps(repository, ticket, invoice),
     menuChoice: (text) => (ticket.stage === "clarifying" ? menuChoice(text) : undefined),
     // Pergunta uma vez por atendimento: se a resposta à pergunta também for vaga,
     // segue o caminho normal (que passa para um atendente) em vez de repetir o menu.
@@ -217,12 +350,16 @@ export function triageHooks(repository: TicketRepository, ticket: TicketRow, dia
  */
 export async function startTriage(
   repository: TicketRepository,
-  input: { channel: string; conversationId: string; lookup: CustomerLookup; diagnose?: Diagnose; now?: number },
-): Promise<{ ticket: TicketRow; hooks: TriageHooks; knownCustomer: CustomerLookup } | undefined> {
+  input: { channel: string; conversationId: string; lookup: CustomerLookup; diagnose?: Diagnose; invoice?: InvoiceOptions; now?: number },
+): Promise<{ ticket: TicketRow; hooks: TriageHooks; knownCustomer: CustomerLookup; awaitingAnswer: boolean } | undefined> {
   try {
     const { ticket: opened } = await openOrContinueTicket(repository, input);
     const ticket = await identifyTicketCustomer(repository, opened, input.lookup);
-    return { ticket, hooks: triageHooks(repository, ticket, input.diagnose), knownCustomer: knownCustomer(ticket) };
+    return {
+      ticket, hooks: triageHooks(repository, ticket, input.diagnose, input.invoice), knownCustomer: knownCustomer(ticket),
+      // A IA perguntou algo (assunto ou CPF): a resposta do cliente merece resposta.
+      awaitingAnswer: ticket.stage === "clarifying" || awaitingCpf(ticket),
+    };
   } catch {
     return undefined;
   }
@@ -233,7 +370,7 @@ export function ticketSummary(row: TicketRow): TicketSummary {
     protocol: row.protocol, status: row.status, openedAt: row.openedAt, closedAt: row.closedAt, closedReason: row.closedReason,
     identification: row.identification, ixcCustomerId: row.ixcCustomerId, intent: row.intent, intentSource: row.intentSource,
     intentConfidence: row.intentConfidence, queue: row.queue, stage: row.stage, protocolSentAt: row.protocolSentAt,
-    diagnosis: row.diagnosis,
+    diagnosis: row.diagnosis, selfService: row.selfService,
   };
 }
 
@@ -246,6 +383,7 @@ const toTicket = (row: Row): TicketRow => ({
   intent: row.intent, intentSource: row.intentSource, intentConfidence: row.intentConfidence, queue: row.queue,
   stage: (row.stage as TicketStage) ?? "new", protocolSentAt: row.protocolSentAt,
   diagnosis: (row.diagnosis as ConnectionDiagnosis | null) ?? null,
+  selfService: (row.selfService as InvoiceSelfService | null) ?? null,
 });
 
 export class DbTicketRepository implements TicketRepository {

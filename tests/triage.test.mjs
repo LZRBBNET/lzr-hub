@@ -158,7 +158,7 @@ function montar({ enabled = true, fetcher, identificado = true } = {}) {
     const triage = await startTriage(tickets, { channel: CHANNEL_NAME, conversationId: CLIENTE, lookup: async () => (identificado ? { id: "21857" } : undefined) });
     const auto = await metaAutoReplyOptions({
       enabled, states, messages: channel, claims, config, channel: CHANNEL_NAME,
-      customerMessageAt: new Date().toISOString(), afterClarification: triage?.ticket.stage === "clarifying",
+      customerMessageAt: new Date().toISOString(), awaitingAnswer: triage?.awaitingAnswer,
     }, CLIENTE);
     return processChannelMessage(channel, { externalConversationId: CLIENTE, text, idempotencyKey: wamid, correlationId: `corr-${wamid}` }, metrics, { ...auto, triage: triage?.hooks });
   };

@@ -8,6 +8,7 @@ import { Avatar, Badge, Empty, InfoTip, Loading, Modal, Notice, relativeTime, us
 import { channelLabel, conversationLabel, handoffLabel, intentLabel } from "@/components/modules/labels";
 import { IDENTIFICATION_LABELS, STAGE_LABELS, TRIAGE_QUEUES, queueLabel, type TicketSummary } from "@/lib/platform/triage-shared";
 import { VERDICT_LABELS, type DiagnosisVerdict } from "@/lib/platform/connection-diagnosis-shared";
+import { INVOICE_INTENTS, INVOICE_STEP_LABELS } from "@/lib/platform/invoice-self-service-shared";
 
 type ConversationSummary = {
   channel:string; externalConversationId:string; lastMessage:string; lastRole:"customer"|"agent"|"suggestion"; lastAt:string; messages:number;
@@ -548,7 +549,7 @@ export function AttendanceModule({ initialConversation, onAwaiting }: { initialC
         </div>
         <div className="details-body">
           {detailTab==="cliente" && <>
-            <TicketPanel ticket={ticket} now={now} />
+            <TicketPanel ticket={ticket} now={now} onUse={canCompose ? insertReply : undefined} />
             <IxcPanel match={ixc} />
             <section className="details-section">
               <h3>Conversa</h3>
@@ -661,7 +662,7 @@ function QuickReplies({ items, disabled, onPick }: { items:QuickReply[]; disable
  * "registro do chamado" do fluxo de manutenção — o que a atendente montava à mão
  * chega pronto quando a IA consegue, e diz que não sabe quando não consegue.
  */
-function TicketPanel({ ticket, now }: { ticket:TicketSummary|null; now:number }) {
+function TicketPanel({ ticket, now, onUse }: { ticket:TicketSummary|null; now:number; onUse?:(text:string)=>void }) {
   if (!ticket) return <section className="details-section"><h3>Atendimento</h3><p className="muted small">Sem atendimento registrado. A triagem só existe para mensagens que chegaram pelo canal oficial depois de ela ser ligada.</p></section>;
   const missing = <em className="audit-missing">não gerado</em>;
   return <section className="details-section">
@@ -680,7 +681,34 @@ function TicketPanel({ ticket, now }: { ticket:TicketSummary|null; now:number })
       <ul>{ticket.diagnosis.facts.map((fact) => <li key={fact}>{fact}</li>)}</ul>
       <p><strong>Próximo passo:</strong> {ticket.diagnosis.next}</p>
     </div>}
+    <InvoiceBlock ticket={ticket} onUse={onUse} />
   </section>;
+}
+
+/**
+ * Segunda via: o titular foi confirmado pelo CPF? Quais faturas estão em aberto?
+ * O rascunho é o que a IA mandaria — enquanto o envio dos dados pela IA estiver
+ * desligado, quem envia é o atendente, conferindo antes.
+ */
+function InvoiceBlock({ ticket, onUse }: { ticket:TicketSummary; onUse?:(text:string)=>void }) {
+  const self = ticket.selfService;
+  if (!self) {
+    if (!ticket.intent || !INVOICE_INTENTS.has(ticket.intent)) return null;
+    return <div className="diagnosis-block"><h4>Segunda via</h4>
+      <p>{ticket.identification==="identified"
+        ? "Ainda sem CPF: peça o CPF do titular. Quando o cliente mandar, o LZR confere com o cadastro do número e mostra as faturas aqui."
+        : "Este número não tem cadastro único no IXC: não há com o que conferir o CPF. A segunda via segue com o atendente."}</p></div>;
+  }
+  return <div className="diagnosis-block">
+    <h4>Segunda via <Badge tone={self.step==="verified" ? "ok" : self.step==="mismatch" ? "bad" : "warn"}>{INVOICE_STEP_LABELS[self.step] ?? self.step}</Badge></h4>
+    {self.invoices && (self.invoices.length===0 ? <p>Nenhuma fatura em aberto no IXC.</p>
+      : <ul>{self.invoices.map((item) => <li key={item.id}>Fatura {item.id} · vence {item.dueAt ? item.dueAt.slice(0,10).split("-").reverse().join("/") : "sem data"} · {item.value!==null ? item.value.toLocaleString("pt-BR",{style:"currency",currency:"BRL"}) : "valor não informado"}{item.overdue ? " · vencida" : ""}{item.paymentCode ? "" : " · sem linha digitável no IXC"}</li>)}</ul>)}
+    {self.draft && <>
+      <p><strong>A IA mandaria:</strong></p>
+      <pre className="draft-preview">{self.draft}</pre>
+      {onUse && <button type="button" className="button secondary small" onClick={()=>onUse(self.draft ?? "")}>Usar como rascunho</button>}
+    </>}
+  </div>;
 }
 const VERDICT_TONE: Record<DiagnosisVerdict, "ok"|"warn"|"bad"|"neutral"> = { blocked: "bad", offline: "warn", online: "ok", unknown: "neutral" };
 
@@ -710,7 +738,8 @@ function ConversationAuditPanel({audit}:{audit:ConversationAudit|null}){
   const origem = audit.intentSource==="llm"
     ? <>Modelo de linguagem{audit.intentModel?<> <code>{audit.intentModel}</code></>:null}</>
     : audit.intentSource==="rules" ? <>Regra de texto <InfoTip>O modelo não respondeu a tempo, ou está desligado.</InfoTip></>
-    : audit.intentSource==="menu" ? <>O próprio cliente, no menu de assuntos</> : missing;
+    : audit.intentSource==="menu" ? <>O próprio cliente, no menu de assuntos</>
+    : audit.intentSource==="flow" ? <>Resposta a um pedido da IA (CPF da segunda via)</> : missing;
   return <section className="details-section">
     <h3>Auditoria da IA</h3>
     <dl className="facts">

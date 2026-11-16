@@ -1,5 +1,6 @@
 import type { Intent } from "../agent/types.ts";
 import type { ConnectionDiagnosis } from "./connection-diagnosis-shared.ts";
+import type { InvoiceSelfService } from "./invoice-self-service-shared.ts";
 
 /**
  * Triagem do atendimento: protocolo, setor e o menu que confirma o assunto.
@@ -104,6 +105,8 @@ export interface TicketSummary {
   protocolSentAt: string | null;
   /** Diagnóstico de conexão, quando o assunto é técnico e o cliente foi identificado. */
   diagnosis: ConnectionDiagnosis | null;
+  /** Segunda via com confirmação do titular. */
+  selfService: InvoiceSelfService | null;
 }
 
 /** Assuntos em que o diagnóstico de conexão ajuda: o problema pode estar no contrato, no login ou na rede. */

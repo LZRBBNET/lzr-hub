@@ -102,6 +102,7 @@ Flags relevantes:
 | `FEATURE_AUTH` | Exige login e aplica RBAC nas rotas | **ligada** |
 | `FEATURE_N8N_CHANNEL` | Canal WhatsApp recebe e registra mensagem (nome histórico: o n8n saiu do caminho, a Evolution chama a API direto) | **ligada** (modo observação — ver abaixo) |
 | `FEATURE_N8N_AUTOREPLY` | A IA **responde ao cliente** pelo canal — pela Meta, como **primeira resposta**, uma por espera (ver *Auditoria do que a IA faz*) | desligada |
+| `FEATURE_AI_INVOICE` | Com o titular confirmado pelo CPF, a IA **manda os dados da fatura** (vencimento, valor, linha digitável). Só vale com `FEATURE_N8N_AUTOREPLY` | desligada — falta provar com fatura real |
 | `FEATURE_QUEUES` | Filas reais (Redis/BullMQ) | desligada |
 | `FEATURE_IXC_WRITE` | Escrita no ERP — as 4 operações do catálogo (segunda via, OS, renegociação, cadastro de cliente) | **ligada** |
 | `FEATURE_IXC_FULL_BASE` | Leitura da **base inteira** do IXC, não só da allowlist | **ligada** |
@@ -253,6 +254,17 @@ O que as sondagens (`scripts/ixc-probe-self-service.mjs`) e a coleção Postman 
 - **PIX**: `POST /webservice/v1/get_pix` com `{ "id_areceber": <fatura> }`. O cadastro de teste não tem fatura nenhuma, então o formato da resposta segue sem prova.
 - **2ª via pede CPF** antes de mostrar qualquer dado financeiro (decisão do Vinícius): o telefone sozinho não basta.
 
+**Segunda via com confirmação do titular** (`invoice-self-service-shared.ts`; passos em `invoiceSteps`, em `triage-service.ts`; coluna `support_tickets.self_service`, migração 0021). O segundo autoatendimento.
+
+- **Quem é conferido**: o CPF (ou CNPJ) precisa ser o do cadastro que o **telefone da conversa** já identificou. Número sem cadastro único no IXC não entra no fluxo — vai para o financeiro como antes. CPF sozinho, vindo de qualquer número, não basta: CPF vaza com facilidade. Afrouxar isso é uma decisão a tomar com a BBNET, não um ajuste.
+- **O passo a passo** (com resposta automática ligada): assunto de fatura ou PIX → a IA pede o CPF (`ASK_CPF_TEXT`) → o cliente manda → confere (dígitos verificadores, depois o documento do cadastro, que o IXC grava **com máscara**) → lê as faturas em aberto (`listOpenInvoicesOf`, mesmo filtro do "Financeiro do cliente" da IXC: liberada e status `A`). CPF já na primeira mensagem confere na hora. A resposta ao pedido do CPF é tratada **antes do classificador** (`intercept`, `intentSource = flow`) — o documento nem chega ao modelo — e é exceção à regra "uma por espera" (`awaitingAnswer`).
+- **Erro de digitação**: pede de novo uma vez; na segunda, passa para o atendente. Número de 11 dígitos que não fecha como CPF só conta como "CPF errado" se a IA pediu o CPF — fora disso pode ser um telefone com DDD.
+- **IXC lento ou fora do ar** responde "não consegui consultar", nunca "não confere": acusar o cliente de errar o próprio CPF por falha nossa seria mentir para ele. Teto de 6 s por consulta.
+- **O CPF não é gravado** em lugar nenhum do atendimento: só a etapa (`awaiting_cpf`, `invalid_cpf`, `verified`, `mismatch`, `unavailable`), as tentativas, as faturas e o rascunho.
+- **O que sai para o cliente**: com `FEATURE_AI_INVOICE` desligada (hoje), a IA confirma o titular e diz que um atendente envia a segunda via; a ficha "Atendimento" mostra as faturas e o rascunho com botão **Usar como rascunho**. Ligada, a IA manda o rascunho: vencimento, valor, situação e a linha digitável quando o IXC devolve. **PIX não sai** em nenhum caso enquanto o `get_pix` não for provado com fatura real.
+- **Modo observação**: nada é pedido ao cliente. Se ele mandar o CPF por conta própria (ou porque o atendente pediu), a conferência roda e a sugestão já vem com a fatura.
+- Provado contra o IXC real em `scripts/ixc-probe-invoice.mjs` (cadastro de teste: documento com máscara, titular confirmado em 236 ms, CPF de outra pessoa → não confere sem ler fatura). O cadastro não tem fatura: o formato da linha digitável segue sem prova.
+
 **Resposta do atendente pela tela** (`FEATURE_ATTENDANT_REPLY`, `lib/platform/attendant-reply-service.ts`). Segue a régua da escrita no ERP: idempotência (chave por clique, reservada em `channel_idempotency_keys` **antes** de chamar a Meta) → política (login obrigatório, texto de homologação recusado, janela de 24 horas) → flag → chamada. Bloqueio e falha também entram na auditoria. Em **timeout a reserva não é solta**: a mensagem pode ter saído, e liberar convidaria um reenvio em dobro. A autoria fica em `channel_messages.sent_by`; nulo é "não registrado", nunca "a IA". Antes de responder, a mensagem do cliente é marcada como lida (melhor esforço, pelo `wamid` em `external_message_id`).
 
 ## Auditoria de contratos
@@ -307,7 +319,7 @@ Tabela é `.table` com `.tr` em grade e as colunas em `--cols`. ⚠️ Cada `.tr
 npm run typecheck && npm run lint && npm test
 ```
 
-Os três precisam passar. Hoje a suíte tem **700 testes**.
+Os três precisam passar. Hoje a suíte tem **713 testes**.
 
 ## Segurança — pontos já decididos
 

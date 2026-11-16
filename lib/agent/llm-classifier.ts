@@ -102,10 +102,11 @@ export function llmConfigFromEnv(env: Record<string, string | undefined> = proce
  * `source` e `model` existem para a auditoria, não para o pipeline: o fallback
  * para a regex é silencioso de propósito, e sem registrar quem decidiu ninguém
  * consegue explicar depois por que a IA entendeu o que entendeu. `menu` = o
- * cliente escolheu o assunto no menu de confirmação da triagem; não houve
+ * cliente escolheu o assunto no menu de confirmação da triagem; `flow` = a fala
+ * era a resposta a um pedido da IA (o CPF da segunda via). Nos dois não houve
  * classificação.
  */
-export interface Classification { intent: Intent; confidence: number; source: "llm" | "rules" | "menu"; model?: string }
+export interface Classification { intent: Intent; confidence: number; source: "llm" | "rules" | "menu" | "flow"; model?: string }
 
 function parseChoice(raw: string, model: string): Classification | undefined {
   // O modelo às vezes embrulha o JSON em cerca de código; pega o primeiro objeto.

@@ -13,7 +13,7 @@ import { DbConversationStateRepository } from "@/lib/platform/conversation-state
 import { DbReplyRepository } from "@/lib/platform/attendant-reply-service";
 import { metaAutoReplyOptions } from "@/lib/platform/meta-auto-reply-service";
 import { metaSendConfigFromEnv } from "@/lib/integrations/meta/cloud-client";
-import { DbTicketRepository, ixcDiagnose, startTriage } from "@/lib/platform/triage-service";
+import { DbTicketRepository, ixcDiagnose, ixcInvoiceLookup, startTriage } from "@/lib/platform/triage-service";
 import { DbIncidentsRepository } from "@/lib/platform/incidents-service";
 
 /**
@@ -28,6 +28,8 @@ import { DbIncidentsRepository } from "@/lib/platform/incidents-service";
  */
 const metaEnabled = () => process.env.FEATURE_META_WHATSAPP === "true";
 const autoReplyEnabled = () => process.env.FEATURE_N8N_AUTOREPLY === "true";
+/** A IA manda vencimento, valor e linha digitável ao cliente. Nasce desligada, como toda flag com efeito no mundo. */
+const aiInvoiceEnabled = () => process.env.FEATURE_AI_INVOICE === "true";
 
 /**
  * Verificação do webhook: a Meta chama com `hub.challenge` e espera o valor de
@@ -103,6 +105,8 @@ export async function POST(request: Request) {
       channel: CHANNEL_NAME, conversationId: message.phone, lookup: lookupCustomer,
       // Atendimento técnico de cliente identificado ganha diagnóstico (contrato, login, massiva, OS aberta).
       diagnose: provider ? ixcDiagnose(provider, new DbIncidentsRepository(db), correlationId) : undefined,
+      // Segunda via: confere o titular pelo CPF. Os dados da fatura só saem pela IA com FEATURE_AI_INVOICE.
+      invoice: provider ? { lookup: ixcInvoiceLookup(provider, correlationId), sendData: aiInvoiceEnabled() } : undefined,
     });
     // `wamid` é a chave de idempotência: a Meta reenvia o webhook quando não
     // recebe 200, e sem isso a reentrega viraria atendimento em dobro.
@@ -118,7 +122,7 @@ export async function POST(request: Request) {
           ...await metaAutoReplyOptions({
             enabled: autoReplyEnabled(), states: new DbConversationStateRepository(db), messages: channel, claims: new DbReplyRepository(db),
             config: sendConfig, channel: CHANNEL_NAME, customerMessageAt: message.sentAt,
-            afterClarification: triage?.ticket.stage === "clarifying",
+            awaitingAnswer: triage?.awaitingAnswer,
           }, message.phone),
           templates,
           triage: triage?.hooks,
