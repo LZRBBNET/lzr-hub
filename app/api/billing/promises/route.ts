@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { randomUUID } from "node:crypto";
 import { getDb } from "@/db";
 import { getIxcRuntime } from "@/lib/integrations/ixc/runtime";
+import { loadConfirmedReviewStatuses } from "@/lib/platform/payment-promise-evidence";
 import { businessToday } from "@/lib/platform/billing-service";
 import {
   DbPaymentPromiseRepository, PaymentPromiseValidationError, parsePromisedFor, reviewPendingPromises,
@@ -38,6 +39,7 @@ async function loadInvoiceStatusByCustomer(customerId: string, correlationId: st
   const snapshot = await runtime.provider.getSnapshot(customerId, correlationId).catch(() => null);
   return new Map((snapshot?.invoices ?? []).map((invoice) => [invoice.id, invoice.status]));
 }
+
 
 export async function POST(request: Request) {
   const guard = await authorize(request, "billing.write-demo");
@@ -81,14 +83,19 @@ export async function POST(request: Request) {
     const byCustomer = new Map<string, string[]>();
     for (const promise of pending) byCustomer.set(promise.customerId, [...(byCustomer.get(promise.customerId) ?? []), promise.invoiceId]);
 
-    const statusByInvoice = new Map<string, string>();
-    for (const customerId of byCustomer.keys()) {
-      const statuses = await loadInvoiceStatusByCustomer(customerId, correlationId);
-      for (const [invoiceId, status] of statuses) statusByInvoice.set(invoiceId, status);
-    }
-
     const today = businessToday(new Date());
-    const result = reviewPendingPromises(pending, statusByInvoice, today);
+    const result = { fulfilled: [] as string[], broken: [] as string[], stillPending: [] as string[] };
+    // Never share invoice evidence across customer identities.
+    for (const customerId of byCustomer.keys()) {
+      const statuses = await loadConfirmedReviewStatuses(customerId, correlationId, () => getIxcRuntime().provider);
+      const reviewed = reviewPendingPromises(pending.filter((promise) => promise.customerId === customerId), statuses, today);
+      result.fulfilled.push(...reviewed.fulfilled);
+      result.broken.push(...reviewed.broken);
+      result.stillPending.push(...reviewed.stillPending);
+    }
+    const admitted = await authorize(request, "billing.write-demo");
+    if (!admitted.allowed) return NextResponse.json({ error: admitted.error }, { status: admitted.status });
+    if (guard.user?.id !== admitted.user?.id) return NextResponse.json({ error: "Seu acesso mudou. Atualize a página." }, { status: 403 });
     for (const id of result.fulfilled) await repository.updateStatus(id, "fulfilled");
     for (const id of result.broken) await repository.updateStatus(id, "broken");
 

@@ -10,7 +10,7 @@ export const SESSION_COOKIE = "lzr_session";
 export const SESSION_TTL_HOURS = 12;
 const KEY_LENGTH = 64;
 
-export interface AuthenticatedUser { id: string; email: string; name: string; role: Role }
+export interface AuthenticatedUser { id: string; email: string; name: string; role: Role; mustChangePassword?: boolean }
 /** Marca que a senha atual foi gerada pelo sistema e precisa ser trocada. */
 export interface WithPasswordFlag { mustChangePassword: boolean }
 
@@ -95,7 +95,7 @@ export async function resolveSession(
   }
   const user = await repository.findUserById(session.userId);
   if (!user || !user.active || !isRole(user.role)) return undefined;
-  return { id: user.id, email: user.email, name: user.name, role: user.role };
+  return { id: user.id, email: user.email, name: user.name, role: user.role, ...(user.mustChangePassword === true ? { mustChangePassword: true } : {}) };
 }
 
 export async function logout(repository: AuthRepository, token: string | undefined): Promise<void> {

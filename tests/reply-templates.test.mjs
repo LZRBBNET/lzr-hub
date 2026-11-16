@@ -54,12 +54,12 @@ test("resposta editada vale; editada inválida cai no padrão em vez de ir ao cl
 
 test("salvar sobe a versão e devolve o texto anterior para a auditoria", async () => {
   const repository = new MemoryReplyTemplatesRepository();
-  const primeira = await saveTemplate(repository, { intent: "financial_pix", content: "Já envio o PIX para você." }, "ana@bbnet.com.br");
+  const primeira = await saveTemplate(repository, { intent: "technical_wifi", content: "O sinal melhora perto do roteador?" }, "ana@bbnet.com.br");
   assert.equal(primeira.saved.version, 1);
-  assert.equal(primeira.previous, DEFAULT_REPLY_TEMPLATES.financial_pix, "a primeira edição substitui o padrão");
-  const segunda = await saveTemplate(repository, { intent: "financial_pix", content: "Envio o PIX em instantes." }, "bia@bbnet.com.br");
+  assert.equal(primeira.previous, DEFAULT_REPLY_TEMPLATES.technical_wifi, "a primeira edição substitui o padrão");
+  const segunda = await saveTemplate(repository, { intent: "technical_wifi", content: "Em qual cômodo acontece?" }, "bia@bbnet.com.br");
   assert.equal(segunda.saved.version, 2);
-  assert.equal(segunda.previous, "Já envio o PIX para você.");
+  assert.equal(segunda.previous, "O sinal melhora perto do roteador?");
   assert.equal(segunda.saved.updatedBy, "bia@bbnet.com.br");
 });
 
@@ -112,10 +112,10 @@ const entrada = (over = {}) => ({ externalConversationId: "5579991234567", text:
 test("o canal sugere a resposta aprovada, nunca o texto de homologação do pipeline", async () => {
   const canal = new MemoryChannelRepository();
   const resultado = await processChannelMessage(canal, entrada(), new MemorySupportMetricsRepository(), { autoReply: false });
-  assert.equal(resultado.suggestion, DEFAULT_REPLY_TEMPLATES.technical_no_connection);
+  assert.ok(resultado.suggestion.endsWith(DEFAULT_REPLY_TEMPLATES.technical_no_connection));
   assert.equal(containsHomologationText(resultado.suggestion), false);
   const gravadas = await canal.getHistory("n8n-whatsapp", "5579991234567");
-  assert.equal(gravadas.find((m) => m.role === "suggestion").content, DEFAULT_REPLY_TEMPLATES.technical_no_connection);
+  assert.equal(gravadas.find((m) => m.role === "suggestion").content, resultado.suggestion);
 });
 
 test("a edição feita pela BBNET é o que o canal usa", async () => {
@@ -123,13 +123,13 @@ test("a edição feita pela BBNET é o que o canal usa", async () => {
   const resultado = await processChannelMessage(canal, entrada(), new MemorySupportMetricsRepository(), {
     autoReply: false, templates: { technical_no_connection: "Já olho isso para você." },
   });
-  assert.equal(resultado.suggestion, "Já olho isso para você.");
+  assert.ok(resultado.suggestion.endsWith("Já olho isso para você."));
 });
 
 test("com resposta automática, o que sai é o texto aprovado", async () => {
   const canal = new MemoryChannelRepository();
   const resultado = await processChannelMessage(canal, entrada({ text: "quero falar com um atendente" }), new MemorySupportMetricsRepository(), { autoReply: true });
-  assert.equal(resultado.response, DEFAULT_REPLY_TEMPLATES.human_handoff);
+  assert.ok(resultado.response.endsWith(DEFAULT_REPLY_TEMPLATES.human_handoff));
   assert.equal(containsHomologationText(resultado.response), false);
 });
 

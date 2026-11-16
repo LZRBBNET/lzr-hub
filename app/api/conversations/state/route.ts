@@ -34,6 +34,6 @@ export async function POST(request: Request) {
     if (result.changed && result.state.status === "resolved") await closeOpenTicket(new DbTicketRepository(db), CHANNEL_NAME, conversationId.trim()).catch(() => undefined);
     return NextResponse.json({ ok: true, state: result.state, changed: result.changed });
   } catch {
-    return NextResponse.json({ error: "Não consegui mudar a conversa agora." }, { status: 503 });
+    return NextResponse.json({ ok: false, status: "unconfirmed", error: "Mudança não confirmada. Atualize e confira o responsável antes de tentar novamente." }, { status: 503 });
   }
 }

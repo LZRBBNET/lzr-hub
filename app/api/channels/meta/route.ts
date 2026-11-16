@@ -1,3 +1,4 @@
+import { DbConversationDelivery } from "@/lib/platform/conversation-delivery-service";
 import { NextResponse } from "next/server";
 import { randomUUID } from "node:crypto";
 import { getDb } from "@/db";
@@ -121,7 +122,7 @@ export async function POST(request: Request) {
         {
           ...await metaAutoReplyOptions({
             enabled: autoReplyEnabled(), states: new DbConversationStateRepository(db), messages: channel, claims: new DbReplyRepository(db),
-            config: sendConfig, channel: CHANNEL_NAME, customerMessageAt: message.sentAt,
+            delivery: new DbConversationDelivery(db), config: sendConfig, channel: CHANNEL_NAME, customerMessageAt: message.sentAt,
             awaitingAnswer: triage?.awaitingAnswer,
           }, message.phone),
           templates,

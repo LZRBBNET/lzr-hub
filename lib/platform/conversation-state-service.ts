@@ -1,5 +1,6 @@
+import { hasDelivery, lockDelivery } from "./conversation-delivery-lock.ts";
 import { randomUUID } from "node:crypto";
-import { and, eq, inArray, sql } from "drizzle-orm";
+import { and, eq, inArray, isNull, sql } from "drizzle-orm";
 import { auditEvents, channelMessages, conversationStates } from "../../db/schema.ts";
 import { isNonCustomerConversation } from "./conversation-scope.ts";
 import { STATE_ACTIONS, botMayReply, effectiveState, type ConversationStateRow, type EffectiveState, type StateAction } from "./conversation-state-shared.ts";
@@ -15,10 +16,16 @@ import { STATE_ACTIONS, botMayReply, effectiveState, type ConversationStateRow, 
 
 export interface StateActor { id: string; name: string; email: string; role: string }
 
+export interface StateAudit { action: string; entity: string; reason: string; actor: StateActor }
+
 export interface ConversationStateRepository {
   get(channel: string, conversationId: string): Promise<ConversationStateRow | undefined>;
   getMany(conversationIds: string[]): Promise<Map<string, ConversationStateRow>>;
   save(channel: string, conversationId: string, row: ConversationStateRow): Promise<void>;
+  /** Atomic write only if the persisted state still matches the read. No retry. */
+  saveIfCurrent(channel: string, conversationId: string, expected: ConversationStateRow | undefined, next: ConversationStateRow): Promise<boolean>;
+  /** Compare-and-set and audit must commit or roll back together. */
+  saveAndAuditIfCurrent(channel: string, conversationId: string, expected: ConversationStateRow | undefined, next: ConversationStateRow, entry: StateAudit): Promise<boolean>;
   /** `undefined` = a conversa não existe; `null` = existe, mas o cliente nunca escreveu. */
   lastCustomerAt(channel: string, conversationId: string): Promise<string | null | undefined>;
   audit(entry: { action: string; entity: string; reason: string; actor: StateActor }): Promise<void>;
@@ -45,7 +52,7 @@ export async function changeConversationState(
   const row = await repository.get(input.channel, conversationId);
   const current = effectiveState(row, lastCustomerAt);
   const at = new Date((input.now ?? Date.now)()).toISOString();
-  const entity = `conversation:${conversationId}`;
+  const entity = `conversation:${encodeURIComponent(input.channel)}:${encodeURIComponent(conversationId)}`;
   const was = current.assigneeName ? ` (estava com ${current.assigneeName})` : "";
 
   let next: ConversationStateRow | null = null;
@@ -73,25 +80,11 @@ export async function changeConversationState(
     reason = `Reabriu a conversa${current.resolvedBy ? ` (resolvida por ${current.resolvedBy})` : ""}`;
   }
 
-  await repository.save(input.channel, conversationId, next);
-  // A auditoria não derruba a ação: o estado já mudou e a tela precisa saber.
-  await repository.audit({ action: `conversation.${action}`, entity, reason, actor }).catch(() => undefined);
+  if (!await repository.saveAndAuditIfCurrent(input.channel, conversationId, row, next, { action: `conversation.${action}`, entity, reason, actor })) {
+    return { ok: false, status: 409, reason: "A conversa mudou durante a ação. Atualize antes de tentar novamente." };
+  }
+  // Success follows a confirmed transaction; uncertain COMMIT must propagate to the caller.
   return { ok: true, state: effectiveState(next, lastCustomerAt), changed: true };
-}
-
-/**
- * Quem responde pela tela passa a ser o responsável, se ninguém era. É o que as
- * caixas de entrada fazem — e é o que impede a IA de responder por cima depois
- * que um humano entrou na conversa. Melhor esforço: o envio já aconteceu.
- */
-export async function claimIfUnassigned(repository: ConversationStateRepository, channel: string, conversationId: string, actor: StateActor | undefined): Promise<void> {
-  if (!actor) return;
-  try {
-    const lastCustomerAt = await repository.lastCustomerAt(channel, conversationId);
-    const current = effectiveState(await repository.get(channel, conversationId), lastCustomerAt);
-    if (current.status === "open" && current.assigneeId) return;
-    await changeConversationState(repository, { channel, conversationId, action: "claim", actor });
-  } catch { /* sem estado gravado a conversa só continua sem responsável */ }
 }
 
 /**
@@ -103,6 +96,8 @@ export async function botMayReplyNow(repository: ConversationStateRepository, ch
   try { return botMayReply(await repository.get(channel, conversationId)); }
   catch { return false; }
 }
+
+const STATE_FIELDS = ["status","assigneeId","assigneeName","assignedAt","resolvedAt","resolvedBy"] as const;
 
 type Row = { channel: string; externalConversationId: string; status: string; assigneeId: string | null; assigneeName: string | null; assignedAt: string | null; resolvedAt: string | null; resolvedBy: string | null };
 const toState = (row: Row): ConversationStateRow => ({
@@ -133,6 +128,41 @@ export class DbConversationStateRepository implements ConversationStateRepositor
       .onConflictDoUpdate({ target: [conversationStates.channel, conversationStates.externalConversationId], set: values });
   }
 
+  async saveIfCurrent(channel: string, conversationId: string, expected: ConversationStateRow | undefined, next: ConversationStateRow) {
+    const values = { ...next, updatedAt: new Date().toISOString() };
+    if (!expected) {
+      const inserted = await this.db.insert(conversationStates).values({ channel, externalConversationId: conversationId, ...values })
+        .onConflictDoNothing({ target: [conversationStates.channel, conversationStates.externalConversationId] })
+        .returning({ id: conversationStates.externalConversationId });
+      return inserted.length === 1;
+    }
+    const unchanged = STATE_FIELDS.map(key => {
+      const value = expected[key];
+      return value === null ? isNull(conversationStates[key]) : eq(conversationStates[key], value);
+    });
+    const updated = await this.db.update(conversationStates).set(values)
+      .where(and(eq(conversationStates.channel, channel), eq(conversationStates.externalConversationId, conversationId), ...unchanged))
+      .returning({ id: conversationStates.externalConversationId });
+    return updated.length === 1;
+  }
+
+  async saveAndAuditIfCurrent(channel: string, conversationId: string, expected: ConversationStateRow | undefined, next: ConversationStateRow, entry: StateAudit) {
+    // The reads that chose the transition may be stale; the conditional write below
+    // rechecks that snapshot. The losing writer emits no event and does not retry.
+    return this.db.transaction(async (tx: unknown) => {
+      const repository = new DbConversationStateRepository(tx);
+      await repository.db.execute(sql`SET LOCAL synchronous_commit = on`);
+      await repository.db.execute(sql`SET LOCAL statement_timeout = '5s'`);
+      await repository.db.execute(sql`SET LOCAL lock_timeout = '2s'`);
+      await repository.db.execute(sql`SET LOCAL idle_in_transaction_session_timeout = '10s'`);
+      await lockDelivery(repository.db, channel, conversationId);
+      if (await hasDelivery(repository.db, channel, conversationId)) return false;
+      if (!await repository.saveIfCurrent(channel, conversationId, expected, next)) return false;
+      await repository.audit(entry);
+      return true;
+    });
+  }
+
   async lastCustomerAt(channel: string, conversationId: string) {
     const rows = await this.db.select({
       total: sql<number>`count(*)`,
@@ -143,12 +173,14 @@ export class DbConversationStateRepository implements ConversationStateRepositor
     return rows[0].last ?? null;
   }
 
-  async audit(entry: { action: string; entity: string; reason: string; actor: StateActor }) {
-    await this.db.insert(auditEvents).values({
-      id: randomUUID(), actorId: entry.actor.email, role: entry.actor.role, action: entry.action, entity: entry.entity,
+  async audit(entry: StateAudit) {
+    const id = randomUUID();
+    const inserted = await this.db.insert(auditEvents).values({
+      id, actorId: entry.actor.email, role: entry.actor.role, action: entry.action, entity: entry.entity,
       beforeMasked: null, afterMasked: null, reason: entry.reason, correlationId: randomUUID(), result: "success", origin: "humano",
       createdAt: new Date().toISOString(),
-    });
+    }).returning({ id: auditEvents.id });
+    if (inserted.length !== 1 || inserted[0].id !== id) throw new Error("HANDOFF_AUDIT_UNCONFIRMED");
   }
 }
 
@@ -166,6 +198,19 @@ export class MemoryConversationStateRepository implements ConversationStateRepos
     return new Map([...this.states].filter(([key]) => conversationIds.some((id) => key.endsWith(`:${id}`))));
   }
   async save(channel: string, conversationId: string, row: ConversationStateRow) { this.states.set(stateKey(channel, conversationId), row); }
+  async saveIfCurrent(channel: string, conversationId: string, expected: ConversationStateRow | undefined, next: ConversationStateRow) {
+    const key = stateKey(channel, conversationId), current = this.states.get(key);
+    if ((!current) !== (!expected) || (current && expected && STATE_FIELDS.some(field => current[field] !== expected[field]))) return false;
+    this.states.set(key, { ...next });
+    return true;
+  }
+  async saveAndAuditIfCurrent(channel: string, conversationId: string, expected: ConversationStateRow | undefined, next: ConversationStateRow, entry: StateAudit) {
+    const key = stateKey(channel, conversationId), current = this.states.get(key);
+    if ((!current) !== (!expected) || (current && expected && STATE_FIELDS.some(field => current[field] !== expected[field]))) return false;
+    this.states.set(key, { ...next });
+    this.audits.push(entry);
+    return true;
+  }
   async lastCustomerAt(channel: string, conversationId: string) {
     const key = stateKey(channel, conversationId);
     return this.conversations.has(key) ? this.conversations.get(key) ?? null : undefined;

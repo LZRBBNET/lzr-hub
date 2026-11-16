@@ -1,0 +1,80 @@
+[
+  {
+    "name": "human_delivery_atomic_and_replay",
+    "auditFailureSends": 0,
+    "assignedBeforeSend": true,
+    "inflightBotAndHumanBlocked": true,
+    "mutationsBlocked": true,
+    "replayAfterIntermediateReleaseAndClaimPreservesOwner": true,
+    "contextMismatch": 409
+  },
+  {
+    "name": "human_delivery_concurrency",
+    "competingOwners": 2,
+    "transportCalls": 1,
+    "staleBotDispatchBlocked": true
+  },
+  {
+    "name": "bot_first_delivery_serialization",
+    "humanBlockedInflight": true,
+    "claimBlockedInflight": true,
+    "humanRecoveryAfterConfirmedBot": true
+  },
+  {
+    "name": "human_delivery_uncertain_outcomes",
+    "cases": [
+      "timeout",
+      "network",
+      "missing-id",
+      "server-error"
+    ],
+    "repeatedTransportCalls": 0,
+    "reservationRetained": true,
+    "wrongTokenCannotClear": true,
+    "manualReconciliationRequired": true
+  },
+  {
+    "name": "human_delivery_ledger_failure",
+    "externalAccepted": true,
+    "suppressedUpdateDetected": true,
+    "recorded": false,
+    "fenceRetained": true,
+    "replayBlocked": true
+  },
+  {
+    "name": "human_delivery_commit_before",
+    "firstTransportCalls": 0,
+    "reservationPersisted": false,
+    "retrySent": true,
+    "driverInjection": true
+  },
+  {
+    "name": "human_delivery_commit_after",
+    "firstTransportCalls": 0,
+    "reservationPersisted": true,
+    "retrySent": false,
+    "driverInjection": true
+  },
+  {
+    "name": "human_delivery_postsend_persistence",
+    "recorded": false,
+    "ownerPreserved": true,
+    "botBlocked": true,
+    "replayDoesNotClaimRecorded": true,
+    "channelKeysIsolated": true,
+    "realMessages": 0
+  },
+  {
+    "name": "handoff_summary_composition",
+    "reason": true,
+    "context": true,
+    "currentOwner": true,
+    "channelIsolation": true,
+    "reopenedWithoutOldOwner": true
+  },
+  {
+    "name": "delivery_reservations_survive_restart",
+    "pendingReservations": 6,
+    "powerFailureTested": false
+  }
+]

@@ -12,7 +12,7 @@ export function getPool(): Pool {
         "DATABASE_URL não está definida. No Railway, conecte o plugin Postgres ao serviço para que essa variável seja injetada automaticamente."
       );
     }
-    pool = new Pool({ connectionString });
+    pool = new Pool({ connectionString, connectionTimeoutMillis: 5_000 });
   }
   return pool;
 }

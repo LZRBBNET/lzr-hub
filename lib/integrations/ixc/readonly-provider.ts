@@ -2,7 +2,7 @@ import { IxcConnectionMapper, IxcContractMapper, IxcCustomerMapper, IxcInvoiceMa
 import { sanitizeTelemetry } from "./masking.ts";
 import { ReadonlyIxcGuard } from "./guard.ts";
 import { CircuitBreaker, SlidingWindowRateLimiter, TtlCache } from "./resilience.ts";
-import type { IxcCityDto, IxcCollectionWalletDto, IxcCustomerDto, IxcCustomerPage, IxcCustomerSnapshot, IxcListResponse, IxcOsSubjectDto, IxcPaymentTermDto, IxcReadOperation, IxcSectorDto, IxcServiceDiagnosisData, IxcUfDto } from "./types.ts";
+import type { IxcCityDto, IxcCollectionWalletDto, IxcCustomerDto, IxcCustomerPage, IxcCustomerSnapshot, IxcInvoiceDto, IxcSnapshotCoverage, IxcListResponse, IxcOsSubjectDto, IxcPaymentTermDto, IxcReadOperation, IxcSectorDto, IxcServiceDiagnosisData, IxcUfDto } from "./types.ts";
 
 // `listOsCatalog` fica de fora porque não tem um endpoint só: a mesma operação
 // lê `su_oss_assunto` e `empresa_setor`, e o recurso vai explícito na chamada.
@@ -128,6 +128,19 @@ function apiError(body:IxcListResponse){
 export function basicCredential(token:string){
   const value=token.trim();
   return /^\d+:[A-Fa-f0-9]{32,}$/.test(value)?btoa(value):value;
+}
+
+/** Match the mapper's nonempty aliases, but never ignore contradictory references. */
+function paymentInvoiceReference(row:Record<string,unknown>){
+  const values=[row.id_receber,row.id_fatura];
+  if(values.some(value=>value!==undefined&&value!==null&&typeof value!=="string"&&!(typeof value==="number"&&Number.isSafeInteger(value)&&value>0)))return {state:"invalid" as const,id:""};
+  const ids=values.map(value=>String(value??"").trim()).filter(Boolean);
+  if(ids.length===0)return {state:"missing" as const,id:""};
+  if(new Set(ids).size!==1)return {state:"conflict" as const,id:""};
+  return {state:"confirmed" as const,id:ids[0]};
+}
+function paymentMatchesInvoice(row:Record<string,unknown>,invoiceId:string){
+  const reference=paymentInvoiceReference(row);return reference.state==="confirmed"&&reference.id===invoiceId.trim();
 }
 
 export class IxcReadonlyProvider {
@@ -478,38 +491,123 @@ export class IxcReadonlyProvider {
   async countOpenInvoices(correlationId:string){
     return (await this.readPage("listInvoices",endpoints.listInvoices,"fn_areceber.status","A",correlationId,1,"",{oper:"=",sortname:"fn_areceber.id"})).total;
   }
+  async getOpenInvoicesForDispatch(customerId:string,correlationId:string):Promise<IxcInvoiceDto[]>{
+    if(!/^[1-9]\d{0,31}$/.test(customerId))throw new IxcReadonlyError("IXC_INVALID_INVOICE_REFERENCE");
+    const {records,coverage}=await this.readPage("listInvoices",endpoints.listInvoices,"fn_areceber.id_cliente",customerId,correlationId,20,customerId,{
+      oper:"=",page:1,sortname:"fn_areceber.id",
+      gridParam:[{TB:"fn_areceber.status",OP:"=",P:"A"}],
+    });
+    if(!coverage.complete)throw new IxcReadonlyError("IXC_INCOMPLETE_INVOICE_RESPONSE");
+    const id=(value:unknown)=>typeof value==="string"?value:typeof value==="number"&&Number.isSafeInteger(value)?String(value):"";
+    if(records.some(row=>!/^[1-9]\d{0,31}$/.test(id(row.id))||id(row.id_cliente)!==customerId||row.status!=="A"))throw new IxcReadonlyError("IXC_INVOICE_SCOPE_MISMATCH");
+    return records.map(IxcInvoiceMapper.map);
+  }
+  /** Fresh exact ownership proof before reading one payment page. No snapshot or writes. */
+  async getInvoicePaymentPage(customerId:string,invoiceId:string,page:number,correlationId:string){
+    this.guard.assertCustomer(customerId);
+    if(!/^[1-9]\d{0,31}$/.test(customerId)||!/^[1-9]\d{0,31}$/.test(invoiceId)||!Number.isSafeInteger(page)||page<1||page>1000)throw new IxcReadonlyError("IXC_INVALID_PAYMENT_PAGE");
+    const confirmOwnership=async()=>{
+      const owned=await this.readPage("listInvoices",endpoints.listInvoices,"fn_areceber.id",invoiceId,correlationId,2,customerId);
+      if(!owned.coverage.complete||owned.records.length!==1||String(owned.records[0].id)!==invoiceId||String(owned.records[0].id_cliente)!==customerId)throw new IxcReadonlyError("IXC_INVOICE_OWNERSHIP_UNCONFIRMED");
+    };
+    await confirmOwnership();
+    const result=await this.readPage("listPayments",endpoints.listPayments,"id_receber",invoiceId,correlationId,10,customerId,{page,sortname:"fn_movim_finan.id",sortorder:"desc"});
+    const reject=(reason:string):never=>{
+      // Fixed reason codes and shape only: never record IDs, raw response, field values or secrets.
+      this.emit("ixc.paymentPageValidation",correlationId,0,"blocked",{reason,rowsValid:result.rowsValid,pageMatches:result.pageMatches,withinLimit:result.records.length<=10,count:result.records.length});
+      throw new IxcReadonlyError(reason);
+    };
+    if(!result.rowsValid)reject("IXC_PAYMENT_ROWS_INVALID");
+    if(!result.totalValid)reject("IXC_PAYMENT_TOTAL_INVALID");
+    if(!result.pageMatches)reject("IXC_PAYMENT_PAGE_MISMATCH");
+    if(result.records.length>10)reject("IXC_PAYMENT_PAGE_LIMIT");
+    for(const row of result.records){
+      const reference=paymentInvoiceReference(row);
+      if(reference.state==="invalid")reject("IXC_PAYMENT_INVOICE_LINK_INVALID");
+      if(reference.state==="missing")reject("IXC_PAYMENT_INVOICE_LINK_MISSING");
+      if(reference.state==="conflict")reject("IXC_PAYMENT_INVOICE_LINK_CONFLICT");
+      if(reference.id!==invoiceId)reject("IXC_PAYMENT_INVOICE_LINK_MISMATCH");
+    }
+    const ids=result.records.map(row=>String(row.id).trim());
+    if(new Set(ids).size!==ids.length)reject("IXC_PAYMENT_ID_DUPLICATE");
+    if(ids.some((id,index)=>index>0&&/^\d+$/.test(id)&&/^\d+$/.test(ids[index-1])&&BigInt(id)>=BigInt(ids[index-1])))reject("IXC_PAYMENT_ORDER_UNCONFIRMED");
+    const total=result.coverage.total,offset=(page-1)*10;
+    if(total!==null&&(offset+result.records.length>total||(offset<total&&result.records.length!==Math.min(10,total-offset))))reject("IXC_PAYMENT_CARDINALITY_UNCONFIRMED");
+    // Recheck after reading: a reassigned invoice must not disclose its payments.
+    // This is not an atomic IXC snapshot; a change and reversal between reads remains undetectable.
+    await confirmOwnership();
+    return {customerId,invoiceId,page,pageSize:10,total,hasMore:total===null?null:offset+result.records.length<total,scope:"invoice-page" as const,
+      items:result.records.map(row=>{const payment=IxcPaymentMapper.map(row,customerId);const raw=row.valor;const decimal=typeof raw==="number"||(typeof raw==="string"&&/^\d+(?:[.,]\d+)?$/.test(raw.trim()));const value=decimal?payment.value:undefined;return {id:payment.id,invoiceId,paidAt:payment.paidAt??null,method:payment.method,value:typeof value==="number"&&Number.isFinite(value)&&value>=0&&Number.isSafeInteger(Math.round(value*100))?Math.round(value*100)/100:null};})};
+  }
+  /** Bounded recent-first traversal; never implies a complete history beyond the cap. */
+  private async readSnapshotPages(operation:"listContracts"|"listInvoices"|"listServiceOrders",resource:string,customerId:string,correlationId:string){
+    const pageSize=20,limit=operation==="listInvoices"?100:60;const records:Record<string,unknown>[]=[];const ids=new Set<string>();let total:number|null=null;
+    const result=(complete=false)=>({records,total:total??records.length,coverage:{read:records.length,total,complete,limit}});
+    for(let page=1;page<=limit/pageSize;page++){
+      let next:Awaited<ReturnType<IxcReadonlyProvider["readPage"]>>;
+      try{next=await this.readPage(operation,resource,"id_cliente",customerId,correlationId,pageSize,customerId,{page,sortname:`${resource}.id`,sortorder:"desc"});}
+      catch(error){if(page===1)throw error;return result();}
+      const known=next.coverage.total;
+      // A moving total, bad page, foreign/duplicate ID or unexpected ordering is uncertain.
+      if(!next.rowsValid||!next.pageMatches||(total!==null&&known!==total)||next.records.length>pageSize)return result();
+      total=known;
+      for(const row of next.records){
+        const id=String(row.id??"");const previous=records.at(-1);
+        if(!id.trim()||String(row.id_cliente??"")!==customerId||ids.has(id)||(previous&&/^\d+$/.test(id)&&/^\d+$/.test(String(previous.id))&&BigInt(id)>=BigInt(String(previous.id))))return result();
+        ids.add(id);records.push(row);
+      }
+      if(total===null)return result();
+      if(records.length===total)return result(true);
+      if(records.length>total||next.records.length!==pageSize)return result();
+    }
+    return result();
+  }
   async getSnapshot(customerId:string,correlationId:string,force=false):Promise<IxcCustomerSnapshot>{
     this.guard.assertCustomer(customerId); const cached=!force?this.cache.get(customerId):undefined;if(cached){this.emit("ixc.snapshot",correlationId,0,"cache-hit",{customerId:"[MASKED]"});return{...cached,cache:"hit",metrics:{...cached.metrics,totalLatencyMs:0}};}this.durations.set(correlationId,{});
     const started=this.now();
     try{
       const customerRows=await this.read("getCustomer","cliente","id",customerId,correlationId,1);if(!customerRows[0])throw new Error("IXC_CUSTOMER_NOT_FOUND");
+      if(customerRows.length!==1||String(customerRows[0].id??"")!==customerId)throw new Error("IXC_CUSTOMER_SCOPE_MISMATCH");
       const settled=await Promise.allSettled([
-        this.read("listContracts",endpoints.listContracts,"id_cliente",customerId,correlationId),
-        this.read("listInvoices",endpoints.listInvoices,"id_cliente",customerId,correlationId),
-        this.read("listServiceOrders",endpoints.listServiceOrders,"id_cliente",customerId,correlationId),
-        this.read("getConnection",endpoints.getConnection,"id_cliente",customerId,correlationId),
+        this.readSnapshotPages("listContracts",endpoints.listContracts,customerId,correlationId),
+        this.readSnapshotPages("listInvoices",endpoints.listInvoices,customerId,correlationId),
+        this.readSnapshotPages("listServiceOrders",endpoints.listServiceOrders,customerId,correlationId),
+        this.readPage("getConnection",endpoints.getConnection,"id_cliente",customerId,correlationId),
       ]);
-      const rows=(index:number)=>settled[index].status==="fulfilled"?settled[index].value:[];
-      const sourceNames=["contracts","invoices","serviceOrders","connection"];const contracts=rows(0).map(IxcContractMapper.map);let plan=null;let planFailed=false;
-      if(contracts[0]?.planId){try{const planRows=await this.read("getPlan",endpoints.getPlan,"id",contracts[0].planId,correlationId,1,customerId);plan=planRows[0]?IxcPlanMapper.map(planRows[0]):null;if(plan&&contracts[0])contracts[0]={...contracts[0],planName:plan.name,monthlyValue:plan.value};}catch{planFailed=true;}}
+      const rows=(index:number)=>settled[index].status==="fulfilled"?settled[index].value.records:[];
+      const sourceNames=["contracts","invoices","serviceOrders","connection"] as const;
+      const coverage:IxcCustomerSnapshot["coverage"]={};
+      for(const [index,name] of sourceNames.entries()){
+        const result=settled[index];
+        coverage[name]=result.status==="fulfilled"?{...result.value.coverage,read:rows(index).length,
+          complete:result.value.coverage.complete&&rows(index).every(row=>String(row.id_cliente??"")===customerId)}:{read:0,total:null,complete:false,limit:20};
+      }
+      const contracts=rows(0).map(IxcContractMapper.map);let plan=null;let planFailed=false;
+      if(coverage.contracts?.complete&&contracts.length===1&&contracts[0]?.planId&&contracts[0].customerId===customerId){try{const planRows=await this.read("getPlan",endpoints.getPlan,"id",contracts[0].planId,correlationId,1,customerId);if(planRows.length!==1||String(planRows[0].id??"")!==contracts[0].planId)throw new Error("IXC_PLAN_SCOPE_MISMATCH");plan=IxcPlanMapper.map(planRows[0]);contracts[0]={...contracts[0],planName:plan.name,monthlyValue:plan.value};}catch{planFailed=true;}}
       // `fn_movim_finan` (pagamentos) não tem coluna id_cliente -- filtrar por ela sempre
       // devolvia página de erro do próprio IXC, nunca um problema de rede. O vínculo real é
       // por fatura (id_receber), então busca-se por fatura já sabidamente do cliente
-      // (confirmada pela consulta de faturas acima). Limitado às 10 faturas mais recentes
+      // (confirmada pela consulta de faturas acima). Limitado às primeiras 10 faturas lidas
       // para não disparar uma fatura de chamadas por atendimento.
       const invoiceRows=rows(1);let payments:ReturnType<typeof IxcPaymentMapper.map>[]=[];let paymentsFailed=false;
-      if(invoiceRows.length>0){
-        const paymentSettled=await Promise.allSettled(invoiceRows.slice(0,10).map((invoice)=>{
+      const paymentInvoices=invoiceRows.filter(invoice=>String(invoice.id_cliente??"")===customerId&&String(invoice.id??"").trim()&&invoiceRows.filter(other=>String(other.id)===String(invoice.id)).length===1).slice(0,10);
+      const paymentScope={invoicesRead:invoiceRows.length,invoiceTotal:coverage.invoices?.total??null,invoicesRequested:paymentInvoices.length,invoicesConfirmed:0,invoiceLimit:10};
+      coverage.payments={read:0,total:coverage.invoices?.complete&&invoiceRows.length===0?0:null,complete:coverage.invoices?.complete===true&&invoiceRows.length===0,limit:100};
+      if(paymentInvoices.length>0){
+        const paymentSettled=await Promise.allSettled(paymentInvoices.map((invoice)=>{
           const invoiceId=String((invoice as Record<string,unknown>).id??"");
-          return this.read("listPayments",endpoints.listPayments,"id_receber",invoiceId,correlationId,10,customerId);
+          return this.readPage("listPayments",endpoints.listPayments,"id_receber",invoiceId,correlationId,10,customerId,{sortname:"fn_movim_finan.id",sortorder:"desc"});
         }));
-        payments=paymentSettled.flatMap((item)=>item.status==="fulfilled"?item.value.map((row)=>IxcPaymentMapper.map(row,customerId)):[]);
+        payments=paymentSettled.flatMap((item,index)=>item.status==="fulfilled"?item.value.records.slice(0,10).filter(row=>paymentMatchesInvoice(row,String(paymentInvoices[index].id))).map((row)=>IxcPaymentMapper.map(row,customerId)):[]);
         paymentsFailed=paymentSettled.some((item)=>item.status==="rejected");
+        paymentScope.invoicesConfirmed=paymentSettled.filter((item,index)=>item.status==="fulfilled"&&item.value.coverage.complete&&item.value.records.every(row=>paymentMatchesInvoice(row,String(paymentInvoices[index].id)))).length;
+        const complete=coverage.invoices?.complete===true&&invoiceRows.length<=10&&paymentInvoices.length===invoiceRows.length&&paymentSettled.every((item,index)=>item.status==="fulfilled"&&item.value.coverage.complete&&item.value.records.every(row=>paymentMatchesInvoice(row,String(paymentInvoices[index].id))));
+        coverage.payments={read:payments.length,total:complete?payments.length:null,complete,limit:100};
       }
       let customer=IxcCustomerMapper.map(customerRows[0]);
       const cityCode=String(customerRows[0].cidade??"").trim();
       if(cityCode){const cityName=await this.resolveCityName(cityCode,correlationId,customerId);if(cityName)customer={...customer,city:cityName};}
-      const snapshot:IxcCustomerSnapshot={customer,contracts,plan,invoices:invoiceRows.map(IxcInvoiceMapper.map),payments,serviceOrders:rows(2).map(IxcServiceOrderMapper.map),connection:rows(3)[0]?IxcConnectionMapper.map(rows(3)[0]):null,partialSources:[...settled.flatMap((item,index)=>item.status==="rejected"?[sourceNames[index]]:[]),...(planFailed?["plan"]:[]),...(paymentsFailed?["payments"]:[])],metrics:{totalLatencyMs:this.now()-started,blockLatencies:{...(this.durations.get(correlationId)??{})}},fetchedAt:new Date(this.now()).toISOString(),mode:"staging-readonly",cache:"miss"};
+      const snapshot:IxcCustomerSnapshot={customer,contracts,plan,invoices:invoiceRows.map(IxcInvoiceMapper.map),payments,serviceOrders:rows(2).map(IxcServiceOrderMapper.map),connection:rows(3)[0]?IxcConnectionMapper.map(rows(3)[0]):null,paymentScope,coverage,partialSources:[...settled.flatMap((item,index)=>item.status==="rejected"?[sourceNames[index]]:[]),...(planFailed?["plan"]:[]),...(paymentsFailed?["payments"]:[])],metrics:{totalLatencyMs:this.now()-started,blockLatencies:{...(this.durations.get(correlationId)??{})}},fetchedAt:new Date(this.now()).toISOString(),mode:"staging-readonly",cache:"miss"};
       this.cache.set(customerId,snapshot);this.emit("ixc.snapshot",correlationId,this.now()-started,"success",{partial:settled.some((item)=>item.status==="rejected")});return snapshot;
     }catch(error){this.emit("ixc.snapshot",correlationId,this.now()-started,"failed",{error:error instanceof Error?error.name:"unknown"});throw error;}
   }
@@ -528,12 +626,23 @@ export class IxcReadonlyProvider {
   private async read(operation:IxcReadOperation,resource:string,qtype:string,query:string,correlationId:string,rp=20,authorizedCustomerId=query,options?:ReadOptions):Promise<Record<string,unknown>[]>{
     return (await this.readPage(operation,resource,qtype,query,correlationId,rp,authorizedCustomerId,options)).records;
   }
-  private async readPage(operation:IxcReadOperation,resource:string,qtype:string,query:string,correlationId:string,rp=20,authorizedCustomerId=query,options?:ReadOptions):Promise<{records:Record<string,unknown>[];total:number}>{
-    this.guard.assertOperation(operation);if(!GLOBAL_SCOPE_OPERATIONS.has(operation))this.guard.assertCustomer(authorizedCustomerId);if(!this.breaker.canRequest())throw new Error("IXC_CIRCUIT_OPEN");this.limiter.assert();
+  private async readPage(operation:IxcReadOperation,resource:string,qtype:string,query:string,correlationId:string,rp=20,authorizedCustomerId=query,options?:ReadOptions):Promise<{records:Record<string,unknown>[];total:number;coverage:IxcSnapshotCoverage;pageMatches:boolean;rowsValid:boolean;totalValid:boolean}>{
+    this.guard.assertOperation(operation);if(!GLOBAL_SCOPE_OPERATIONS.has(operation))this.guard.assertCustomer(authorizedCustomerId);if(!this.breaker.canRequest())throw new Error("IXC_CIRCUIT_OPEN");
     const url=`${this.options.baseUrl.replace(/\/$/,"")}/webservice/v1/${resource}`;let last:unknown;
     const payload:Record<string,string>={qtype,query,oper:options?.oper??"=",page:String(options?.page??1),rp:String(rp),sortname:options?.sortname??"id",sortorder:options?.sortorder??"asc"};
     if(options?.gridParam?.length)payload.grid_param=JSON.stringify(options.gridParam);
-    const maxAttempts=1+(this.options.retryLimit??1);for(let attempt=0;attempt<maxAttempts;attempt+=1){const controller=new AbortController();const timer=setTimeout(()=>controller.abort(),this.timeoutMs);const started=this.now();try{const response=await this.fetcher(url,{method:"POST",headers:{Authorization:`Basic ${basicCredential(this.options.token)}`,"Content-Type":"application/json","ixcsoft":"listar","x-correlation-id":correlationId},body:JSON.stringify(payload),signal:controller.signal});clearTimeout(timer);if(!response.ok){const retry=response.status===429||response.status>=500;if(retry&&attempt+1<maxAttempts){last=new IxcReadonlyError(`IXC_HTTP_${response.status}`);continue}throw new IxcReadonlyError(`IXC_HTTP_${response.status}`)}const body=await response.json() as IxcListResponse;const contractError=apiError(body);if(contractError)throw contractError;const records=Array.isArray(body.registros)?body.registros.filter((item):item is Record<string,unknown>=>!!item&&typeof item==="object"):[];const total=Number((body as {total?:unknown}).total??records.length);this.breaker.success();this.emit(`ixc.${operation}`,correlationId,this.now()-started,"success",{count:records.length});return{records,total:Number.isFinite(total)?total:records.length};}catch(error){clearTimeout(timer);last=classifyError(error);if(attempt+1<maxAttempts&&(last as IxcReadonlyError).code==="IXC_TIMEOUT")continue;break;}}
+    const maxAttempts=1+(this.options.retryLimit??1);for(let attempt=0;attempt<maxAttempts;attempt+=1){this.limiter.assert();const controller=new AbortController();const timer=setTimeout(()=>controller.abort(),this.timeoutMs);const started=this.now();try{const response=await this.fetcher(url,{method:"POST",headers:{Authorization:`Basic ${basicCredential(this.options.token)}`,"Content-Type":"application/json","ixcsoft":"listar","x-correlation-id":correlationId},body:JSON.stringify(payload),signal:controller.signal});if(!response.ok){clearTimeout(timer);const retry=response.status===429||response.status>=500;if(retry&&attempt+1<maxAttempts){last=new IxcReadonlyError(`IXC_HTTP_${response.status}`);continue}throw new IxcReadonlyError(`IXC_HTTP_${response.status}`)}const body=await response.json() as IxcListResponse;clearTimeout(timer);const contractError=apiError(body);if(contractError)throw contractError;
+    const records=Array.isArray(body.registros)?body.registros.filter((item):item is Record<string,unknown>=>!!item&&typeof item==="object"&&!Array.isArray(item)):[];
+    const rawTotal=body.total;
+    const knownTotal=(typeof rawTotal==="number"||(typeof rawTotal==="string"&&/^\d+$/.test(rawTotal)))&&Number.isSafeInteger(Number(rawTotal))&&Number(rawTotal)>=records.length?Number(rawTotal):null;
+    // An absent total is unknown; an explicit malformed/contradictory total is not absence.
+    const totalValid=rawTotal===undefined||rawTotal===null||knownTotal!==null;
+    const validRows=Array.isArray(body.registros)&&body.registros.length===records.length&&records.every(row=>(typeof row.id==="string"&&!!row.id.trim())||(typeof row.id==="number"&&Number.isSafeInteger(row.id)&&row.id>0));
+    const uniqueIds=new Set(records.map(row=>String(row.id))).size===records.length;
+    const pageMatches=body.page===undefined||((typeof body.page==="string"||typeof body.page==="number")&&String(body.page)===String(options?.page??1));
+    const firstPage=(options?.page??1)===1&&pageMatches;
+    const coverage={read:records.length,total:knownTotal,complete:validRows&&uniqueIds&&firstPage&&knownTotal===records.length&&records.length<=rp,limit:rp};
+    const total=Number(rawTotal??records.length);this.breaker.success();this.emit(`ixc.${operation}`,correlationId,this.now()-started,"success",{count:records.length});return{records,total:Number.isFinite(total)?total:records.length,coverage,pageMatches,rowsValid:validRows&&uniqueIds,totalValid};}catch(error){clearTimeout(timer);last=classifyError(error);if(attempt+1<maxAttempts&&(last as IxcReadonlyError).code==="IXC_TIMEOUT")continue;break;}}
     const failure=classifyError(last);this.breaker.failure();this.emit(`ixc.${operation}`,correlationId,0,"failed",sanitizeTelemetry({error:failure.code}) as Record<string,unknown>);throw failure;
   }
   private emit(event:string,correlationId:string,durationMs:number,status:IxcTrace["status"],attributes:Record<string,unknown>){if(event.startsWith("ixc.")&&event!=="ixc.snapshot"){const key=event.slice(4);this.durations.set(correlationId,{...(this.durations.get(correlationId)??{}),[key]:durationMs});}this.options.trace?.({event,correlationId,durationMs,status,attributes:sanitizeTelemetry(attributes) as Record<string,unknown>});}

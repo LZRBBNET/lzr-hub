@@ -1,4 +1,5 @@
-import { randomUUID } from "node:crypto";
+import type { ConversationDelivery } from "./conversation-delivery-service.ts";
+import { createHash, randomUUID } from "node:crypto";
 import { and, desc, eq } from "drizzle-orm";
 import { auditEvents, channelIdempotencyKeys, channelMessages } from "../../db/schema.ts";
 import { sanitizeHandoffText } from "../agent/handoff.ts";
@@ -23,7 +24,7 @@ export { REPLY_WINDOW_MS };
 const KEY_PATTERN = /^[\w-]{8,100}$/;
 const CLAIM_PREFIX = "reply:";
 
-export interface ReplyActor { email: string; role: string }
+export interface ReplyActor { id?: string; name?: string; email: string; role: string }
 
 export interface ReplyInput {
   channel: string;
@@ -39,12 +40,12 @@ export type ReplyResult =
   | { ok: false; status: 400 | 403 | 409 | 422 | 429 | 502 | 503; reason: string };
 
 /** `text` é o que saiu, para quem precisa refazer o registro sem reenviar (a resposta automática, na reentrega do webhook). */
-export type ClaimState = { status: "pending" } | { status: "sent"; messageId: string; text?: string } | { status: "unknown" };
+export type ClaimState = { context?: string; recorded?: boolean } & ({ status: "pending" } | { status: "sent"; messageId: string; text?: string } | { status: "unknown" } | { status: "reconciled"; resolution: string });
 
 export interface ReplyRepository {
   lastCustomerMessage(channel: string, conversationId: string): Promise<{ createdAt: string; externalMessageId?: string } | undefined>;
   /** Reserva a chave antes de enviar. `false` = já existe (outro clique, ou reenvio). */
-  claim(key: string, channel: string, conversationId: string): Promise<boolean>;
+  claim(key: string, channel: string, conversationId: string, context?: string): Promise<boolean>;
   claimState(key: string): Promise<ClaimState | undefined>;
   setClaimState(key: string, state: ClaimState): Promise<void>;
   release(key: string): Promise<void>;
@@ -54,6 +55,7 @@ export interface ReplyRepository {
 
 export interface ReplyDeps {
   repository: ReplyRepository;
+  delivery?: ConversationDelivery;
   /** `undefined` quando falta token ou id do número. */
   config: MetaSendConfig | undefined;
   /** `FEATURE_ATTENDANT_REPLY`. */
@@ -89,8 +91,12 @@ export async function sendAttendantReply(deps: ReplyDeps, input: ReplyInput): Pr
   if (isNonCustomerConversation(phone) || !/^\d{10,15}$/.test(phone)) return refusal(400, "Esta conversa não é de um número de cliente.");
 
   // 2. Idempotência: o mesmo clique repetido devolve o resultado, não reenvia.
+  if (!input.actor) return blocked(403, "O envio exige login.");
+  const context = createHash("sha256").update(JSON.stringify([input.channel, phone, text, input.actor.id, input.actor.email, input.actor.role])).digest("hex");
   const previous = await repository.claimState(claimKey);
-  if (previous?.status === "sent") return { ok: true, messageId: previous.messageId, duplicate: true, recorded: true };
+  if (previous && previous.context !== context) return refusal(409, "Identificador já usado em outro envio ou registro antigo; confira a conversa.");
+  if (previous?.status === "sent") return { ok: true, messageId: previous.messageId, duplicate: true, recorded: previous.recorded === true };
+  if (previous?.status === "reconciled") return refusal(409, "Esta operação foi reconciliada e encerrada. Ela não será reenviada.");
   if (previous) return refusal(409, previous.status === "pending" ? "Esse envio já está em andamento." : "Esse envio ficou sem confirmação da Meta. Confira a conversa antes de reenviar.");
 
   // 3. Política. Sem login não há autor, e mensagem a cliente sem autor não sai.
@@ -109,7 +115,17 @@ export async function sendAttendantReply(deps: ReplyDeps, input: ReplyInput): Pr
 
   // 4. Reserva. É o que a restrição única do banco garante: dois cliques
   // simultâneos não passam os dois daqui.
-  if (!(await repository.claim(claimKey, input.channel, phone))) return refusal(409, "Esse envio já está em andamento.");
+  if (!(await repository.claim(claimKey, input.channel, phone, context))) return refusal(409, "Esse envio já está em andamento.");
+
+  let deliveryToken: string;
+  try {
+    if (!deps.delivery || !input.actor.id || !input.actor.name) throw Error("DELIVERY_UNAVAILABLE");
+    deliveryToken = await deps.delivery.begin(input.channel, phone, { ...input.actor, id: input.actor.id, name: input.actor.name }, claimKey);
+  } catch {
+    await repository.release(claimKey).catch(() => undefined);
+    return refusal(503, "Não foi possível confirmar o responsável. Nenhuma mensagem foi enviada nesta tentativa; atualize a conversa.");
+  }
+  const finish = () => deps.delivery!.finish(input.channel, phone, deliveryToken).catch(() => undefined);
 
   // Visualizar a mensagem antes de responder, como o atendente faria. Melhor
   // esforço: não marcar como lida não impede a resposta.
@@ -119,11 +135,14 @@ export async function sendAttendantReply(deps: ReplyDeps, input: ReplyInput): Pr
   // 5. Chamada.
   const sent = await sendTextMessage(deps.config, { to: phone, text });
   if (!sent.ok) {
-    // Em timeout a mensagem pode ter saído: soltar a reserva convidaria um
-    // reenvio em dobro. Nos demais casos a Meta recusou, e liberar é seguro.
-    if (sent.kind === "timeout") await repository.setClaimState(claimKey, { status: "unknown" }).catch(() => undefined);
-    else await repository.release(claimKey).catch(() => undefined);
-    await repository.audit({ correlationId, entity, action: "whatsapp.reply.failed", result: sent.kind === "timeout" ? "unknown" : "failed", reason: `Envio ao cliente falhou (${sent.kind}${sent.metaCode ? ` ${sent.metaCode}` : ""}): ${sanitizeHandoffText(sent.reason)} ${preview}`, actor: input.actor }).catch(() => undefined);
+    // Outcomes without a definite provider refusal may have sent the message.
+    // Keep both reservations until manual reconciliation.
+    if (["timeout", "unreachable", "rejected"].includes(sent.kind)) {
+      await repository.setClaimState(claimKey, { status: "unknown", context }).catch(() => undefined);
+      await deps.delivery.settleUncertain(input.channel, phone, deliveryToken).catch(() => undefined);
+    }
+    else { await repository.release(claimKey).catch(() => undefined); await finish(); }
+    await repository.audit({ correlationId, entity, action: "whatsapp.reply.failed", result: ["timeout", "unreachable", "rejected"].includes(sent.kind) ? "unknown" : "failed", reason: `Envio ao cliente falhou (${sent.kind}${sent.metaCode ? ` ${sent.metaCode}` : ""}): ${sanitizeHandoffText(sent.reason)} ${preview}`, actor: input.actor }).catch(() => undefined);
     const status = sent.kind === "window_closed" || sent.kind === "not_allowed" || sent.kind === "invalid_recipient" ? 422
       : sent.kind === "invalid_token" ? 503
       : sent.kind === "rate_limited" ? 429
@@ -131,7 +150,7 @@ export async function sendAttendantReply(deps: ReplyDeps, input: ReplyInput): Pr
     return refusal(status, sent.reason);
   }
 
-  await repository.setClaimState(claimKey, { status: "sent", messageId: sent.messageId }).catch(() => undefined);
+  await repository.setClaimState(claimKey, { status: "sent", messageId: sent.messageId, context, recorded: false }).catch(() => undefined);
 
   // 6. Rastro. A Meta já aceitou: falha daqui em diante não desfaz o envio, então
   // é dita — "enviada, mas não gravada" — em vez de fingir que nada aconteceu.
@@ -140,6 +159,15 @@ export async function sendAttendantReply(deps: ReplyDeps, input: ReplyInput): Pr
     await repository.saveSent({ channel: input.channel, conversationId: phone, content: text, sentBy: input.actor.email, correlationId, externalMessageId: sent.messageId });
     await repository.audit({ correlationId, entity, action: "whatsapp.reply.sent", result: "success", reason: `Resposta ENVIADA ao cliente pelo atendente: ${preview}`, actor: input.actor });
   } catch {
+    recorded = false;
+  }
+  try {
+    await repository.setClaimState(claimKey, { status: "sent", messageId: sent.messageId, context, recorded });
+    if (recorded) await finish();
+    else await deps.delivery.settleUncertain(input.channel, phone, deliveryToken, sent.messageId).catch(() => undefined);
+  } catch {
+    await deps.delivery.settleUncertain(input.channel, phone, deliveryToken, sent.messageId).catch(() => undefined);
+    // Keep the conversation fenced when the durable result cannot be confirmed.
     recorded = false;
   }
   return { ok: true, messageId: sent.messageId, duplicate: false, recorded };
@@ -160,9 +188,9 @@ export class DbReplyRepository implements ReplyRepository {
     return row ? { createdAt: row.createdAt, externalMessageId: row.externalMessageId ?? undefined } : undefined;
   }
 
-  async claim(key: string, channel: string, conversationId: string): Promise<boolean> {
+  async claim(key: string, channel: string, conversationId: string, context?: string): Promise<boolean> {
     const rows = await this.db.insert(channelIdempotencyKeys)
-      .values({ idempotencyKey: key, channel, externalConversationId: conversationId, responseJson: { status: "pending" }, createdAt: new Date().toISOString() })
+      .values({ idempotencyKey: key, channel, externalConversationId: conversationId, responseJson: { status: "pending", context }, createdAt: new Date().toISOString() })
       .onConflictDoNothing()
       .returning({ key: channelIdempotencyKeys.idempotencyKey });
     return rows.length > 0;
@@ -174,7 +202,8 @@ export class DbReplyRepository implements ReplyRepository {
   }
 
   async setClaimState(key: string, state: ClaimState): Promise<void> {
-    await this.db.update(channelIdempotencyKeys).set({ responseJson: state }).where(eq(channelIdempotencyKeys.idempotencyKey, key));
+    const rows = await this.db.update(channelIdempotencyKeys).set({ responseJson: state }).where(eq(channelIdempotencyKeys.idempotencyKey, key)).returning({ key: channelIdempotencyKeys.idempotencyKey });
+    if (rows.length !== 1 || rows[0].key !== key) throw Error("REPLY_RESULT_UNCONFIRMED");
   }
 
   async release(key: string): Promise<void> {
@@ -205,9 +234,9 @@ export class MemoryReplyRepository implements ReplyRepository {
   async lastCustomerMessage(channel: string, conversationId: string) {
     return this.customerMessages.filter((m) => m.channel === channel && m.conversationId === conversationId).sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0];
   }
-  async claim(key: string) {
+  async claim(key: string, _channel?: string, _conversationId?: string, context?: string) {
     if (this.claims.has(key)) return false;
-    this.claims.set(key, { status: "pending" });
+    this.claims.set(key, { status: "pending", context });
     return true;
   }
   async claimState(key: string) { return this.claims.get(key); }

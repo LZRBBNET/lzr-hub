@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { botMayReply, effectiveState, needsReply, waitTone, windowOpen, REPLY_WINDOW_MS } from "../lib/platform/conversation-state-shared.ts";
-import { MemoryConversationStateRepository, botMayReplyNow, changeConversationState, claimIfUnassigned, stateKey } from "../lib/platform/conversation-state-service.ts";
+import { MemoryConversationStateRepository, botMayReplyNow, changeConversationState, stateKey } from "../lib/platform/conversation-state-service.ts";
 import { MemoryConversationsRepository } from "../lib/platform/conversations-service.ts";
 
 const CHANNEL = "n8n-whatsapp";
@@ -33,7 +33,7 @@ test("assumir torna a pessoa responsável, cala a IA e vai para a auditoria", as
   assert.equal(botMayReply(repository.states.get(stateKey(CHANNEL, CLIENTE))), false);
   assert.equal(repository.audits.length, 1);
   assert.equal(repository.audits[0].action, "conversation.claim");
-  assert.equal(repository.audits[0].entity, `conversation:${CLIENTE}`);
+  assert.equal(repository.audits[0].entity, `conversation:${encodeURIComponent(CHANNEL)}:${CLIENTE}`);
 });
 
 test("assumir de novo o que já é seu não grava outra linha", async () => {
@@ -104,17 +104,6 @@ test("sem login não há responsável, e conversa inexistente é recusada", asyn
   assert.equal(invalid.status, 400);
   const group = await changeConversationState(repository, { channel: CHANNEL, conversationId: "120363@g.us", action: "claim", actor: ANA });
   assert.equal(group.status, 400);
-});
-
-test("quem responde pela tela vira responsável só se ninguém era", async () => {
-  const { repository, agir } = montar();
-  await claimIfUnassigned(repository, CHANNEL, CLIENTE, ANA);
-  assert.equal(repository.states.get(stateKey(CHANNEL, CLIENTE)).assigneeId, "u-ana");
-  await claimIfUnassigned(repository, CHANNEL, CLIENTE, BRUNO);
-  assert.equal(repository.states.get(stateKey(CHANNEL, CLIENTE)).assigneeId, "u-ana");
-  await agir("release");
-  await claimIfUnassigned(repository, CHANNEL, CLIENTE, undefined);
-  assert.equal(repository.states.get(stateKey(CHANNEL, CLIENTE)).assigneeId, null);
 });
 
 test("estado ilegível cala a IA: na dúvida ela só sugere", async () => {

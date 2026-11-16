@@ -6,6 +6,7 @@ import { Badge, Card, Empty, Loading, Notice, useToast } from "@/components/ui/k
 
 type Item = {
   intent: string; label: string; defaultContent: string; content: string; edited: boolean;
+  editable: boolean; options: string[]; storedContent: string | null; inactiveReason: string | null;
   version: number | null; updatedBy: string | null; updatedAt: string | null;
 };
 
@@ -50,8 +51,8 @@ export function ReplyTemplates() {
   const shown = items.filter((item) => item.label.toLowerCase().includes(filter.toLowerCase()));
   const edited = items.filter((item) => item.edited).length;
   return <>
-    <Notice tone="info" title="Escreva o que vai acontecer, nunca algo já feito"
-      more="O texto vale para todos os clientes daquele assunto: não use e-mail, CPF nem telefone, e não mencione homologação ou dado fictício — a validação recusa.">(“vou encaminhar”, “um atendente retorna”).</Notice>
+    <Notice tone="info" title="Descreva apenas o que está confirmado"
+      more="O texto vale para todos os clientes daquele assunto: não use e-mail, CPF nem telefone, e não mencione homologação ou dado fictício — a validação recusa.">Sem confirmação operacional, não prometa envio, retorno, baixa ou acordo. Respostas financeiras permitem escolher entre textos revisados, sem valores ou links não verificados.</Notice>
     {error && <Notice tone="bad">{error}</Notice>}
     <Card title="Respostas por assunto" badge={<Badge>{edited} editada(s) de {items.length}</Badge>}
       actions={<label className="search-field" style={{ height: 32 }}><Icon name="search" size={14} /><input value={filter} onChange={(e) => setFilter(e.target.value)} placeholder="Filtrar assunto" aria-label="Filtrar assunto" /></label>} flush>
@@ -64,13 +65,22 @@ export function ReplyTemplates() {
             <strong>{item.label}</strong>
             {item.edited ? <Badge tone="ok">Editada · v{item.version}</Badge> : <Badge>Padrão</Badge>}
           </div>
-          <textarea rows={3} value={value} maxLength={MAX_REPLY_LENGTH} aria-label={`Resposta para ${item.label}`} onChange={(e) => { setDrafts({ ...drafts, [item.intent]: e.target.value }); setError(null); }} />
+          {item.options?.length ? <>
+            <label>Estilo da resposta
+              <select aria-label={`Estilo da resposta para ${item.label}`} value={value} onChange={(e) => { setDrafts({ ...drafts, [item.intent]: e.target.value }); setError(null); }}>
+                {item.options.map((option, index) => <option key={option} value={option}>{index === 0 ? "Padrão" : "Curta e objetiva"}</option>)}
+              </select>
+            </label>
+            <p>{value}</p>
+          </> : <textarea readOnly={!item.editable} rows={3} value={value} maxLength={MAX_REPLY_LENGTH} aria-label={`Resposta para ${item.label}`} onChange={(e) => { setDrafts({ ...drafts, [item.intent]: e.target.value }); setError(null); }} /> }
+          {item.inactiveReason && <Notice tone="info">{item.inactiveReason}</Notice>}
+          {item.storedContent && <details><summary>Edição anterior guardada, não aplicada</summary><p>{item.storedContent}</p></details>}
           <div className="template-foot">
-            {changed && <>
+            {item.editable && changed && <>
               <button className="button small" disabled={busy !== null || !value.trim()} onClick={() => void call({ action: "save", intent: item.intent, content: value }, `Resposta de "${item.label}" salva.`)}>{busy === item.intent ? "Salvando…" : "Salvar"}</button>
               <button className="button ghost small" disabled={busy !== null} onClick={() => setDrafts((current) => { const next = { ...current }; delete next[item.intent]; return next; })}>Descartar</button>
             </>}
-            {!changed && item.edited && <button className="button ghost small" disabled={busy !== null} onClick={() => void call({ action: "reset", intent: item.intent }, `Resposta de "${item.label}" voltou ao padrão.`)}>Voltar ao padrão</button>}
+            {item.editable && !changed && item.edited && <button className="button ghost small" disabled={busy !== null} onClick={() => void call({ action: "reset", intent: item.intent }, `Resposta de "${item.label}" voltou ao padrão.`)}>Voltar ao padrão</button>}
             {item.edited && item.updatedBy && item.updatedAt && !changed && <span className="muted small">por {item.updatedBy} em {new Date(item.updatedAt).toLocaleDateString("pt-BR")}</span>}
             <small>{value.length}/{MAX_REPLY_LENGTH}</small>
           </div>

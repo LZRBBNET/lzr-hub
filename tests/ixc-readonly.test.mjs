@@ -81,7 +81,7 @@ test("ID fora da allowlist é bloqueado antes de qualquer chamada de rede",async
 
 test("provider monta Customer 360 somente para cadastro autorizado e usa cache",async()=>{
   let calls=0;const traces=[];
-  const fetcher=async(url)=>{calls+=1;const resource=String(url).split("/").at(-1);return Response.json({registros:fixtures[resource]?[fixtures[resource]]:[]});};
+  const fetcher=async(url)=>{calls+=1;const resource=String(url).split("/").at(-1);return Response.json({registros:fixtures[resource]?[fixtures[resource]]:[],total:fixtures[resource]?1:0});};
   const provider=new IxcReadonlyProvider({baseUrl:"https://ixc.invalid",token:"secret",allowedCustomerIds:[allowedId],fetcher,trace:(trace)=>traces.push(trace)});
   const first=await provider.getSnapshot(allowedId,"corr-001");
   assert.equal(first.customer.document,"DOC-01");assert.equal(first.customer.city,"Itabaiana");assert.equal(first.contracts.length,1);assert.equal(first.plan.name,"600 Mega Homologado");assert.equal(first.invoices.length,1);assert.equal(first.serviceOrders.length,1);assert.equal(first.connection.login,"interno.001");assert.equal(first.connection.equipmentDescriptor,"101-2048-OLT-HOMOLOG-01");assert.equal(typeof first.metrics.blockLatencies.getPlan,"number");
@@ -99,7 +99,7 @@ test("pagamentos são filtrados por fatura (id_receber), nunca por id_cliente",a
   const fetcher=async(url,init)=>{
     const resource=String(url).split("/").at(-1);
     if(resource==="fn_movim_finan"&&init?.body)paymentQueries.push(JSON.parse(init.body));
-    return Response.json({registros:fixtures[resource]?[fixtures[resource]]:[]});
+    return Response.json({registros:fixtures[resource]?[fixtures[resource]]:[],total:fixtures[resource]?1:0});
   };
   const provider=new IxcReadonlyProvider({baseUrl:"https://ixc.invalid",token:"secret",allowedCustomerIds:[allowedId],fetcher});
   await provider.getSnapshot(allowedId,"corr-payments-field");
@@ -114,7 +114,7 @@ test("sem fatura, não dispara nenhuma chamada de pagamento",async()=>{
     const resource=String(url).split("/").at(-1);
     if(resource==="fn_movim_finan")paymentCalls+=1;
     if(resource==="fn_areceber")return Response.json({registros:[]});
-    return Response.json({registros:fixtures[resource]?[fixtures[resource]]:[]});
+    return Response.json({registros:fixtures[resource]?[fixtures[resource]]:[],total:fixtures[resource]?1:0});
   };
   const provider=new IxcReadonlyProvider({baseUrl:"https://ixc.invalid",token:"secret",allowedCustomerIds:[allowedId],fetcher});
   const snapshot=await provider.getSnapshot(allowedId,"corr-no-invoices");
@@ -124,14 +124,14 @@ test("sem fatura, não dispara nenhuma chamada de pagamento",async()=>{
 });
 
 test("falha parcial preserva Customer 360 e identifica a fonte",async()=>{
-  const fetcher=async(url)=>{const resource=String(url).split("/").at(-1);if(resource==="fn_areceber")return new Response("indisponível",{status:500});return Response.json({registros:fixtures[resource]?[fixtures[resource]]:[]});};
+  const fetcher=async(url)=>{const resource=String(url).split("/").at(-1);if(resource==="fn_areceber")return new Response("indisponível",{status:500});return Response.json({registros:fixtures[resource]?[fixtures[resource]]:[],total:fixtures[resource]?1:0});};
   const provider=new IxcReadonlyProvider({baseUrl:"https://ixc.invalid",token:"secret",allowedCustomerIds:[allowedId],fetcher});
   const snapshot=await provider.getSnapshot(allowedId,"corr-partial");
   assert.equal(snapshot.customer.id,allowedId);assert.deepEqual(snapshot.invoices,[]);assert.deepEqual(snapshot.partialSources,["invoices"]);
 });
 
 test("falha ao resolver cidade preserva o Customer 360 com o código bruto",async()=>{
-  const fetcher=async(url)=>{const resource=String(url).split("/").at(-1);if(resource==="cidade")return new Response("indisponível",{status:500});return Response.json({registros:fixtures[resource]?[fixtures[resource]]:[]});};
+  const fetcher=async(url)=>{const resource=String(url).split("/").at(-1);if(resource==="cidade")return new Response("indisponível",{status:500});return Response.json({registros:fixtures[resource]?[fixtures[resource]]:[],total:fixtures[resource]?1:0});};
   const provider=new IxcReadonlyProvider({baseUrl:"https://ixc.invalid",token:"secret",allowedCustomerIds:[allowedId],fetcher});
   const snapshot=await provider.getSnapshot(allowedId,"corr-city-fail");
   assert.equal(snapshot.customer.city,"3502");
@@ -139,7 +139,7 @@ test("falha ao resolver cidade preserva o Customer 360 com o código bruto",asyn
 
 test("nome da cidade fica em cache e não gera nova chamada de rede",async()=>{
   let cityCalls=0;
-  const fetcher=async(url)=>{const resource=String(url).split("/").at(-1);if(resource==="cidade")cityCalls+=1;return Response.json({registros:fixtures[resource]?[fixtures[resource]]:[]});};
+  const fetcher=async(url)=>{const resource=String(url).split("/").at(-1);if(resource==="cidade")cityCalls+=1;return Response.json({registros:fixtures[resource]?[fixtures[resource]]:[],total:fixtures[resource]?1:0});};
   const provider=new IxcReadonlyProvider({baseUrl:"https://ixc.invalid",token:"secret",allowedCustomerIds:[allowedId],fetcher});
   await provider.getSnapshot(allowedId,"corr-city-1");
   assert.equal(cityCalls,1);
@@ -158,7 +158,7 @@ test("sincronização registra checkpoint, auditoria e DLQ sem payload bruto",as
 });
 
 test("smoke runner registra apenas métricas sanitizadas e cache",async()=>{
-  const fetcher=async(url)=>{const resource=String(url).split("/").at(-1);return Response.json({registros:fixtures[resource]?[fixtures[resource]]:[]});};const provider=new IxcReadonlyProvider({baseUrl:"https://ixc.invalid",token:"secret",allowedCustomerIds:[allowedId],fetcher});const repository=new MemorySmokeRepository();const run=await new IxcReadonlySmokeRunner(provider,repository).run(allowedId);
+  const fetcher=async(url)=>{const resource=String(url).split("/").at(-1);return Response.json({registros:fixtures[resource]?[fixtures[resource]]:[],total:fixtures[resource]?1:0});};const provider=new IxcReadonlyProvider({baseUrl:"https://ixc.invalid",token:"secret",allowedCustomerIds:[allowedId],fetcher});const repository=new MemorySmokeRepository();const run=await new IxcReadonlySmokeRunner(provider,repository).run(allowedId);
   assert.equal(run.status,"success");assert.ok(run.results.some((item)=>item.operation==="plan"&&item.recordCount===1));assert.ok(run.results.some((item)=>item.operation==="cache"&&item.cache==="hit"));assert.equal(repository.audits.length,1);assert.equal(JSON.stringify(repository.rows).includes("Cliente Interno"),false);
 });
 

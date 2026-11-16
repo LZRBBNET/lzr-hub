@@ -1,3 +1,5 @@
+import { servicePreferences } from "./service-preferences.ts";
+import { asksRestart, restartReport, reportsConnectionResolved, supportRequest, negatesSupportRequest } from "./troubleshooting-context.ts";
 import { hasUnsafeSuccessClaim, simulationIsDisclosed, validEvidence } from "./evidence.ts";
 import { decideHandoff } from "./handoff.ts";
 import { executeAgentTools, isFailedReceipt } from "./tool-engine.ts";
@@ -21,12 +23,23 @@ export function analyzeIntent(message: string): {
 } {
   const text = normalized(message);
   if (/ignore.*regra|revele.*prompt|dados de outro cliente|cpf de outro|acesse outro cliente|execute.*sem permissao|acao nao autorizada/.test(text)) return { intent: "unauthorized_request", confidence: 0.99, goal: "Bloquear solicitação não autorizada" };
-  if (/humano|atendente|pessoa de verdade|supervisor/.test(text)) return { intent: "human_handoff", confidence: 0.99, goal: "Transferir com contexto" };
-  if (/cancelar|cancelo|vou cancelar/.test(text)) return { intent: "cancellation_risk", confidence: 0.97, goal: "Preservar cliente e transferir com contexto" };
+  const preference = servicePreferences(message);
+  if (preference.directThreat || preference.ambiguousThreat) return { intent: "human_handoff", confidence: 0.9, goal: "Revisão responsável da mensagem, sem ação automática" };
+  if (preference.nonContractCancellation) return { intent: "human_handoff", confidence: 0.8, goal: "Conferir item solicitado sem presumir cancelamento do contrato" };
+  if (preference.dispute) return { intent: "complaint", confidence: 0.98, goal: "Conferir contestação relatada" };
+  if (preference.explicitCancellation) return { intent: "cancellation_risk", confidence: 0.97, goal: "Revisar pedido expresso sem executar cancelamento" };
+  const request = supportRequest(message);
+  if (request === "pause" || request === "human") return { intent: "human_handoff", confidence: 0.99, goal: "Respeitar preferência do cliente e preservar contexto" };
+  if (preference.cancellationMention && !preference.explicitCancellation) {
+    if (request === "visit") return { intent: "technical_visit", confidence: 0.96, goal: "Avaliar pedido de visita; risco condicional não é cancelamento" };
+    if (request === "ticket") return { intent: "technical_ticket", confidence: 0.96, goal: "Avaliar pedido técnico" };
+    if (preference.technicalText !== text) return analyzeIntent(preference.technicalText);
+    return { intent: "human_handoff", confidence: 0.6, goal: "Revisar menção ambígua sem presumir cancelamento" };
+  }
   if (/reclamacao formal|reclamação formal|anatel|processo|procon/.test(text)) return { intent: "complaint", confidence: 0.98, goal: "Registrar reclamação para revisão humana" };
-  if (/reinici|reboot|desliga.*equipamento/.test(text)) return { intent: "technical_restart", confidence: 0.96, goal: "Avaliar reinicialização segura" };
-  if (/abrir chamado|abr[ae].*chamado|chamado tecnico|chamado técnico|protocolo tecnico|protocolo técnico/.test(text)) return { intent: "technical_ticket", confidence: 0.97, goal: "Preparar chamado técnico" };
-  if (/visita|agendar|agenda.*tecnico|agenda.*técnico|horario.*tecnico|horário.*técnico/.test(text)) return { intent: "technical_visit", confidence: 0.96, goal: "Preparar visita técnica" };
+  if (asksRestart(message)) return { intent: "technical_restart", confidence: 0.96, goal: "Avaliar reinicialização segura" };
+  if (request === "ticket") return { intent: "technical_ticket", confidence: 0.97, goal: "Preparar chamado técnico" };
+  if (request === "visit") return { intent: "technical_visit", confidence: 0.96, goal: "Preparar visita técnica" };
   // Checado antes de financial_invoice/financial_payment: "desconto no boleto"
   // também bate com "boleto", e desconto exige recusa+transbordo, não segunda via.
   if (/desconto|abater|abatimento|diminui.*(valor|preco|preço)|baixa.*(valor|preco|preço)|negocia.*(valor|preco|preço)/.test(text)) return { intent: "financial_discount_request", confidence: 0.96, goal: "Recusar desconto sem aprovação humana e transferir" };
@@ -35,8 +48,9 @@ export function analyzeIntent(message: string): {
   if (/boleto|segunda via|fatura|vencimento/.test(text)) return { intent: "financial_invoice", confidence: 0.97, goal: "Preparar segunda via" };
   if (/desbloq|bloquead/.test(text)) return { intent: "financial_unlock", confidence: 0.95, goal: "Avaliar desbloqueio com segurança" };
   if (/wifi|wi-fi|quarto|comodo|cômodo|alcanca|alcança|sinal.*casa/.test(text)) return { intent: "technical_wifi", confidence: 0.94, goal: "Diagnosticar cobertura Wi-Fi" };
-  if (/lent|travando|demora|velocidade|ping|via cabo/.test(text)) return { intent: "technical_slow", confidence: 0.96, goal: "Identificar causa da lentidão" };
+  if (/lent|\btrava(?:ndo)?\b|partidas? online.*cai|demora|velocidade|ping|via cabo/.test(text)) return { intent: "technical_slow", confidence: 0.96, goal: "Identificar causa da lentidão" };
   if (/sem internet|sem conex|caiu|onu offline|pppoe offline|potencia|potência|offline|conexao.*nao voltou|conexão.*não voltou/.test(text)) return { intent: "technical_no_connection", confidence: 0.97, goal: "Restaurar conexão" };
+  if (restartReport(message) !== undefined || /reinici|reboot|desliga.*equipamento/.test(text)) return { intent: "technical_restart", confidence: 0.9, goal: "Continuar verificação do equipamento" };
   if (/nao funciona|não funciona/.test(text)) return { intent: "technical_no_connection", confidence: 0.68, goal: "Restaurar conexão" };
   if (/receita|futebol|previsao do tempo|previsão do tempo|politica|política/.test(text)) return { intent: "out_of_scope", confidence: 0.96, goal: "Orientar limite de escopo" };
   // Depois de lentidão e queda: "meu plano de 100 mega está lento" é lentidão, não venda.
@@ -58,10 +72,40 @@ function resolveIntent(message: string, history: ChatMessage[], override?: Agent
   let analysis = override
     ? { ...analyzeIntent(message), intent: override.intent, confidence: override.confidence }
     : analyzeIntent(message);
+  // A model label cannot turn a completed/negated step into a new command.
+  const local = analyzeIntent(message);
+  const preference = servicePreferences(message, history);
+  if (analysis.intent !== "unauthorized_request" && (preference.cancellationMention || preference.dispute || preference.directThreat || preference.ambiguousThreat)) analysis = local;
+  const request = supportRequest(message);
+  const negatedRequest = negatesSupportRequest(message) && !request;
+  if (negatedRequest && ["human_handoff", "technical_visit", "technical_ticket"].includes(analysis.intent)) analysis = local;
+  if (["technical_restart", "technical_wifi", "technical_slow", "technical_no_connection", "technical_visit", "technical_ticket", "general_information"].includes(analysis.intent)
+    && ["human_handoff", "technical_visit", "technical_ticket"].includes(local.intent)) analysis = local;
+  if (["technical_restart", "technical_wifi", "general_information"].includes(analysis.intent)
+    && ["technical_slow", "technical_no_connection"].includes(local.intent)
+    && restartReport(message) !== undefined && !asksRestart(message)) analysis = local;
   const reference = /^(sim|nao|não|cad[eê]|onde|nao funcionou|não funcionou|ja reiniciei|já reiniciei|essa|esse|aquela|aquele)\b/i.test(message.trim());
-  if (reference && (analysis.intent === "general_information" || /^(sim|nao|não|nao funcionou|não funcionou|ja reiniciei|já reiniciei)\b/i.test(message.trim()))) {
+  if (!negatedRequest && reference && (analysis.intent === "general_information" || (analysis.intent === "technical_restart" && /^(sim|nao|não|nao funcionou|não funcionou|ja reiniciei|já reiniciei)\b/i.test(message.trim())))) {
     const inferred = previousIntent(history);
     if (inferred) analysis = { ...inferred, confidence: 0.9 };
+  }
+  // Scope answers retain the active technical problem; mentioning Wi-Fi in an
+  // answer is not evidence of weak coverage or a new issue.
+  let activeSlow = false;
+  for (const turn of history) {
+    if (turn.role !== "customer") continue;
+    if (reportsConnectionResolved(turn.content)) { activeSlow = false; continue; }
+    const intent = analyzeIntent(turn.content).intent;
+    if (intent === "technical_slow") activeSlow = true;
+    else if (intent !== "general_information" && intent !== "technical_restart"
+      && !(intent === "technical_wifi" && !/comodo|quarto|sinal fraco|longe do roteador/.test(normalized(turn.content)))) activeSlow = false;
+  }
+  if (activeSlow
+    && ["general_information", "technical_wifi", "technical_restart"].includes(analysis.intent)
+    && !asksRestart(message)
+    && /todos|aparelhos|dispositivos|cabo|wi-?fi|reiniciei|funcionou|resolveu|agora|sites|aplicativos|celular|youtube|netflix|instagram|jogo|partida|^sim$|^nao$/.test(normalized(message))
+    && !/comodo|quarto|sinal fraco|longe do roteador/.test(normalized(message))) {
+    analysis = { intent: "technical_slow", confidence: 0.9, goal: "Continuar verificação da lentidão relatada" };
   }
   if (/cad[eê]|onde.*pix|nao recebi|não recebi/i.test(message) && history.some((item) => /pix/i.test(item.content))) {
     analysis = { intent: "financial_pix", confidence: 0.98, goal: "Reentregar PIX já solicitado" };

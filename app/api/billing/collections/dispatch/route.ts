@@ -1,3 +1,5 @@
+import { DbPaymentPromiseRepository } from "@/lib/platform/payment-promise-service";
+import { excludePromiseHeldInvoices, loadFreshDispatchInvoices } from "@/lib/platform/collection-dispatch-source";
 import { NextResponse } from "next/server";
 import { getIxcRuntime } from "@/lib/integrations/ixc/runtime";
 import {
@@ -21,18 +23,18 @@ const PERIODS: Record<string, number> = { "7d": 7, "30d": 30, "90d": 90 };
  * varrer 73 mil registros. Declarar essa fronteira é melhor que fingir que a
  * régua cobre a carteira inteira.
  */
-async function loadOpenInvoices(): Promise<{ scope: "allowlist" | "unavailable"; invoices: DispatchInvoiceInput[]; detail?: string }> {
+async function loadOpenInvoices(): Promise<{ scope: "allowlist" | "unavailable"; invoices: DispatchInvoiceInput[]; detail?: string; paused?: number }> {
   let runtime;
   try { runtime = getIxcRuntime(); } catch { runtime = undefined; }
   if (!runtime?.provider) return { scope: "unavailable", invoices: [], detail: "IXC desligado: sem fonte de fatura" };
 
-  const settled = await Promise.allSettled(
-    runtime.config.ixcAllowlist.map((id) => runtime.provider!.getSnapshot(id, crypto.randomUUID())),
-  );
-  const invoices: DispatchInvoiceInput[] = settled.flatMap((result) => result.status === "fulfilled"
-    ? result.value.invoices.map((invoice) => ({ id: invoice.id, customerId: invoice.customerId, status: invoice.status, dueAt: invoice.dueAt, value: invoice.value }))
-    : []);
-  return { scope: "allowlist", invoices };
+  try {
+    const invoices = await loadFreshDispatchInvoices(runtime.provider, runtime.config.ixcAllowlist);
+    const filtered = await excludePromiseHeldInvoices(invoices, new DbPaymentPromiseRepository(await getDb()), new Date());
+    return { scope: "allowlist", ...filtered };
+  } catch {
+    return { scope: "unavailable", invoices: [], detail: "Não foi possível confirmar todas as faturas abertas e promessas da allowlist. Nenhuma cobrança foi registrada. Confira a fonte antes de tentar novamente." };
+  }
 }
 
 function summarizeLedger(rows: DispatchLedgerRow[]) {
@@ -58,7 +60,10 @@ export async function GET(request: Request) {
   if (!days) return NextResponse.json({ error: "Período inválido. Use 7d, 30d ou 90d." }, { status: 400 });
 
   const rule = await new DbCollectionRulesRepository(await getDb()).getLatest().catch(() => undefined);
-  const { scope, invoices, detail } = await loadOpenInvoices();
+  const { scope, invoices, detail, paused } = await loadOpenInvoices();
+  const current = await authorize(request, "customer.read");
+  if (!current.allowed) return NextResponse.json({ error: current.error }, { status: current.status });
+  if (guard.user?.id !== current.user?.id) return NextResponse.json({ error: "Seu acesso mudou. Atualize a página." }, { status: 403 });
   if (!rule || scope === "unavailable") {
     return NextResponse.json({ available: false, detail: detail ?? "Régua indisponível", period, today: null, indicators: null });
   }
@@ -73,7 +78,7 @@ export async function GET(request: Request) {
   }
 
   return NextResponse.json({
-    available: true, period, scope,
+    available: true, period, scope, pausedByPromise: paused,
     today: { scheduledFor: businessToday(now), candidates: today.length },
     indicators: summarizeLedger(ledger),
   });
@@ -93,8 +98,13 @@ export async function POST(request: Request) {
   const rule = await new DbCollectionRulesRepository(await getDb()).getLatest().catch(() => undefined);
   if (!rule) return NextResponse.json({ error: "Nenhuma régua salva ainda" }, { status: 409 });
 
-  const { scope, invoices, detail } = await loadOpenInvoices();
+  const { scope, invoices, detail, paused } = await loadOpenInvoices();
   if (scope === "unavailable") return NextResponse.json({ error: detail ?? "IXC indisponível" }, { status: 503 });
+
+  // Recheck after awaited rule/source/promise reads; no session lock spans IXC.
+  const admitted = await authorize(request, "billing.write-demo");
+  if (!admitted.allowed) return NextResponse.json({ error: admitted.error }, { status: admitted.status });
+  if (guard.user?.id !== admitted.user?.id) return NextResponse.json({ error: "Seu acesso mudou. Atualize a página." }, { status: 403 });
 
   const correlationId = crypto.randomUUID();
   const result = await runTodayDispatch(rule, invoices, new DbCollectionDispatchRepository(await getDb()), new Date(), correlationId);
@@ -102,8 +112,8 @@ export async function POST(request: Request) {
   await logUnauthenticatedAction({
     action: "billing.collections.dispatch", entity: `collection_rule:${rule.id}`, result: result.businessHour ? "success" : "skipped-hours",
     reason: `Disparo de ${result.scheduledFor}: ${result.candidates} candidato(s), ${result.recorded} registrado(s), ${result.duplicates} duplicata(s) evitada(s), ${result.enqueued} enfileirado(s)${result.queueEnabled ? "" : " (fila desligada)"}`,
-    actor: guard.user,
+    actor: admitted.user,
   });
 
-  return NextResponse.json(result);
+  return NextResponse.json({ ...result, pausedByPromise: paused });
 }

@@ -3,6 +3,11 @@ import { agentReplyTemplates } from "../../db/schema.ts";
 import type { Intent } from "../agent/types.ts";
 import {
   DEFAULT_REPLY_TEMPLATES,
+  FINANCIAL_REPLY_LOCK_REASON,
+  isProtectedFinancialReply,
+  isReviewedFinancialReply,
+  financialReplyOptions,
+  resolveReply,
   REPLY_INTENTS,
   validateReplyText,
   type ReplyOverrides,
@@ -50,6 +55,7 @@ export async function saveTemplate(
 ): Promise<SaveOutcome> {
   const intent = parseIntent(input.intent);
   const content = typeof input.content === "string" ? input.content.trim() : "";
+  if (isProtectedFinancialReply(intent) && !isReviewedFinancialReply(intent, content)) throw new ReplyTemplateValidationError(FINANCIAL_REPLY_LOCK_REASON);
   const problem = validateReplyText(content);
   if (problem) throw new ReplyTemplateValidationError(problem);
   const current = (await repository.list()).find((row) => row.intent === intent);
@@ -70,6 +76,10 @@ export interface TemplateView {
   defaultContent: string;
   content: string;
   edited: boolean;
+  editable: boolean;
+  options: string[];
+  storedContent: string | null;
+  inactiveReason: string | null;
   version: number | null;
   updatedBy: string | null;
   updatedAt: string | null;
@@ -80,11 +90,17 @@ export async function templatesView(repository: ReplyTemplatesRepository): Promi
   const stored = new Map((await repository.list()).map((row) => [row.intent, row]));
   return REPLY_INTENTS.map(({ intent, label }) => {
     const row = stored.get(intent);
+    const protectedReply = isProtectedFinancialReply(intent);
+    const inactive = protectedReply && Boolean(row) && !isReviewedFinancialReply(intent, row!.content);
     return {
       intent, label,
       defaultContent: DEFAULT_REPLY_TEMPLATES[intent],
-      content: row?.content ?? DEFAULT_REPLY_TEMPLATES[intent],
-      edited: Boolean(row),
+      content: resolveReply(intent, row ? { [intent]: row.content } : undefined),
+      editable: true,
+      options: financialReplyOptions(intent),
+      storedContent: inactive ? row?.content ?? null : null,
+      inactiveReason: protectedReply ? FINANCIAL_REPLY_LOCK_REASON : null,
+      edited: !inactive && Boolean(row),
       version: row?.version ?? null,
       updatedBy: row?.updatedBy ?? null,
       updatedAt: row?.updatedAt ?? null,

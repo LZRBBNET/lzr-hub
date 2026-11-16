@@ -1,3 +1,7 @@
+import { supportRequest as supportRequestForOpening } from "../agent/troubleshooting-context.ts";
+import { servicePreferences } from "../agent/service-preferences.ts";
+import { hasPriorOutput, serviceOpening } from "./service-opening.ts";
+import { resolveSupportReply } from "./support-reply.ts";
 import { randomUUID } from "node:crypto";
 import { and, asc, eq, sql } from "drizzle-orm";
 import { auditEvents, channelIdempotencyKeys, channelMessages } from "../../db/schema.ts";
@@ -7,7 +11,7 @@ import { sanitizeHandoffText } from "../agent/handoff.ts";
 import type { ChatMessage, Intent } from "../agent/types.ts";
 import { appVersion } from "../runtime/app-version.ts";
 import { traceAgentResult } from "../observability/trace-agent-result.ts";
-import { resolveReply, type ReplyOverrides } from "./reply-templates-shared.ts";
+import { type ReplyOverrides } from "./reply-templates-shared.ts";
 import { AI_SENDER } from "./conversation-state-shared.ts";
 import {
   CSAT_QUESTION,
@@ -88,6 +92,8 @@ export type AutoReplySender = (input: { conversationId: string; text: string; in
 
 export interface ChannelOptions {
   autoReply: boolean;
+  /** Injected clock for deterministic local courtesy; no session reset. */
+  now?: number;
   /** Respostas aprovadas editadas por quem administra; o que falta cai no padrão do código. */
   templates?: ReplyOverrides;
   /**
@@ -187,6 +193,17 @@ export function contextForClassifier(rows: ChannelMessageRow[], now = Date.now()
     // Sem carimbo de data não há como afirmar que é antiga; fica.
     .filter((row) => !row.createdAt || !Number.isFinite(Date.parse(row.createdAt)) || now - Date.parse(row.createdAt) <= LLM_CONTEXT_MAX_AGE_MS)
     .slice(-LLM_CONTEXT_TURNS)
+    .map(({ role, content }) => ({ role: role === "agent" ? "agent" : "customer", content }));
+}
+
+/** Support memory is bounded separately from the paid classifier context.
+ * Only recorded conversation turns count; unsent suggestions never consume it.
+ * Unknown timestamps retain the existing compatibility policy, not delivery proof.
+ */
+export function contextForSupport(rows: ChannelMessageRow[], now = Date.now()): ChatMessage[] {
+  return rows.filter((row) => row.role !== SUGGESTION_ROLE)
+    .filter((row) => !row.createdAt || !Number.isFinite(Date.parse(row.createdAt)) || now - Date.parse(row.createdAt) <= LLM_CONTEXT_MAX_AGE_MS)
+    .slice(-MAX_HISTORY)
     .map(({ role, content }) => ({ role: role === "agent" ? "agent" : "customer", content }));
 }
 
@@ -305,9 +322,17 @@ export async function processChannelMessage(
   // O pipeline decide intenção, transbordo e desfecho; o **texto** que sai pelo
   // canal é a resposta aprovada da intenção. O do pipeline é de homologação
   // ("preparei a segunda via fictícia") e não pode chegar a um cliente real.
+  const resolvedReply = resolveSupportReply({ intent: result.intent, message: input.text, history: contextForSupport(historyRows), handoffReason: result.handoff.reason, templates: options.templates });
+
+  const opened = serviceOpening(resolvedReply, {
+    now: options.now ?? Date.now(), priorOutput: hasPriorOutput(historyRows),
+    concise: servicePreferences(input.text, contextForSupport(historyRows)).conciseOpening || !!supportRequestForOpening(input.text),
+  });
   // A primeira resposta do atendimento leva o protocolo no fim.
   const footer = options.triage?.footer();
-  const approved = footer ? `${resolveReply(result.intent, options.templates)}\n\n${footer}` : resolveReply(result.intent, options.templates);
+  const approved = footer ? `${opened}
+
+${footer}` : opened;
 
   // Só pede nota quando a resposta é de fato entregue — não dá para avaliar
   // um atendimento que o cliente não recebeu. E não na primeira resposta pela

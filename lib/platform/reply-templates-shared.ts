@@ -14,9 +14,9 @@ import type { Intent } from "../agent/types.ts";
  * executada, transbordar quando não sabe). Editar o texto aprovado dá à BBNET o
  * controle do tom sem abrir essa porta.
  *
- * Os textos abaixo descrevem **o que vai acontecer** ("vou encaminhar", "um
- * atendente retorna"), nunca algo já feito: o canal ainda não executa nada no
- * ERP por conta própria.
+ * Sem recibo de ação operacional, o texto descreve uma necessidade de revisão,
+ * não promete envio, retorno, baixa, acordo ou desbloqueio. Financeiro usa
+ * padrões protegidos até existir um caminho de resposta com evidência real.
  */
 
 export const REPLY_INTENTS: Array<{ intent: Intent; label: string }> = [
@@ -41,25 +41,47 @@ export const REPLY_INTENTS: Array<{ intent: Intent; label: string }> = [
 ];
 
 export const DEFAULT_REPLY_TEMPLATES: Record<Intent, string> = {
-  technical_no_connection: "Sinto muito pela falta de conexão. Para agilizar: alguma luz do equipamento está vermelha ou apagada? Se ainda não reiniciou, desligue o roteador da tomada por 30 segundos, ligue de novo e me conte se voltou.",
-  technical_slow: "Vamos verificar a lentidão. Ela acontece em todos os aparelhos ou só em um? E é perto do roteador ou em outro cômodo?",
-  technical_wifi: "Entendi, o sinal do Wi-Fi está fraco em alguns pontos. Em qual cômodo ele fica pior?",
-  technical_restart: "Para reiniciar: desligue o roteador e a ONU da tomada, espere 30 segundos e ligue de novo. Leva uns 2 minutos para normalizar. Me avise se voltou.",
-  technical_ticket: "Certo, vou encaminhar para a equipe técnica abrir o chamado. Um atendente confirma o protocolo com você por aqui.",
-  technical_visit: "Entendi que você precisa de uma visita técnica. Vou passar para a equipe ver os horários disponíveis, e um atendente retorna por aqui para combinar com você.",
-  financial_invoice: "Vou pedir para um atendente enviar a segunda via da sua fatura por aqui.",
-  financial_pix: "Vou pedir para um atendente enviar o código PIX da sua fatura por aqui.",
-  financial_payment: "Obrigado por avisar. Vamos conferir o pagamento e retornamos por aqui. Se tiver o comprovante, pode enviar.",
-  financial_unlock: "Entendi que sua conexão está bloqueada. Vamos verificar sua situação e um atendente retorna por aqui. Se já pagou, pode enviar o comprovante.",
-  financial_discount_request: "Desconto e renegociação precisam da aprovação de um atendente. Vou encaminhar seu pedido e retornamos por aqui.",
-  complaint: "Sinto muito pela situação. Vou encaminhar seu caso para um atendente responsável, que retorna por aqui.",
-  cancellation_risk: "Lamento saber disso. Vou encaminhar para um atendente conversar com você sobre o seu caso.",
-  human_handoff: "Certo, vou chamar um atendente para continuar com você por aqui.",
+  technical_no_connection: "Vamos por partes: alguma luz do equipamento está vermelha ou apagada?",
+  technical_slow: "A lentidão acontece em todos os aparelhos ou só em um?",
+  technical_wifi: "O problema no Wi-Fi acontece em qual cômodo?",
+  technical_restart: "Para reiniciar o roteador, tire da tomada por 30 segundos e ligue de novo. Não aperte o botão de reset. Depois, me diga se a conexão voltou.",
+  technical_ticket: "A equipe precisa conferir o pedido de chamado. Ainda não tenho abertura ou protocolo confirmados por aqui.",
+  technical_visit: "A equipe precisa conferir a disponibilidade antes de combinar a visita com você. Não consigo confirmar um horário por aqui.",
+  financial_invoice: "Um atendente precisa conferir a fatura e disponibilizar a segunda via. Ainda não tenho o documento confirmado por aqui.",
+  financial_pix: "O código PIX precisa corresponder à fatura correta. Ainda não tenho um código confirmado por aqui; é necessária a conferência de um atendente.",
+  financial_payment: "Entendi sua mensagem sobre o pagamento. Ainda não tenho confirmação de baixa; um atendente precisa conferir a situação.",
+  financial_unlock: "O desbloqueio depende de conferir a situação do contrato e as regras aplicáveis. Ainda não tenho desbloqueio confirmado por aqui.",
+  financial_discount_request: "Desconto ou renegociação precisam de avaliação e aprovação da equipe. Ainda não tenho confirmação de valor ou acordo por aqui.",
+  complaint: "Sinto muito pela situação. Seu caso precisa ser avaliado por um atendente responsável, com o histórico desta conversa.",
+  cancellation_risk: "Entendi. Um atendente precisa revisar seu caso; ainda não há encaminhamento ou cancelamento confirmado por aqui.",
+  human_handoff: "Certo. O próximo passo é continuar com um atendente, usando o que você já contou aqui.",
   unauthorized_request: "Não consigo ajudar com esse tipo de pedido. Posso ajudar com internet, Wi-Fi, fatura e cadastro.",
   out_of_scope: "Posso ajudar com internet, Wi-Fi, fatura e cadastro na BBNET. Para esse outro assunto, não consigo ajudar.",
   sales_inquiry: "Que bom que você quer conhecer a BBNET! Me diga o seu bairro e cidade, que um consultor te chama por aqui com os planos disponíveis no seu endereço.",
   general_information: "Olá! Pode me contar o que você precisa? Por exemplo: internet sem conexão, lentidão, segunda via de fatura ou outro assunto.",
 };
+
+export const FINANCIAL_REPLY_LOCK_REASON = "Escolha uma das respostas financeiras revisadas. O texto livre já salvo fica guardado e não é aplicado. Salvar uma nova opção substitui esse texto pelo fluxo existente.";
+export function isProtectedFinancialReply(intent: string): boolean {
+  return ["financial_invoice", "financial_pix", "financial_payment", "financial_unlock", "financial_discount_request"].includes(intent);
+}
+
+/** Closed reviewed variants: customization without pretending arbitrary prose
+ * is semantically verified by a keyword filter. No values or payment links. */
+const FINANCIAL_SHORT_REPLIES: Partial<Record<Intent, string>> = {
+  financial_invoice: "A segunda via precisa ser conferida e disponibilizada por um atendente. Ainda não tenho o documento confirmado.",
+  financial_pix: "Ainda não tenho um código PIX confirmado. Um atendente precisa conferir a fatura correta.",
+  financial_payment: "Ainda não tenho confirmação de baixa do pagamento. A equipe precisa conferir a situação.",
+  financial_unlock: "A equipe precisa conferir a situação do contrato. Ainda não tenho desbloqueio confirmado.",
+  financial_discount_request: "A equipe precisa avaliar o pedido. Ainda não tenho confirmação de desconto ou acordo.",
+};
+export function financialReplyOptions(intent: Intent): string[] {
+  const short = FINANCIAL_SHORT_REPLIES[intent];
+  return short ? [DEFAULT_REPLY_TEMPLATES[intent], short] : [];
+}
+export function isReviewedFinancialReply(intent: Intent, content: string): boolean {
+  return financialReplyOptions(intent).includes(content.trim());
+}
 
 export type ReplyOverrides = Partial<Record<Intent, string>>;
 
@@ -91,5 +113,6 @@ export function validateReplyText(text: string): string | null {
 /** A resposta aprovada para a intenção: a editada, se existir e servir; senão o padrão. */
 export function resolveReply(intent: Intent, overrides?: ReplyOverrides): string {
   const edited = overrides?.[intent]?.trim();
+  if (isProtectedFinancialReply(intent)) return edited && isReviewedFinancialReply(intent, edited) ? edited : DEFAULT_REPLY_TEMPLATES[intent];
   return edited && validateReplyText(edited) === null ? edited : DEFAULT_REPLY_TEMPLATES[intent];
 }

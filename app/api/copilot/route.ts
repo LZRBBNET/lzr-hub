@@ -4,7 +4,9 @@ import { logUnauthenticatedAction } from "@/lib/platform/audit-log";
 import { DbConversationsRepository } from "@/lib/platform/conversations-service";
 import { DbKnowledgeRepository } from "@/lib/platform/knowledge-service";
 import { CHANNEL_NAME } from "@/lib/platform/n8n-channel-service";
-import { askCopilot, copilotLlmConfigFromEnv, intentTerms, lastQuestionFrom, summarizeConversation } from "@/lib/platform/copilot-service";
+import { askCopilot, copilotLlmConfigFromEnv, intentTerms, lastQuestionFrom } from "@/lib/platform/copilot-service";
+import { loadConversationSummary } from "@/lib/platform/copilot-summary-service";
+import { DbConversationStateRepository } from "@/lib/platform/conversation-state-service";
 import { authorize } from "@/lib/platform/session-guard";
 
 const KNOWLEDGE_LIMIT = 200;
@@ -64,12 +66,9 @@ export async function POST(request: Request) {
 
     if (action === "summary") {
       if (!conversationId) return NextResponse.json({ error: "Informe a conversa" }, { status: 400 });
-      const repository = new DbConversationsRepository(await getDb());
-      const [messages, outcome] = await Promise.all([
-        repository.getMessages(channel, conversationId, MESSAGE_LIMIT),
-        repository.getOutcome(channel, conversationId),
-      ]);
-      return NextResponse.json({ available: true, summary: summarizeConversation({ externalConversationId: conversationId, messages, outcome }) });
+      const db = await getDb();
+      const summary = await loadConversationSummary(new DbConversationsRepository(db), new DbConversationStateRepository(db), channel, conversationId);
+      return NextResponse.json({ available: true, summary });
     }
 
     if (action === "used") {

@@ -1,5 +1,7 @@
 import { sanitizeHandoffText } from "../agent/handoff.ts";
 import { searchDocuments, type KnowledgeDoc } from "./knowledge-service.ts";
+import { AI_SENDER, type EffectiveState } from "./conversation-state-shared.ts";
+import { reasonLabel } from "./teams-shared.ts";
 
 /**
  * Copiloto do atendente (issue #11).
@@ -240,11 +242,14 @@ export function lastQuestionFrom(messages: Array<{ role: string; content: string
 /** Rótulo em português da intenção classificada — é ele que vira termo de busca. */
 export const intentTerms = (intent: string | undefined) => (intent ? INTENT_PT[intent] ?? "" : "");
 
-export interface SummaryMessage { role: "customer" | "agent" | "suggestion"; content: string; createdAt: string }
+export interface SummaryMessage { role: "customer" | "agent" | "suggestion"; content: string; createdAt: string; sentBy?: string }
 export interface SummaryInput {
   externalConversationId: string;
   messages: SummaryMessage[];
-  outcome?: { intent: string; finalStatus: string; handoff: boolean } | undefined;
+  outcome?: { intent: string | null; finalStatus: string | null; handoff: boolean | null; handoffReason?: string | null } | undefined;
+  /** Consultado no servidor; ausência não prova que ninguém assumiu. */
+  state?: EffectiveState;
+  historyTruncated?: boolean;
 }
 
 const day = (iso: string) => {
@@ -268,25 +273,38 @@ export function summarizeConversation(input: SummaryInput): string {
   if (messages.length === 0) return `Atendimento ${input.externalConversationId} não tem mensagem gravada — não há o que resumir.`;
 
   const fromCustomer = messages.filter((message) => message.role === "customer");
-  const delivered = messages.filter((message) => message.role === "agent");
+  const responses = messages.filter((message) => message.role === "agent");
   const suggested = messages.filter((message) => message.role === "suggestion");
   const lines = [
     `Atendimento ${input.externalConversationId} — ${messages.length} mensagem(ns) entre ${day(messages[0].createdAt)} e ${day(messages[messages.length - 1].createdAt)}.`,
   ];
+  if (input.historyTruncated) lines.push("Histórico parcial: apenas as mensagens mais recentes; o início do atendimento pode estar fora deste trecho.");
   if (fromCustomer.length > 0) {
-    lines.push(`Cliente abriu com: ${quote(fromCustomer[0].content)}`);
+    lines.push(`${input.historyTruncated ? "Primeira fala do cliente neste trecho" : "Cliente abriu com"}: ${quote(fromCustomer[0].content)}`);
     if (fromCustomer.length > 1) lines.push(`Última fala do cliente: ${quote(fromCustomer[fromCustomer.length - 1].content)}`);
   } else {
     lines.push("Nenhuma mensagem do cliente neste histórico.");
   }
   lines.push(input.outcome
-    ? `Intenção classificada: ${INTENT_PT[input.outcome.intent] ?? input.outcome.intent}. Desfecho: ${input.outcome.finalStatus}${input.outcome.handoff ? " (transbordou para humano)" : ""}.`
+    ? `Intenção classificada: ${input.outcome.intent ? INTENT_PT[input.outcome.intent] ?? input.outcome.intent : "não registrada"}. Desfecho: ${input.outcome.finalStatus ?? "não registrado"}${input.outcome.handoff ? " (encaminhamento humano recomendado)" : ""}.`
     : "Nenhum desfecho registrado para esta conversa.");
-  // A distinção que mais engana quem pega o caso: sugestão parece resposta dada.
-  lines.push(delivered.length > 0
-    ? `A IA enviou ${delivered.length} resposta(s) ao cliente.`
-    : suggested.length > 0
-      ? `A IA não enviou nada ao cliente: ${suggested.length} resposta(s) ficaram apenas sugeridas (modo observação).`
-      : "A IA não respondeu nesta conversa.");
+  if (input.outcome?.handoff) lines.push(`Motivo do encaminhamento: ${input.outcome.handoffReason ? sanitizeHandoffText(reasonLabel(input.outcome.handoffReason)).slice(0, 160) : "não registrado"}.`);
+  const state = input.state;
+  if (!state) lines.push("Responsável atual: não consultado; conferir antes de encaminhar.");
+  else if (state.status === "resolved") lines.push("Situação atual: resolvida. Sem encaminhamento pendente registrado neste estado.");
+  else {
+    lines.push(`Situação atual: ${state.reopened ? "reaberta pelo cliente" : "aberta"}.`);
+    lines.push(state.assigneeId
+      ? `Responsável atual: ${state.assigneeName ? sanitizeHandoffText(state.assigneeName).replace(/\s+/g, " ").trim().slice(0, 120) : "atendente identificado, nome não registrado"}.`
+      : "Responsável atual: ainda não atribuído a um atendente.");
+  }
+  // Papel agent inclui IA, atendentes e registros antigos sem autoria. Não é recibo de entrega.
+  const ai = responses.filter((message) => message.sentBy === AI_SENDER).length;
+  const human = responses.filter((message) => !!message.sentBy && message.sentBy !== AI_SENDER).length;
+  lines.push(responses.length > 0
+    ? `Respostas registradas neste histórico: ${ai} da IA, ${human} de atendentes, ${responses.length - ai - human} com autoria não registrada. O registro não comprova entrega ao cliente.`
+    : "Nenhuma resposta enviada está registrada neste histórico.");
+  if (responses.length > 0) lines.push(`Última resposta registrada: ${quote(responses[responses.length - 1].content)}`);
+  lines.push(`Sugestões não enviadas: ${suggested.length}.`);
   return lines.join("\n");
 }

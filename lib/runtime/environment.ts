@@ -37,6 +37,20 @@ function integer(name: string, value: string | undefined, fallback: number, min:
   return parsed;
 }
 
+/** Validate the configured read-only endpoint before constructing any transport. */
+function assertReadonlyEndpoint(value: string) {
+  try {
+    const url = new URL(value);
+    const authority = value.match(/^https:\/\/([^/?#]+)/i)?.[1];
+    if (!authority || authority.includes("@") || /[\\\s]/.test(value) ||
+        url.protocol !== "https:" || !url.hostname || url.username || url.password ||
+        value.includes("?") || value.includes("#")) throw new Error();
+  } catch {
+    // URL parser errors can contain userinfo/query secrets; never propagate them.
+    throw new Error("IXC_BASE_URL_INVALID");
+  }
+}
+
 export function parseAllowlist(value = "") {
   const ids = [...new Set(value.split(",").map((item) => item.trim()).filter(Boolean))];
   if (ids.length > 10) throw new Error("IXC_ALLOWLIST_IDS aceita no máximo 10 cadastros");
@@ -67,6 +81,7 @@ export function loadRuntimeConfig(source: Record<string, string | undefined> = p
   if (ixcMode === "staging-readonly") {
     if (environment !== "staging") throw new Error("staging-readonly exige LZR_ENV=staging");
     if (!source.IXC_BASE_URL || !source.IXC_API_TOKEN) throw new Error("IXC staging exige URL e token em secrets");
+    assertReadonlyEndpoint(source.IXC_BASE_URL);
     if (ixcAllowlist.length === 0 && !ixcFullBase) throw new Error("IXC staging exige allowlist explícita");
   }
   return {

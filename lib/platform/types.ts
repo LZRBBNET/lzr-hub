@@ -2,7 +2,7 @@ export type DataState = "ready" | "loading" | "empty" | "partial" | "error";
 export type Severity = "low" | "medium" | "high" | "critical";
 export type IntegrationMode = "disabled" | "mock" | "sandbox" | "production";
 
-export interface DataSource { provider: string; updatedAt: string; state: DataState; detail?: string; mode?:"demo"|"staging-readonly"|"local"; cache?:"hit"|"miss"|"none"; masked?:boolean; latencyMs?:number }
+export interface DataSource { coverageKey?:"contracts"|"invoices"|"payments"|"serviceOrders"; provider: string; updatedAt: string; state: DataState; detail?: string; mode?:"demo"|"staging-readonly"|"local"; cache?:"hit"|"miss"|"none"; masked?:boolean; latencyMs?:number }
 /**
  * `health` e `churnRisk` são **opcionais de propósito**: para cliente real do
  * IXC nada calcula nenhum dos dois. Antes vinham fixos como `health: 0` e
