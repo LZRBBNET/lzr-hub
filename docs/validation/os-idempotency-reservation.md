@@ -14,11 +14,15 @@ Consultar o ledger pelo botão, preservando chave/correlationId. Se pending/unkn
 
 ## Bloqueios do piloto
 
-O POST atual não recebe/transmite id_contrato; falta contrato oficial do IXC para vínculo e encerramento. O catálogo expõe apenas id/nome e não comprova ausência de workflows ou despacho. Nome de assunto “teste” ou setor “Administrativo” não é evidência suficiente.
+O POST atual não recebe/transmite vínculo de contrato. A coleção oficial expõe id_contrato_kit na criação, cuja semântica ainda não foi demonstrada; não substituir por id_contrato por inferência. O endpoint oficial de encerramento foi localizado, mas faltam os requisitos condicionais e efeitos descritos abaixo. O catálogo expõe apenas id/nome e não comprova ausência de workflows ou despacho. Nome de assunto “teste” ou setor “Administrativo” não é evidência suficiente.
 
-A referência oficial já citada pelo projeto, https://api-provedor.ixcsoft.com.br/, foi aberta nesta investigação, mas não expôs conteúdo textual acessível. A coleção Postman mencionada pelo código não está presente no checkout. Não foi inferido endpoint de fechamento ou campo de vínculo.
+A extração textual de https://api-provedor.ixcsoft.com.br/ retornou vazia. Posteriormente a coordenação abriu a coleção JavaScript pelo navegador oficial e encontrou Sistema > Suporte > Ordem de serviço > Ações > Finalizar: POST /webservice/v1/su_oss_chamado_fechar. Evidência recebida da coordenação, sem nova chamada ao IXC pelo executor. A coleção Postman não está presente no checkout.
 
-Evidência mínima necessária: export oficial da operação OS de Cliente (inserir), com campo de contrato e regra de propriedade; operação documentada de finalizar/encerrar, campos obrigatórios e efeitos; operação de leitura por ID que confirme cliente/contrato/status; configuração real e revisada de assunto/setor demonstrando que não dispara técnico, agendamento, mensagens ou outras automações. Nenhuma OS do piloto deve ser criada antes disso.
+O exemplo de encerramento lista id_chamado, id_tarefa_atual, eh_tarefa_decisao, sequencia_atual, proxima_sequencia_forcada, finaliza_processo_aux, gera_comissao_aux, id_processo, data_inicio, data_final, id_resposta, mensagem, id_tecnico, id_equipe, gera_comissao, status, data, id_evento, id_su_diagnostico, justificativa_sla_atrasado, id_evento_status, id_proxima_tarefa, id_proxima_tarefa_aux, latitude, longitude e gps_time. Todos aparecem vazios, exceto status F; não há resposta exemplar. Isso não demonstra quais campos podem ser omitidos nem autoriza enviar vazios: processo, próxima tarefa, comissão e eventos podem ter efeitos condicionais.
+
+Na criação POST su_oss_chamado, a coleção contém id_contrato_kit (não id_contrato). Obrigatórios marcados: tipo C, id_assunto, id_cliente, id_filial, origem_endereco M, prioridade 1, setor e status A. Não inferir que id_contrato_kit seja o contrato selecionado no piloto.
+
+Evidência mínima restante: semântica oficial de id_contrato_kit e regra de propriedade; obrigatoriedade condicional, omissão segura, efeitos e resposta do endpoint de encerramento; leitura por ID que confirme cliente/vínculo/status; configuração real e revisada de assunto/setor demonstrando ausência de despacho, agendamento, mensagens, comissão e outras automações. Endpoint encontrado não equivale a operação segura demonstrada. Nenhuma OS do piloto deve ser criada antes disso.
 
 ## Verificação
 
