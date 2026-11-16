@@ -169,7 +169,7 @@ test("concorrência: reserva única precede qualquer efeito remoto", async () =>
     const second=await requestServiceOrderOpen(orderRequest(),repo,call);
     assert.equal(second.status,"pending");assert.equal(second.replay,true);assert.equal(calls,1);
     release();assert.equal((await first).status,"success");
-    assert.equal(repo.rows.length,1);
+    assert.equal(repo.rows.filter(row=>row.operation==="service_order.open").length,1);
   } finally {delete process.env.FEATURE_IXC_WRITE;}
 });
 
@@ -211,4 +211,20 @@ test("JSON sem ID confirmado permanece incerto e não é reenviado", async () =>
     assert.equal((await requestServiceOrderOpen(orderRequest(),repo,call)).status,"unknown");
     assert.equal(calls,1);
   } finally {delete process.env.FEATURE_IXC_WRITE;}
+});
+
+test("different keys for one customer/subject cannot race or bypass an uncertain attempt", async () => {
+ process.env.FEATURE_IXC_WRITE="true";
+ try {
+  const repo=new MemoryIxcWriteOperationsRepository();let calls=0;let release;
+  const gate=new Promise(resolve=>{release=resolve});
+  const call=async()=>{calls++;await gate;throw Error("response lost")};
+  const first=requestServiceOrderOpen(orderRequest(),repo,call);
+  await new Promise(resolve=>setImmediate(resolve));
+  const other=await requestServiceOrderOpen(orderRequest({idempotencyKey:"different"}),repo,call);
+  assert.equal(other.status,"blocked");assert.equal(calls,1);
+  release();await first;
+  assert.equal((await requestServiceOrderOpen(orderRequest({idempotencyKey:"third"}),repo,call)).status,"blocked");
+  assert.equal(calls,1);
+ } finally {delete process.env.FEATURE_IXC_WRITE;}
 });
