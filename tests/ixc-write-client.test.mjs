@@ -43,3 +43,17 @@ test("resposta JSON válida devolve o conteúdo cru, sem inventar nome de campo"
   const result = await fetchBoletoSecondCopy(options(fetcher), "4821", "corr-1");
   assert.deepEqual(result.raw, { campo_desconhecido: "valor" });
 });
+
+test("HTTP200 com recusa explícita IXC não vira boleto gerado nem expõe mensagem privada", async () => {
+  const fetcher = async () => new Response(JSON.stringify({ type: "error", message: "PRIVATE-CANARY" }), { status: 200 });
+  await assert.rejects(fetchBoletoSecondCopy(options(fetcher), "4821", "corr-1"), error => {
+    assert.equal(error.message, "IXC_BOLETO_RECUSADO");
+    assert.doesNotMatch(error.message, /PRIVATE-CANARY/);
+    return true;
+  });
+});
+
+test("array JSON não satisfaz contrato de objeto de segunda via", async () => {
+  const fetcher = async () => new Response(JSON.stringify([{ type: "error" }]), { status: 200 });
+  await assert.rejects(fetchBoletoSecondCopy(options(fetcher), "4821", "corr-1"), /IXC_RESPOSTA_INESPERADA/);
+});

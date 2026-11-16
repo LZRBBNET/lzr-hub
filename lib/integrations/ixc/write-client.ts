@@ -76,7 +76,9 @@ export async function fetchBoletoSecondCopy(
 
   let parsed: unknown;
   try { parsed = JSON.parse(text); } catch { throw new IxcWriteClientError("IXC_RESPOSTA_INESPERADA"); }
-  if (!parsed || typeof parsed !== "object") throw new IxcWriteClientError("IXC_RESPOSTA_INESPERADA");
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new IxcWriteClientError("IXC_RESPOSTA_INESPERADA");
+  // IXC can report a business refusal inside HTTP 200. Do not log its private message.
+  if ((parsed as Record<string, unknown>).type === "error") throw new IxcWriteClientError("IXC_BOLETO_RECUSADO");
 
   return { raw: parsed as Record<string, unknown> };
 }
