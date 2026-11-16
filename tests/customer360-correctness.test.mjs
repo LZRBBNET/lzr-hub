@@ -172,3 +172,16 @@ test("hotfix mapper does not change legacy numeric values for other consumers",a
   if(mapped.valueSource==="unavailable"){assert.equal(data.finance.overdueAmount,null);assert.equal(data.reading.financeComplete,false);}
  }
 });
+
+test('payment history never overrides invoice balance or establishes settlement',async()=>{
+  const payment={id:'historical',customerId:id,invoiceId:'invoice-1',paidAt:'2026-10-20',value:60,method:'PIX'};
+  for(const payments of [[],[payment],[{...payment,value:100}]]){
+    const result=await detail(snapshot({invoices:[invoice({value:40})],payments}));
+    assert.equal(result.finance.overdueAmount,40);
+    assert.equal(result.reading.invoices[0].status,'A');
+    assert.equal(result.reading.invoices[0].openBalance,40);
+  }
+  const uncertain=await detail(snapshot({invoices:[invoice({value:undefined})],payments:[payment]}));
+  assert.equal(uncertain.finance.overdueAmount,null);
+  assert.equal(uncertain.reading.financeComplete,false);
+});
