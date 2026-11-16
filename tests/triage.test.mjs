@@ -158,6 +158,7 @@ function montar({ enabled = true, fetcher, identificado = true } = {}) {
     const triage = await startTriage(tickets, { channel: CHANNEL_NAME, conversationId: CLIENTE, lookup: async () => (identificado ? { id: "21857" } : undefined) });
     const auto = await metaAutoReplyOptions({
       enabled, states, messages: channel, claims, config, channel: CHANNEL_NAME,
+      delivery: { begin: async () => "test-token", finish: async () => {}, settleUncertain: async () => {} },
       customerMessageAt: new Date().toISOString(), awaitingAnswer: triage?.awaitingAnswer,
     }, CLIENTE);
     return processChannelMessage(channel, { externalConversationId: CLIENTE, text, idempotencyKey: wamid, correlationId: `corr-${wamid}` }, metrics, { ...auto, triage: triage?.hooks });
@@ -201,7 +202,8 @@ test("pedido claro dispensa a pergunta: responde direto, com o protocolo no fim"
   const { receber, ticket, enviados } = montar();
   const result = await receber("estou sem internet desde ontem");
   assert.notEqual(result.status, "clarifying");
-  assert.equal(enviados()[0], `${DEFAULT_REPLY_TEMPLATES.technical_no_connection}\n\nProtocolo do atendimento: ${ticket().protocol}`);
+  // A saudação de abertura (cordialidade) vem antes; a resposta aprovada e o protocolo no fim.
+  assert.ok(enviados()[0].endsWith(`${DEFAULT_REPLY_TEMPLATES.technical_no_connection}\n\nProtocolo do atendimento: ${ticket().protocol}`), enviados()[0]);
   assert.equal(ticket().queue, "tecnico");
   assert.equal(ticket().stage, "routed");
 });

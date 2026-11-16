@@ -71,6 +71,7 @@ function montar({ autoReply = true, sendData = false, identificado = true, docum
     });
     const auto = await metaAutoReplyOptions({
       enabled: autoReply, states, messages: channel, claims, config, channel: CHANNEL_NAME,
+      delivery: { begin: async () => "test-token", finish: async () => {}, settleUncertain: async () => {} },
       customerMessageAt: new Date().toISOString(), awaitingAnswer: triage?.awaitingAnswer,
     }, CLIENTE);
     return processChannelMessage(channel, { externalConversationId: CLIENTE, text, idempotencyKey: wamid, correlationId: `c-${wamid}` }, metrics, { ...auto, triage: triage?.hooks });
@@ -150,7 +151,7 @@ test("CPF já na primeira mensagem: confere na hora", async () => {
 test("número sem cadastro no IXC: não há com o que conferir, segue para o atendente como antes", async () => {
   const { receber, ticket, enviados } = montar({ identificado: false });
   await receber("quero a segunda via do boleto");
-  assert.ok(enviados[0].startsWith(DEFAULT_REPLY_TEMPLATES.financial_invoice));
+  assert.ok(enviados[0].includes(DEFAULT_REPLY_TEMPLATES.financial_invoice));
   assert.equal(ticket().selfService, null);
 });
 
@@ -158,7 +159,7 @@ test("modo observação: nada é pedido; se o cliente manda o CPF, o atendente r
   const { receber, ticket, enviados } = montar({ autoReply: false });
   const pedido = await receber("quero a segunda via do boleto");
   assert.equal(enviados.length, 0);
-  assert.ok(pedido.suggestion.startsWith(DEFAULT_REPLY_TEMPLATES.financial_invoice));
+  assert.ok(pedido.suggestion.includes(DEFAULT_REPLY_TEMPLATES.financial_invoice));
   assert.equal(ticket().selfService, null);
 
   const cpf = await receber("meu cpf 52998224725");
