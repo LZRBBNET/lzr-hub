@@ -1,5 +1,6 @@
 "use client";
 import { useCallback, useEffect, useState } from "react";
+import { OS_ATTEMPT_STORAGE_KEY, rememberServiceOrderAttempt, releaseServiceOrderAttempt } from "@/lib/platform/service-order-attempt";
 import type { Navigate } from "@/components/lzr-hub-app";
 import { Icon } from "@/components/ui/icons";
 import { Badge, Card, Empty, InfoTip, Limits, Loading, Modal, Notice, Stat, Stats, Toolbar, count, dateOnly, plural, useToast } from "@/components/ui/kit";
@@ -252,6 +253,35 @@ function NewServiceOrder({open,onClose}:{open:boolean;onClose:()=>void}){
   const [result,setResult]=useState<{status:string;detail:string}|null>(null);
   const [error,setError]=useState<string|null>(null);
 
+  const [attempt,setAttempt]=useState<string|null>(null);
+  const [storageReady,setStorageReady]=useState(false);
+  useEffect(()=>{
+    if(!open)return;
+    const refresh=()=>{
+      try { setAttempt(localStorage.getItem(OS_ATTEMPT_STORAGE_KEY)); setStorageReady(true); }
+      catch { setStorageReady(false);setError("Armazenamento indisponível. Não é seguro iniciar uma OS."); }
+    };
+    const timer=window.setTimeout(refresh,0);
+    window.addEventListener("storage",refresh);
+    return()=>{window.clearTimeout(timer);window.removeEventListener("storage",refresh);};
+  },[open]);
+  async function consult(){
+    if(!attempt)return;
+    setBusy(true);setError(null);
+    try {
+      const response=await fetch(`/api/support/service-orders?idempotencyKey=${encodeURIComponent(attempt)}`,{cache:"no-store"});
+      if(!response.ok)throw new Error("lookup");
+      const payload=await response.json();
+      setResult({status:payload.status,detail:payload.detail});
+    } catch {setError("Não foi possível consultar. A tentativa continua bloqueada para reenvio.");}
+    finally {setBusy(false);}
+  }
+  function newAttempt(){
+    try {if(result&&releaseServiceOrderAttempt(localStorage,result.status)){
+      setAttempt(null);setResult(null);setForm({customerId:"",subjectId:"",sectorId:"",message:""});
+    }} catch {setError("Não foi possível encerrar a tentativa neste navegador.");}
+  }
+
   useEffect(()=>{if(!open||catalog)return;let active=true;
     fetch("/api/support/service-orders").then(r=>r.ok?r.json():Promise.reject(new Error("falhou")))
       .then((payload:OsCatalog)=>{if(active)setCatalog(payload)})
@@ -259,23 +289,29 @@ function NewServiceOrder({open,onClose}:{open:boolean;onClose:()=>void}){
     return()=>{active=false}},[open,catalog]);
 
   async function submit(){
+    if(attempt||busy||!storageReady)return;
     setBusy(true);setError(null);setResult(null);
     try{
+      // Persist before sending. A lost response or reload cannot create a new key.
+      const idempotencyKey=rememberServiceOrderAttempt(localStorage,()=>crypto.randomUUID());
+      setAttempt(idempotencyKey);
       const response=await fetch("/api/support/service-orders",{method:"POST",headers:{"content-type":"application/json"},
-        // Chave por tentativa: se a rede oscilar e o clique repetir, o ledger
-        // reconhece a repetição e não manda um segundo técnico ao mesmo cliente.
-        body:JSON.stringify({...form,idempotencyKey:`os-${form.customerId}-${form.subjectId}-${Date.now()}`})});
+        body:JSON.stringify({...form,idempotencyKey})});
       const payload=await response.json() as {status?:string;detail?:string;error?:string};
       if(!response.ok&&payload.error){setError(payload.error);return}
-      setResult({status:payload.status??"?",detail:payload.detail??""});
-    }catch{setError("O IXC não respondeu.")}
+      setResult({status:payload.status??"unknown",detail:payload.detail??"Consulte o resultado antes de continuar."});
+    }catch{setError("Resultado não confirmado. Consulte a tentativa; não reenvie.")}
     finally{setBusy(false)}
   }
 
   function close(){setResult(null);setError(null);onClose()}
   const ready=form.customerId.trim()&&form.subjectId&&form.sectorId&&form.message.trim().length>=10;
   return <Modal open={open} title="Abrir ordem de serviço no IXC" onClose={close} wide
-    footer={catalog?.available&&<><button className="button secondary" disabled={busy} onClick={close}>{result?.status==="success"?"Fechar":"Cancelar"}</button>{result?.status!=="success"&&<button className="button" disabled={busy||!ready} onClick={()=>void submit()}>{busy?"Enviando…":"Abrir OS"}</button>}</>}>
+    footer={catalog?.available&&<><button className="button secondary" disabled={busy} onClick={close}>{result?.status==="success"?"Fechar":"Cancelar"}</button>{result?.status!=="success"&&<button className="button" disabled={busy||!ready||!!attempt||!storageReady} onClick={()=>void submit()}>{busy?"Enviando…":"Abrir OS"}</button>}</>}>
+    {attempt&&<Notice tone="warn" more="Uma tentativa está registrada neste navegador. Resultado incerto exige conferência no IXC, sem novo envio.">
+      <button className="button secondary" disabled={busy} onClick={()=>void consult()}>Consultar tentativa</button>
+      {(result?.status==="success"||result?.status==="blocked")&&<button className="button secondary" disabled={busy} onClick={newAttempt}>Encerrar tentativa e iniciar outra</button>}
+    </Notice>}
     {!catalog&&<Loading rows={2}/>}
     {catalog&&!catalog.available&&<Notice tone="bad" more="Nenhuma lista de exemplo é mostrada: escolher um assunto inventado abriria chamado na fila errada.">Abrir OS pela tela está indisponível: {catalog.detail}.</Notice>}
     {catalog?.available&&<div className="form-grid">

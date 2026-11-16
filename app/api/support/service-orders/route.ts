@@ -21,6 +21,15 @@ export async function GET(request: Request) {
   const guard = await authorize(request, "customer.read");
   if (!guard.allowed) return NextResponse.json({ error: guard.error }, { status: guard.status });
 
+  const key = new URL(request.url).searchParams.get("idempotencyKey");
+  if (key) {
+    const writeGuard = await authorize(request, "ixc.write");
+    if (!writeGuard.allowed) return NextResponse.json({ error: writeGuard.error }, { status: writeGuard.status });
+    const row = await new DbIxcWriteOperationsRepository(await getDb()).findByIdempotencyKey("service_order.open", key);
+    if (!row || row.requestedBy !== writeGuard.user?.email) return NextResponse.json({ status: "unknown", detail: "Resultado não localizado para este operador. Não reenviar; confira a operação com o administrador." }, { headers: { "Cache-Control": "no-store" } });
+    return NextResponse.json({ status: row.status, detail: row.detail, correlationId: row.correlationId }, { headers: { "Cache-Control": "no-store" } });
+  }
+
   let runtime;
   try { runtime = getIxcRuntime(); } catch { runtime = undefined; }
   if (!runtime?.provider) {

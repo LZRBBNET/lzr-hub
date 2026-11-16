@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { desc, eq, and, gte } from "drizzle-orm";
 import { ixcWriteOperations } from "../../db/schema.ts";
 import { isOpenInvoice } from "./billing-service.ts";
@@ -30,7 +30,7 @@ export const IXC_WRITE_CATALOG = [
   { operation: "customer.create", label: "Cadastrar cliente novo", implemented: true },
 ] as const;
 
-export type IxcWriteStatus = "success" | "blocked" | "failed";
+export type IxcWriteStatus = "success" | "blocked" | "failed" | "pending" | "unknown";
 
 export interface IxcWriteLedgerRow {
   id: string;
@@ -99,6 +99,8 @@ export function assertServiceOrderPolicy(input: {
 export interface IxcWriteOperationsRepository {
   findByIdempotencyKey(operation: string, idempotencyKey: string): Promise<IxcWriteLedgerRow | undefined>;
   record(entry: Omit<IxcWriteLedgerRow, "id" | "createdAt">): Promise<IxcWriteLedgerRow>;
+  claim(entry: Omit<IxcWriteLedgerRow, "id" | "createdAt">): Promise<boolean>;
+  finishClaim(key: string, status: IxcWriteStatus, detail: string): Promise<void>;
   lastSuccessAt(operation: string, invoiceId: string): Promise<string | null>;
   listSince(sinceIso: string): Promise<IxcWriteLedgerRow[]>;
 }
@@ -120,6 +122,18 @@ export class DbIxcWriteOperationsRepository implements IxcWriteOperationsReposit
     const row = { id: randomUUID(), ...entry, createdAt: now };
     await this.db.insert(ixcWriteOperations).values({ ...row, updatedAt: now });
     return row;
+  }
+
+  async claim(entry: Omit<IxcWriteLedgerRow, "id" | "createdAt">): Promise<boolean> {
+    const now = new Date().toISOString();
+    const rows = await this.db.insert(ixcWriteOperations).values({ ...entry, id: randomUUID(), createdAt: now, updatedAt: now })
+      .onConflictDoNothing({ target: [ixcWriteOperations.operation, ixcWriteOperations.idempotencyKey] })
+      .returning({ id: ixcWriteOperations.id });
+    return rows.length === 1;
+  }
+  async finishClaim(key: string, status: IxcWriteStatus, detail: string): Promise<void> {
+    await this.db.update(ixcWriteOperations).set({ status, detail, updatedAt: new Date().toISOString() })
+      .where(and(eq(ixcWriteOperations.operation, "service_order.open"), eq(ixcWriteOperations.idempotencyKey, key), eq(ixcWriteOperations.status, "pending")));
   }
 
   async lastSuccessAt(operation: string, invoiceId: string): Promise<string | null> {
@@ -144,6 +158,16 @@ export class MemoryIxcWriteOperationsRepository implements IxcWriteOperationsRep
     this.rows.push(row);
     return row;
   }
+  async claim(entry: Omit<IxcWriteLedgerRow, "id" | "createdAt">): Promise<boolean> {
+    if (this.rows.some(row => row.operation === entry.operation && row.idempotencyKey === entry.idempotencyKey)) return false;
+    this.rows.push({ ...entry, id: randomUUID(), createdAt: new Date().toISOString() });
+    return true;
+  }
+  async finishClaim(key: string, status: IxcWriteStatus, detail: string): Promise<void> {
+    const row = this.rows.find(row => row.operation === "service_order.open" && row.idempotencyKey === key && row.status === "pending");
+    if (row) { row.status = status; row.detail = detail; }
+  }
+
   async lastSuccessAt(operation: string, invoiceId: string) {
     const matches = this.rows.filter((row) => row.operation === operation && row.invoiceId === invoiceId && row.status === "success");
     return matches.length ? matches.sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0].createdAt : null;
@@ -286,39 +310,46 @@ export async function requestServiceOrderOpen(
   repository: IxcWriteOperationsRepository,
   callIxc: (correlationId: string) => Promise<{ raw: Record<string, unknown> }>,
 ): Promise<ReissueResult> {
+  // Bind a key to the original payload without storing the sensitive message.
+  const fingerprint = createHash("sha256").update(JSON.stringify([
+    request.customerId, request.subjectId, request.sectorId, request.branchId,
+    request.priority, request.message,
+  ])).digest("hex");
+  const scope = `assunto:${request.subjectId}:${fingerprint}`;
+  const replay = (row: IxcWriteLedgerRow): ReissueResult => row.requestedBy !== request.requestedBy || row.customerId !== request.customerId || row.invoiceId !== scope
+    ? { status: "unknown", replay: true, detail: "Chave já usada para outro pedido. Consulte o resultado original." }
+    : { status: row.status, replay: true, detail: row.detail ?? "Consulte a operação antes de qualquer novo envio." };
   const existing = await repository.findByIdempotencyKey("service_order.open", request.idempotencyKey);
-  if (existing) return { status: existing.status, detail: existing.detail ?? "", replay: true };
-
-  const record = (status: IxcWriteStatus, detail: string) => repository.record({
-    operation: "service_order.open", idempotencyKey: request.idempotencyKey, customerId: request.customerId,
-    // A OS não tem fatura; o ledger guarda o assunto no lugar, que é o que
-    // identifica de que chamado se trata quando alguém for auditar.
-    invoiceId: `assunto:${request.subjectId}`, status, requestedBy: request.requestedBy, detail, correlationId: request.correlationId,
-  });
-
+  if (existing) return replay(existing);
+  // Durable reservation must commit before any external side effect.
+  if (!await repository.claim({ operation: "service_order.open", idempotencyKey: request.idempotencyKey,
+    customerId: request.customerId, invoiceId: scope, status: "pending", requestedBy: request.requestedBy,
+    correlationId: request.correlationId, detail: "Operação reservada. Não reenviar; consulte o resultado." })) {
+    const winner = await repository.findByIdempotencyKey("service_order.open", request.idempotencyKey);
+    return winner ? replay(winner) : { status: "unknown", replay: true, detail: "Reserva existente; reconciliação necessária." };
+  }
   try {
     assertServiceOrderPolicy(request);
+    if (process.env.FEATURE_IXC_WRITE !== "true") throw new IxcWritePolicyError("FEATURE_IXC_WRITE desligada — escrita real no IXC não está ligada");
   } catch (error) {
     const detail = error instanceof IxcWritePolicyError ? error.message : "Política recusou a operação";
-    await record("blocked", detail);
+    await repository.finishClaim(request.idempotencyKey, "blocked", detail);
     return { status: "blocked", detail };
   }
-
-  if (process.env.FEATURE_IXC_WRITE !== "true") {
-    const detail = "FEATURE_IXC_WRITE desligada — escrita real no IXC não está ligada";
-    await record("blocked", detail);
-    return { status: "blocked", detail };
-  }
-
   try {
     const result = await callIxc(request.correlationId);
-    const detail = `OS retornada pelo IXC: ${JSON.stringify(result.raw).slice(0, 500)}`;
-    await record("success", detail);
-    return { status: "success", detail, raw: result.raw };
-  } catch (error) {
-    const detail = error instanceof Error ? error.message : "Falha desconhecida ao abrir ordem de serviço";
-    await record("failed", detail);
-    return { status: "failed", detail };
+    const id = String(result.raw.id ?? "");
+    // Do not interpret arbitrary JSON or HTTP 200 as proof of creation.
+    if (!/^[1-9]\d{0,31}$/.test(id)) throw new Error("UNCONFIRMED_RESPONSE");
+    const detail = `OS retornada pelo IXC: ${id}. Confira o vínculo e estado no ERP.`;
+    await repository.finishClaim(request.idempotencyKey, "success", detail);
+    return { status: "success", detail, raw: { id } };
+  } catch {
+    // Includes lost responses and ledger failure after a remote success.
+    // Never release the reservation, even if persisting unknown also fails.
+    const detail = "Resultado externo não confirmado. Não reenviar; reconciliar a OS no IXC e consultar esta operação.";
+    await repository.finishClaim(request.idempotencyKey, "unknown", detail).catch(() => undefined);
+    return { status: "unknown", detail };
   }
 }
 

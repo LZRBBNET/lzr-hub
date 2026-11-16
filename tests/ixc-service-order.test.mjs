@@ -132,16 +132,16 @@ test("a mesma chave nunca abre duas ordens de serviço", async () => {
   delete process.env.FEATURE_IXC_WRITE;
 });
 
-test("falha do IXC é registrada como falha, nunca como sucesso", async () => {
+test("falha do IXC mantém reserva incerta, nunca libera reenvio", async () => {
   process.env.FEATURE_IXC_WRITE = "true";
   const repository = new MemoryIxcWriteOperationsRepository();
   const result = await requestServiceOrderOpen(orderRequest(), repository, async () => { throw new Error("IXC_TIMEOUT"); });
-  assert.equal(result.status, "failed");
-  assert.equal(repository.rows[0].detail, "IXC_TIMEOUT");
+  assert.equal(result.status, "unknown");
+  assert.match(repository.rows[0].detail, /Não reenviar/);
   delete process.env.FEATURE_IXC_WRITE;
 });
 
-test("a resposta crua do IXC fica guardada — é ela que prova o formato na primeira vez", async () => {
+test("somente o ID confirmado fica disponível no resultado", async () => {
   process.env.FEATURE_IXC_WRITE = "true";
   const repository = new MemoryIxcWriteOperationsRepository();
   const result = await requestServiceOrderOpen(orderRequest(), repository, async () => ({ raw: { type: "success", id: "500123" } }));
@@ -156,4 +156,59 @@ test("o catálogo declara a abertura de OS como implementada", () => {
   // O catálogo completo é conferido em tests/ixc-customer-create.test.mjs; aqui
   // basta a OS não voltar a se declarar pendente.
   assert.equal(IXC_WRITE_CATALOG.filter((item) => !item.implemented).length, 0);
+});
+
+test("concorrência: reserva única precede qualquer efeito remoto", async () => {
+  process.env.FEATURE_IXC_WRITE="true";
+  try {
+    const repo=new MemoryIxcWriteOperationsRepository(); let calls=0; let release;
+    const gate=new Promise(resolve=>{release=resolve});
+    const call=async()=>{calls++;assert.equal(repo.rows[0].status,"pending");await gate;return {raw:{id:"42"}}};
+    const first=requestServiceOrderOpen(orderRequest(),repo,call);
+    await new Promise(resolve=>setImmediate(resolve));
+    const second=await requestServiceOrderOpen(orderRequest(),repo,call);
+    assert.equal(second.status,"pending");assert.equal(second.replay,true);assert.equal(calls,1);
+    release();assert.equal((await first).status,"success");
+    assert.equal(repo.rows.length,1);
+  } finally {delete process.env.FEATURE_IXC_WRITE;}
+});
+
+test("resposta perdida e falha do ledger nunca permitem segunda chamada", async () => {
+  process.env.FEATURE_IXC_WRITE="true";
+  try {
+    for(const ledgerFailure of [false,true]){
+      const repo=new MemoryIxcWriteOperationsRepository();let calls=0;
+      if(ledgerFailure)repo.finishClaim=async()=>{throw new Error("database unavailable")};
+      const call=async()=>{calls++;if(!ledgerFailure)throw new Error("lost response after creation");return {raw:{id:"42"}}};
+      assert.equal((await requestServiceOrderOpen(orderRequest(),repo,call)).status,"unknown");
+      const replay=await requestServiceOrderOpen(orderRequest(),repo,call);
+      assert.ok(["pending","unknown"].includes(replay.status));assert.equal(calls,1);
+    }
+  } finally {delete process.env.FEATURE_IXC_WRITE;}
+});
+
+test("reserva indisponível impede chamada; chave com payload diferente é recusada", async () => {
+  process.env.FEATURE_IXC_WRITE="true";
+  try {
+    const repo=new MemoryIxcWriteOperationsRepository();let calls=0;
+    const call=async()=>{calls++;return {raw:{id:"42",message:"sensitive"}}};
+    const first=await requestServiceOrderOpen(orderRequest(),repo,call);
+    assert.deepEqual(first.raw,{id:"42"});
+    assert.equal((await requestServiceOrderOpen(orderRequest({message:"different description"}),repo,call)).status,"unknown");
+    assert.equal(calls,1);
+    repo.claim=async()=>{throw new Error("db down")};
+    await assert.rejects(requestServiceOrderOpen(orderRequest({idempotencyKey:"new"}),repo,call));
+    assert.equal(calls,1);
+  } finally {delete process.env.FEATURE_IXC_WRITE;}
+});
+
+test("JSON sem ID confirmado permanece incerto e não é reenviado", async () => {
+  process.env.FEATURE_IXC_WRITE="true";
+  try {
+    const repo=new MemoryIxcWriteOperationsRepository();let calls=0;
+    const call=async()=>{calls++;return {raw:{type:"success"}}};
+    assert.equal((await requestServiceOrderOpen(orderRequest(),repo,call)).status,"unknown");
+    assert.equal((await requestServiceOrderOpen(orderRequest(),repo,call)).status,"unknown");
+    assert.equal(calls,1);
+  } finally {delete process.env.FEATURE_IXC_WRITE;}
 });
