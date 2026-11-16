@@ -25,6 +25,7 @@ export async function GET(request: Request) {
   if (key) {
     const writeGuard = await authorize(request, "ixc.write");
     if (!writeGuard.allowed) return NextResponse.json({ error: writeGuard.error }, { status: writeGuard.status });
+    if (!writeGuard.user?.email) return NextResponse.json({ error: "Sessão autenticada obrigatória" }, { status: 401 });
     const row = await new DbIxcWriteOperationsRepository(await getDb()).findByIdempotencyKey("service_order.open", key);
     if (!row || row.requestedBy !== writeGuard.user?.email) return NextResponse.json({ status: "unknown", detail: "Resultado não localizado para este operador. Não reenviar; confira a operação com o administrador." }, { headers: { "Cache-Control": "no-store" } });
     return NextResponse.json({ status: row.status, detail: row.detail, correlationId: row.correlationId }, { headers: { "Cache-Control": "no-store" } });
@@ -53,6 +54,8 @@ export async function GET(request: Request) {
 export async function POST(request: Request) {
   const guard = await authorize(request, "ixc.write");
   if (!guard.allowed) return NextResponse.json({ error: guard.error }, { status: guard.status });
+
+  if (!guard.user?.email) return NextResponse.json({ error: "Sessão autenticada obrigatória" }, { status: 401 });
 
   const body = await request.json().catch(() => null) as Record<string, unknown> | null;
   const text = (key: string) => typeof body?.[key] === "string" ? (body[key] as string).trim() : "";

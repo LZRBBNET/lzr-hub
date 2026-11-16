@@ -1,6 +1,6 @@
 "use client";
 import { useCallback, useEffect, useState } from "react";
-import { OS_ATTEMPT_STORAGE_KEY, rememberServiceOrderAttempt, releaseServiceOrderAttempt } from "@/lib/platform/service-order-attempt";
+import { readServiceOrderAttempt, rememberServiceOrderAttempt, releaseServiceOrderAttempt } from "@/lib/platform/service-order-attempt";
 import type { Navigate } from "@/components/lzr-hub-app";
 import { Icon } from "@/components/ui/icons";
 import { Badge, Card, Empty, InfoTip, Limits, Loading, Modal, Notice, Stat, Stats, Toolbar, count, dateOnly, plural, useToast } from "@/components/ui/kit";
@@ -250,7 +250,7 @@ function NewServiceOrder({open,onClose}:{open:boolean;onClose:()=>void}){
   const [catalog,setCatalog]=useState<OsCatalog|null>(null);
   const [form,setForm]=useState({customerId:"",subjectId:"",sectorId:"",message:""});
   const [busy,setBusy]=useState(false);
-  const [result,setResult]=useState<{status:string;detail:string}|null>(null);
+  const [result,setResult]=useState<{status:string;detail:string;key:string}|null>(null);
   const [error,setError]=useState<string|null>(null);
 
   const [attempt,setAttempt]=useState<string|null>(null);
@@ -258,7 +258,7 @@ function NewServiceOrder({open,onClose}:{open:boolean;onClose:()=>void}){
   useEffect(()=>{
     if(!open)return;
     const refresh=()=>{
-      try { setAttempt(localStorage.getItem(OS_ATTEMPT_STORAGE_KEY)); setStorageReady(true); }
+      try { setAttempt(readServiceOrderAttempt(localStorage)); setStorageReady(true); }
       catch { setStorageReady(false);setError("Armazenamento indisponível. Não é seguro iniciar uma OS."); }
     };
     const timer=window.setTimeout(refresh,0);
@@ -272,12 +272,12 @@ function NewServiceOrder({open,onClose}:{open:boolean;onClose:()=>void}){
       const response=await fetch(`/api/support/service-orders?idempotencyKey=${encodeURIComponent(attempt)}`,{cache:"no-store"});
       if(!response.ok)throw new Error("lookup");
       const payload=await response.json();
-      setResult({status:payload.status,detail:payload.detail});
+      setResult({status:payload.status,detail:payload.detail,key:attempt});
     } catch {setError("Não foi possível consultar. A tentativa continua bloqueada para reenvio.");}
     finally {setBusy(false);}
   }
   function newAttempt(){
-    try {if(result&&releaseServiceOrderAttempt(localStorage,result.status)){
+    try {if(result&&result.key===attempt&&releaseServiceOrderAttempt(localStorage,result.status,result.key)){
       setAttempt(null);setResult(null);setForm({customerId:"",subjectId:"",sectorId:"",message:""});
     }} catch {setError("Não foi possível encerrar a tentativa neste navegador.");}
   }
@@ -299,7 +299,7 @@ function NewServiceOrder({open,onClose}:{open:boolean;onClose:()=>void}){
         body:JSON.stringify({...form,idempotencyKey})});
       const payload=await response.json() as {status?:string;detail?:string;error?:string};
       if(!response.ok&&payload.error){setError(payload.error);return}
-      setResult({status:payload.status??"unknown",detail:payload.detail??"Consulte o resultado antes de continuar."});
+      setResult({status:payload.status??"unknown",detail:payload.detail??"Consulte o resultado antes de continuar.",key:idempotencyKey});
     }catch{setError("Resultado não confirmado. Consulte a tentativa; não reenvie.")}
     finally{setBusy(false)}
   }
@@ -310,7 +310,7 @@ function NewServiceOrder({open,onClose}:{open:boolean;onClose:()=>void}){
     footer={catalog?.available&&<><button className="button secondary" disabled={busy} onClick={close}>{result?.status==="success"?"Fechar":"Cancelar"}</button>{result?.status!=="success"&&<button className="button" disabled={busy||!ready||!!attempt||!storageReady} onClick={()=>void submit()}>{busy?"Enviando…":"Abrir OS"}</button>}</>}>
     {attempt&&<Notice tone="warn" more="Uma tentativa está registrada neste navegador. Resultado incerto exige conferência no IXC, sem novo envio.">
       <button className="button secondary" disabled={busy} onClick={()=>void consult()}>Consultar tentativa</button>
-      {(result?.status==="success"||result?.status==="blocked")&&<button className="button secondary" disabled={busy} onClick={newAttempt}>Encerrar tentativa e iniciar outra</button>}
+      {(result?.key===attempt&&(result?.status==="success"||result?.status==="blocked"))&&<button className="button secondary" disabled={busy} onClick={newAttempt}>Encerrar tentativa e iniciar outra</button>}
     </Notice>}
     {!catalog&&<Loading rows={2}/>}
     {catalog&&!catalog.available&&<Notice tone="bad" more="Nenhuma lista de exemplo é mostrada: escolher um assunto inventado abriria chamado na fila errada.">Abrir OS pela tela está indisponível: {catalog.detail}.</Notice>}
@@ -324,7 +324,7 @@ function NewServiceOrder({open,onClose}:{open:boolean;onClose:()=>void}){
       <label className="field span-2"><span>O que o cliente relatou</span><textarea rows={4} value={form.message} placeholder="O técnico chega sabendo só o que estiver escrito aqui." onChange={e=>setForm(f=>({...f,message:e.target.value}))}/></label>
       <p className="field-hint span-2">A filial vem do cadastro do cliente no IXC, não daqui — o grupo tem 21 e o chamado precisa nascer na certa.</p>
       {error&&<p className="form-error span-2">{error}</p>}
-      {result&&<div className={`result-box span-2 ${result.status==="success"?"ok":"bad"}`}><strong>{result.status==="success"?"OS aberta no IXC.":result.status==="blocked"?"Bloqueado.":"Falhou."}</strong><p>{result.detail}</p></div>}
+      {result&&<div className={`result-box span-2 ${result.status==="success"?"ok":"bad"}`}><strong>{result.status==="success"?"OS aberta no IXC.":result.status==="blocked"?"Bloqueado.":"Resultado não confirmado."}</strong><p>{result.detail}</p></div>}
     </div>}
   </Modal>;
 }

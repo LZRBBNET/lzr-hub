@@ -336,6 +336,17 @@ export async function requestServiceOrderOpen(
     await repository.finishClaim(request.idempotencyKey, "blocked", detail);
     return { status: "blocked", detail };
   }
+  // A second key/device must not bypass the first reservation. This gate is
+  // deliberately durable until an audited remote reconciliation can release it.
+  const scopeKey = createHash("sha256").update(JSON.stringify([request.customerId, request.subjectId])).digest("hex");
+  if (!await repository.claim({ operation: "service_order.scope", idempotencyKey: scopeKey,
+    customerId: request.customerId, invoiceId: `assunto:${request.subjectId}`, status: "pending",
+    requestedBy: request.requestedBy, correlationId: request.correlationId,
+    detail: "Escopo reservado para abertura de OS; liberação exige reconciliação auditada." })) {
+    const detail = "Já existe tentativa reservada para este cliente e assunto. Confira a OS original; não abra outra.";
+    await repository.finishClaim(request.idempotencyKey, "blocked", detail);
+    return { status: "blocked", detail };
+  }
   try {
     const result = await callIxc(request.correlationId);
     const id = String(result.raw.id ?? "");
