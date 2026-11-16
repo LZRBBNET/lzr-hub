@@ -35,3 +35,19 @@ Do not claim browser visual QA, TLS hosting, paid hosting capacity, live custome
 ### Hosting build separation (preparation only)
 
 Some hosts supply configured secrets to both build and runtime environments. Do not assume a runtime-only secret feature. Keep the rejecting build guard: the prepared build child command is `env -u MEMORY_DEMO_PASSWORD -u MEMORY_DEMO_READER_PASSWORD sh scripts/memory-demo-entry.sh build`. This strips the two passwords from that child without printing them; it does not remove them from the hosting parent environment. The separately configured runtime start receives them. A clean hosted installation may use the existing locked `npm ci --ignore-scripts` before this build; no package installation or network access was executed for this local change. Node 24 and the trusted managed runtime PATH must be explicitly configured. Hosting, TLS, resource suitability and secret delivery remain unverified until separately authorized deployment testing.
+
+### Jornada visual e ciclo de sessão
+
+A interface dedicada reutiliza os tokens claros de `app/globals.css` e a organização
+lateral dos módulos existentes. Cliente 360, contexto/assunção do atendimento e
+promessa/pagamento formam uma jornada demonstrativa; dados ausentes continuam
+indisponíveis. Não representa a implementação completa nem a interface GK.
+
+A UI invalida respostas de gerações anteriores, limpa resultados ao sair/ocultar a
+página e revalida a sessão ao retornar (inclusive pageshow/BFCache). Isso evita
+reexibir resultados antigos, mas não desfaz mutações já enviadas nem um Set-Cookie
+que o navegador tenha recebido. O servidor continua a autoridade da sessão.
+Testes VM de DOM são regressões de comportamento, não validação visual/mobile ou
+prova de BFCache real. Fazer QA em 320/360/390px, teclado e logout/voltar em navegador
+suportado antes de aceitar a apresentação final. Credenciais do usuário não entram
+nesses testes. Nenhuma mudança de guard, cache, banco ou transporte acompanha a UI.
