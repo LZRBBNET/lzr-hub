@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { randomUUID } from "node:crypto";
 import { getDb } from "@/db";
 import { getIxcRuntime } from "@/lib/integrations/ixc/runtime";
-import { billingAmount } from "@/lib/platform/billing-amount";
+import { loadConfirmedReviewStatuses } from "@/lib/platform/payment-promise-evidence";
 import { businessToday } from "@/lib/platform/billing-service";
 import {
   DbPaymentPromiseRepository, PaymentPromiseValidationError, parsePromisedFor, reviewPendingPromises,
@@ -40,33 +40,6 @@ async function loadInvoiceStatusByCustomer(customerId: string, correlationId: st
   return new Map((snapshot?.invoices ?? []).map((invoice) => [invoice.id, invoice.status]));
 }
 
-/** Fresh, complete, customer-scoped evidence for review only. Unknown is never paid. */
-async function loadConfirmedReviewStatuses(customerId: string, correlationId: string): Promise<Map<string, string>> {
-  try {
-    const provider = getIxcRuntime().provider;
-    if (!provider) return new Map();
-    const requestedAt = Date.now();
-    const snapshot = await provider.getSnapshot(customerId, correlationId, true);
-    const observedAt = typeof snapshot.fetchedAt === "string" ? Date.parse(snapshot.fetchedAt) : NaN;
-    const coverage = snapshot.coverage?.invoices;
-    if (!Number.isFinite(observedAt) || observedAt < requestedAt || observedAt > Date.now()
-      || snapshot.cache !== "miss" || snapshot.customer?.id !== customerId
-      || !Array.isArray(snapshot.invoices) || !Array.isArray(snapshot.partialSources)
-      || snapshot.partialSources.includes("invoices") || coverage?.complete !== true
-      || !Number.isSafeInteger(coverage.total) || coverage.total !== snapshot.invoices.length
-      || coverage.read !== snapshot.invoices.length) return new Map();
-    const statuses = new Map<string, string>();
-    const seen = new Set<string>();
-    for (const invoice of snapshot.invoices) {
-      if (!invoice || typeof invoice.id !== "string" || !invoice.id || invoice.customerId !== customerId || seen.has(invoice.id)) return new Map();
-      seen.add(invoice.id);
-      const balance = invoice.valueSource === "open-balance" ? billingAmount(invoice.value, invoice.valueSource) : null;
-      if (invoice.status === "R" && balance === 0) statuses.set(invoice.id, "R");
-      if (invoice.status === "A" && balance !== null && balance > 0) statuses.set(invoice.id, "A");
-    }
-    return statuses;
-  } catch { return new Map(); }
-}
 
 export async function POST(request: Request) {
   const guard = await authorize(request, "billing.write-demo");
@@ -114,7 +87,7 @@ export async function POST(request: Request) {
     const result = { fulfilled: [] as string[], broken: [] as string[], stillPending: [] as string[] };
     // Never share invoice evidence across customer identities.
     for (const customerId of byCustomer.keys()) {
-      const statuses = await loadConfirmedReviewStatuses(customerId, correlationId);
+      const statuses = await loadConfirmedReviewStatuses(customerId, correlationId, () => getIxcRuntime().provider);
       const reviewed = reviewPendingPromises(pending.filter((promise) => promise.customerId === customerId), statuses, today);
       result.fulfilled.push(...reviewed.fulfilled);
       result.broken.push(...reviewed.broken);
