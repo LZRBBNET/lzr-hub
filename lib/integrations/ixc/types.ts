@@ -35,7 +35,7 @@ export interface IxcContractDto { id:string; customerId:string; planId?:string; 
 export interface IxcPlanDto { id:string; name:string; speed?:string; value?:number }
 export interface IxcInvoiceDto { id:string; customerId:string; contractId?:string; status:string; dueAt?:string; value?:number; valueSource?:"open-balance"|"face-value"|"unavailable"; paymentCode?:string }
 export interface IxcPaymentDto { id:string; customerId:string; invoiceId?:string; paidAt?:string; value?:number; method:string }
-export interface IxcServiceOrderDto { id:string; customerId:string; status:string; subject:string; openedAt?:string; closedAt?:string; address?:string }
+export interface IxcServiceOrderDto { id:string; customerId:string; contractId?:string; status:string; subject:string; openedAt?:string; closedAt?:string; address?:string }
 /**
  * O que o diagnóstico de conexão lê do IXC, já reduzido ao que importa: nada de
  * senha, IP ou MAC do login — só se está online, desde quando e por quê caiu.

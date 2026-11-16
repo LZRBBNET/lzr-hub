@@ -92,7 +92,7 @@ export async function fetchBoletoSecondCopy(
  *
  * O corpo lá marca como **obrigatórios**: `tipo`, `id_assunto`, `id_cliente`,
  * `id_filial`, `origem_endereco`, `prioridade`, `setor` e `status`. Só esses são
- * enviados — mandar o corpo inteiro com dezenas de campos vazios é convite a
+ * enviados, mais o vínculo id_contrato_kit documentado na wiki oficial — mandar o corpo inteiro com dezenas de campos vazios é convite a
  * sobrescrever com string vazia algo que o IXC preencheria sozinho.
  *
  * `tipo: "C"` é OS de cliente (a alternativa, "E", é OS de estrutura).
@@ -108,6 +108,7 @@ export async function fetchBoletoSecondCopy(
  */
 export interface ServiceOrderInput {
   customerId: string;
+  contractId: string;
   subjectId: string;
   sectorId: string;
   branchId: string;
@@ -120,6 +121,7 @@ export async function openServiceOrder(
   input: ServiceOrderInput,
   correlationId: string,
 ): Promise<{ raw: Record<string, unknown> }> {
+  if (!/^[1-9]\d{0,31}$/.test(input.contractId ?? "")) throw new IxcWriteClientError("IXC_CONTRACT_REQUIRED");
   const fetcher = options.fetcher ?? fetch;
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), options.timeoutMs ?? 8000);
@@ -133,7 +135,7 @@ export async function openServiceOrder(
         "x-correlation-id": correlationId,
       },
       body: JSON.stringify({
-        tipo: "C", id_assunto: input.subjectId, id_cliente: input.customerId,
+        tipo: "C", id_assunto: input.subjectId, id_cliente: input.customerId, id_contrato_kit: input.contractId,
         id_filial: input.branchId, origem_endereco: "M", prioridade: input.priority,
         setor: input.sectorId, status: "A", mensagem: input.message,
       }),
