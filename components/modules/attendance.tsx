@@ -1,6 +1,7 @@
 "use client";
 
 import { Fragment, useEffect, useRef, useState } from "react";
+import { runReplyAttempt, UNCERTAIN_REPLY } from "@/lib/platform/reply-attempt-client";
 import { containsHomologationText } from "@/lib/platform/reply-templates-shared";
 import { needsReply, waitTone, windowOpen, type EffectiveState, type StateAction } from "@/lib/platform/conversation-state-shared";
 import { Icon } from "@/components/ui/icons";
@@ -120,6 +121,7 @@ export function AttendanceModule({ initialConversation, onAwaiting }: { initialC
   const [quickReplies,setQuickReplies] = useState<QuickReply[]>([]);
   const [draft,setDraft] = useState("");
   const [sending,setSending] = useState(false);
+  const sendingRef = useRef(false);
   const [sendError,setSendError] = useState<string|null>(null);
   const [newBelow,setNewBelow] = useState(false);
   const [now,setNow] = useState(() => Date.now());
@@ -258,22 +260,37 @@ export function AttendanceModule({ initialConversation, onAwaiting }: { initialC
     void lookupIxc(item);
   }
 
-  async function send() {
+  async function send(reconcileOnly = false) {
     const item = selectedRef.current;
-    if (!item || sending || !draft.trim()) return;
+    if (!item || sendingRef.current || (!reconcileOnly && !draft.trim())) return;
+    // Synchronous guard closes the double-click gap before React renders.
+    sendingRef.current = true;
     setSending(true); setSendError(null);
+    const selectedKey = conversationKey(item);
     try {
-      // Uma chave por clique: o duplo clique devolve o mesmo resultado em vez de mandar duas mensagens.
-      const response = await fetch("/api/conversations/reply", { method:"POST", headers:{"content-type":"application/json"},
-        body:JSON.stringify({ conversationId:item.externalConversationId, text:draft, idempotencyKey:crypto.randomUUID() }) });
-      const payload = await response.json().catch(() => ({})) as { error?:string; recorded?:boolean };
-      if (!response.ok) { setSendError(payload.error ?? "Não consegui enviar. Nada foi enviado."); return; }
+      if (!navigator.locks || !crypto.subtle) {
+        setSendError("Este navegador não oferece a proteção necessária para enviar. Use um navegador atualizado.");
+        return;
+      }
+      const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(selectedKey));
+      const journalKey = "lzr:reply-attempt:" + Array.from(new Uint8Array(digest), b => b.toString(16).padStart(2, "0")).join("");
+      const result = await runReplyAttempt({
+        storage: localStorage, fetch, uuid: () => crypto.randomUUID(),
+        lock: async (name, action) => await navigator.locks.request(name, { mode: "exclusive", ifAvailable: true }, lock => {
+          if (!lock) throw new Error("attempt busy");
+          return action();
+        }),
+      }, { journalKey, conversationId: item.externalConversationId, text: draft, reconcileOnly });
+      // A late response must not clear another conversation's draft.
+      if (!isOpen(selectedKey)) return;
+      if (!result.accepted) { setSendError(result.error); return; }
       setDraft("");
-      if (payload.recorded===false) setSendError("A mensagem foi enviada ao cliente, mas não consegui gravá-la no histórico. Não reenvie.");
+      if (result.recovered) setSendError("A Meta aceitou a tentativa anterior. Nada foi reenviado. Confira o histórico e o status de entrega.");
+      else if (!result.recorded) setSendError("A Meta aceitou a mensagem, mas o histórico não foi confirmado. Não reenvie.");
       await loadMessages(item, "force");
       void loadList("force");
-    } catch { setSendError("Não consegui falar com o servidor. Confira a conversa antes de reenviar."); }
-    finally { setSending(false); }
+    } catch { if (isOpen(selectedKey)) setSendError(UNCERTAIN_REPLY); }
+    finally { sendingRef.current = false; setSending(false); }
   }
 
   async function changeState(action:StateAction, force = false) {
@@ -508,7 +525,8 @@ export function AttendanceModule({ initialConversation, onAwaiting }: { initialC
         </div>
         {newBelow && <button type="button" className="new-messages" onClick={()=>{ const el = messagesRef.current; if (el) el.scrollTop = el.scrollHeight; setNewBelow(false); }}>Novas mensagens <Icon name="chevron-down" size={14} /></button>}
       </div>
-      {sendError && <p className="form-error composer-error">{sendError}</p>}
+      {sendError && <p role="status" className="form-error composer-error">{sendError}</p>}
+      {selected && <button type="button" className="button secondary small" disabled={sending} onClick={()=>void send(true)}>Verificar envio anterior</button>}
       {selected && messagesState==="ready" && <Composer
         canReply={channelState.canReply} canCompose={canCompose} replyWindow={replyWindow} now={now} resolved={!!resolvedNow}
         ownerName={ownerIsOther ? conversationState?.assigneeName ?? null : null}

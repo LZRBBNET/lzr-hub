@@ -29,14 +29,14 @@ export interface ReplyInput {
   channel: string;
   conversationId: string;
   text: string;
-  /** Uma por clique: é o que impede o duplo clique de virar duas mensagens. */
+  /** Uma por tentativa lógica, preservada enquanto o resultado for incerto. */
   idempotencyKey: string;
   actor?: ReplyActor;
 }
 
 export type ReplyResult =
   | { ok: true; messageId: string; duplicate: boolean; recorded: boolean }
-  | { ok: false; status: 400 | 403 | 409 | 422 | 429 | 502 | 503; reason: string };
+  | { ok: false; status: 400 | 403 | 409 | 422 | 429 | 502 | 503; reason: string; retrySafe: boolean };
 
 /** `text` é o que saiu, para quem precisa refazer o registro sem reenviar (a resposta automática, na reentrega do webhook). */
 export type ClaimState = { status: "pending" } | { status: "sent"; messageId: string; text?: string } | { status: "unknown" };
@@ -46,6 +46,7 @@ export interface ReplyRepository {
   /** Reserva a chave antes de enviar. `false` = já existe (outro clique, ou reenvio). */
   claim(key: string, channel: string, conversationId: string): Promise<boolean>;
   claimState(key: string): Promise<ClaimState | undefined>;
+  scopedClaimState(key: string, channel: string, conversationId: string): Promise<ClaimState | undefined>;
   setClaimState(key: string, state: ClaimState): Promise<void>;
   release(key: string): Promise<void>;
   saveSent(entry: { channel: string; conversationId: string; content: string; sentBy: string; correlationId: string; externalMessageId: string }): Promise<void>;
@@ -65,7 +66,16 @@ export function attendantReplyEnabled(env: Record<string, string | undefined> = 
   return env.FEATURE_ATTENDANT_REPLY === "true";
 }
 
-const refusal = (status: Extract<ReplyResult, { ok: false }>["status"], reason: string): ReplyResult => ({ ok: false, status, reason });
+const refusal = (status: Extract<ReplyResult, { ok: false }>["status"], reason: string, retrySafe = false): ReplyResult => ({ ok: false, status, reason, retrySafe });
+
+/** Read-only reconciliation: absence never proves that transport did not accept. */
+export async function reconcileAttendantReply(repository: ReplyRepository, input: Pick<ReplyInput, "channel" | "conversationId" | "idempotencyKey" | "actor">): Promise<{ state: "sent" | "pending" | "unknown" | "absent"; messageId?: string }> {
+  if (!input.actor || !KEY_PATTERN.test(input.idempotencyKey) || !/^\d{10,15}$/.test(input.conversationId)) return { state: "unknown" };
+  const claim = await repository.scopedClaimState(`${CLAIM_PREFIX}${input.idempotencyKey}`, input.channel, input.conversationId);
+  if (!claim) return { state: "absent" };
+  if (claim.status === "sent" && typeof claim.messageId === "string" && claim.messageId) return { state: "sent", messageId: claim.messageId };
+  return { state: claim.status === "pending" ? "pending" : "unknown" };
+}
 
 export async function sendAttendantReply(deps: ReplyDeps, input: ReplyInput): Promise<ReplyResult> {
   const { repository } = deps;
@@ -75,9 +85,9 @@ export async function sendAttendantReply(deps: ReplyDeps, input: ReplyInput): Pr
   const entity = `conversation:${input.conversationId}`;
   const claimKey = `${CLAIM_PREFIX}${input.idempotencyKey}`;
   const preview = `"${sanitizeHandoffText(text).slice(0, 180)}"`;
-  const blocked = async (status: Extract<ReplyResult, { ok: false }>["status"], reason: string, result = "blocked"): Promise<ReplyResult> => {
+  const blocked = async (status: Extract<ReplyResult, { ok: false }>["status"], reason: string, result = "blocked", retrySafe = true): Promise<ReplyResult> => {
     await repository.audit({ correlationId, entity, action: "whatsapp.reply.blocked", result, reason: `Envio recusado: ${reason} ${preview}`, actor: input.actor }).catch(() => undefined);
-    return refusal(status, reason);
+    return refusal(status, reason, retrySafe);
   };
 
   // 1. Entrada. Nada daqui chega ao banco ou à Meta.
@@ -89,12 +99,12 @@ export async function sendAttendantReply(deps: ReplyDeps, input: ReplyInput): Pr
   if (isNonCustomerConversation(phone) || !/^\d{10,15}$/.test(phone)) return refusal(400, "Esta conversa não é de um número de cliente.");
 
   // 2. Idempotência: o mesmo clique repetido devolve o resultado, não reenvia.
-  const previous = await repository.claimState(claimKey);
-  if (previous?.status === "sent") return { ok: true, messageId: previous.messageId, duplicate: true, recorded: true };
+  if (!input.actor) return blocked(403, "O envio exige login.", "blocked", false);
+  const previous = await repository.scopedClaimState(claimKey, input.channel, phone);
+  if (previous?.status === "sent") return { ok: true, messageId: previous.messageId, duplicate: true, recorded: false };
   if (previous) return refusal(409, previous.status === "pending" ? "Esse envio já está em andamento." : "Esse envio ficou sem confirmação da Meta. Confira a conversa antes de reenviar.");
 
   // 3. Política. Sem login não há autor, e mensagem a cliente sem autor não sai.
-  if (!input.actor) return blocked(403, "O envio exige login.");
   if (!deps.enabled) return blocked(503, "O envio pela tela está desligado.");
   if (!deps.config) return blocked(503, "O envio pela Meta não está configurado.");
   // O texto de homologação do pipeline ("fictícia") nunca vai a cliente real,
@@ -119,16 +129,20 @@ export async function sendAttendantReply(deps: ReplyDeps, input: ReplyInput): Pr
   // 5. Chamada.
   const sent = await sendTextMessage(deps.config, { to: phone, text });
   if (!sent.ok) {
-    // Em timeout a mensagem pode ter saído: soltar a reserva convidaria um
-    // reenvio em dobro. Nos demais casos a Meta recusou, e liberar é seguro.
-    if (sent.kind === "timeout") await repository.setClaimState(claimKey, { status: "unknown" }).catch(() => undefined);
-    else await repository.release(claimKey).catch(() => undefined);
-    await repository.audit({ correlationId, entity, action: "whatsapp.reply.failed", result: sent.kind === "timeout" ? "unknown" : "failed", reason: `Envio ao cliente falhou (${sent.kind}${sent.metaCode ? ` ${sent.metaCode}` : ""}): ${sanitizeHandoffText(sent.reason)} ${preview}`, actor: input.actor }).catch(() => undefined);
+    // Generic failures also include lost responses and 2xx without a message ID.
+    // Only recognized definitive refusals allow a new attempt.
+    const ambiguous = sent.kind === "timeout" || sent.kind === "unreachable" || sent.kind === "rejected";
+    let retrySafe = false;
+    if (ambiguous) await repository.setClaimState(claimKey, { status: "unknown" }).catch(() => undefined);
+    else {
+      try { await repository.release(claimKey); retrySafe = true; } catch { /* keep blocked */ }
+    }
+    await repository.audit({ correlationId, entity, action: "whatsapp.reply.failed", result: ambiguous ? "unknown" : "failed", reason: `Envio ao cliente falhou (${sent.kind}${sent.metaCode ? ` ${sent.metaCode}` : ""}): ${sanitizeHandoffText(sent.reason)} ${preview}`, actor: input.actor }).catch(() => undefined);
     const status = sent.kind === "window_closed" || sent.kind === "not_allowed" || sent.kind === "invalid_recipient" ? 422
       : sent.kind === "invalid_token" ? 503
       : sent.kind === "rate_limited" ? 429
       : 502;
-    return refusal(status, sent.reason);
+    return refusal(status, ambiguous ? "O resultado do envio ficou incerto. Consulte a tentativa; não envie novamente." : sent.reason, retrySafe);
   }
 
   await repository.setClaimState(claimKey, { status: "sent", messageId: sent.messageId }).catch(() => undefined);
@@ -173,6 +187,12 @@ export class DbReplyRepository implements ReplyRepository {
     return rows[0]?.state as ClaimState | undefined;
   }
 
+  async scopedClaimState(key: string, channel: string, conversationId: string): Promise<ClaimState | undefined> {
+    const rows = await this.db.select({ state: channelIdempotencyKeys.responseJson }).from(channelIdempotencyKeys)
+      .where(and(eq(channelIdempotencyKeys.idempotencyKey, key), eq(channelIdempotencyKeys.channel, channel), eq(channelIdempotencyKeys.externalConversationId, conversationId))).limit(1);
+    return rows[0]?.state as ClaimState | undefined;
+  }
+
   async setClaimState(key: string, state: ClaimState): Promise<void> {
     await this.db.update(channelIdempotencyKeys).set({ responseJson: state }).where(eq(channelIdempotencyKeys.idempotencyKey, key));
   }
@@ -202,17 +222,23 @@ export class MemoryReplyRepository implements ReplyRepository {
   readonly sent: Array<{ channel: string; conversationId: string; content: string; sentBy: string; correlationId: string; externalMessageId: string }> = [];
   readonly audits: Array<{ correlationId: string; entity: string; action: string; result: string; reason: string; actor?: ReplyActor }> = [];
   private readonly claims = new Map<string, ClaimState>();
+  private readonly scopes = new Map<string, { channel: string; conversationId: string }>();
   async lastCustomerMessage(channel: string, conversationId: string) {
     return this.customerMessages.filter((m) => m.channel === channel && m.conversationId === conversationId).sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0];
   }
-  async claim(key: string) {
+  async claim(key: string, channel: string, conversationId: string) {
     if (this.claims.has(key)) return false;
     this.claims.set(key, { status: "pending" });
+    this.scopes.set(key, { channel, conversationId });
     return true;
   }
   async claimState(key: string) { return this.claims.get(key); }
+  async scopedClaimState(key: string, channel: string, conversationId: string) {
+    const scope = this.scopes.get(key);
+    return scope?.channel === channel && scope.conversationId === conversationId ? this.claims.get(key) : undefined;
+  }
   async setClaimState(key: string, state: ClaimState) { this.claims.set(key, state); }
-  async release(key: string) { this.claims.delete(key); }
+  async release(key: string) { this.claims.delete(key); this.scopes.delete(key); }
   async saveSent(entry: { channel: string; conversationId: string; content: string; sentBy: string; correlationId: string; externalMessageId: string }) { this.sent.push(entry); }
   async audit(entry: { correlationId: string; entity: string; action: string; result: string; reason: string; actor?: ReplyActor }) { this.audits.push(entry); }
 }
