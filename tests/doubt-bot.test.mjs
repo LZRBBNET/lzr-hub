@@ -6,6 +6,7 @@ import { MemoryReplyRepository } from "../lib/platform/attendant-reply-service.t
 import { MemoryConversationStateRepository } from "../lib/platform/conversation-state-service.ts";
 import { metaAutoReplyOptions } from "../lib/platform/meta-auto-reply-service.ts";
 import { MemoryKnowledgeRepository } from "../lib/platform/knowledge-service.ts";
+import { MemoryTicketRepository, startTriage } from "../lib/platform/triage-service.ts";
 import { checkBotAnswer, doubtBotAnswerer, doubtBotConfigFromEnv } from "../lib/platform/doubt-bot-service.ts";
 
 /**
@@ -194,4 +195,36 @@ test("a Meta recusa o envio: a resposta do robô fica como sugestão, sem afirma
   assert.equal(result.autoReply, false);
   assert.equal(result.suggestion, "A loja abre às 8h.", "o atendente ainda recebe o texto como sugestão");
   assert.ok(repo.audits.some((audit) => audit.action === "whatsapp.autoreply.blocked"));
+});
+
+test("cumprimento no horário comercial: o robô pergunta o assunto com o menu da triagem", async () => {
+  const { docs, config } = base(() => resposta("não deve ser chamado"));
+  const channel = new MemoryChannelRepository();
+  const tickets = new MemoryTicketRepository();
+  const enviados = [];
+  const metaConfig = { accessToken: "T", phoneNumberId: "999", graphVersion: "v26.0", fetcher: async (_url, init) => { enviados.push(JSON.parse(init.body)); return { status: 200, json: async () => ({ messages: [{ id: `wamid.S${enviados.length}` }] }) }; } };
+  let n = 0;
+  const receber = async (text) => {
+    const wamid = `wamid.G${++n}`;
+    const triage = await startTriage(tickets, { channel: CHANNEL_NAME, conversationId: CLIENTE, lookup: async () => undefined, offHours: false });
+    const auto = await metaAutoReplyOptions({
+      enabled: true, states: new MemoryConversationStateRepository(), messages: channel, claims: new MemoryReplyRepository(), config: metaConfig, channel: CHANNEL_NAME,
+      delivery: { begin: async () => "t", finish: async () => {}, settleUncertain: async () => {} },
+      customerMessageAt: new Date().toISOString(), awaitingAnswer: triage?.awaitingAnswer,
+    }, CLIENTE);
+    return processChannelMessage(channel, { externalConversationId: CLIENTE, text, idempotencyKey: wamid, correlationId: `c-${wamid}` }, new MemorySupportMetricsRepository(), {
+      autoReply: false, triage: triage?.hooks,
+      doubtBot: auto.autoReply && auto.send ? { send: auto.send, answer: doubtBotAnswerer(config, () => docs.list(200)) } : undefined,
+    });
+  };
+  const result = await receber("oi");
+  assert.equal(result.status, "clarifying");
+  assert.equal(result.autoReply, true);
+  assert.equal(enviados.length, 1);
+  assert.match(enviados[0].text.body, /assistente virtual da BBNET/);
+  assert.match(enviados[0].text.body, /Protocolo do atendimento:/);
+  // A resposta ao menu vira assunto e segue para o atendente: nada novo sai.
+  const escolha = await receber("3");
+  assert.equal(escolha.autoReply, false);
+  assert.equal(enviados.length, 1);
 });

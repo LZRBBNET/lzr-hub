@@ -15,6 +15,10 @@ O n8n **não** tem o token da Meta nem acesso ao IXC. Ele recebe texto e devolve
 
 Só `general_information` e `sales_inquiry` (`DOUBT_INTENTS`), e só quando a **base de conhecimento** tem trecho que sustente (documento publicado e dentro da validade). Sem trecho o n8n nem é chamado. Fatura, bloqueio, sem internet, OS e cancelamento seguem os fluxos do LZR.
 
+Cumprimento ou pedido vago ("oi") também é respondido: o robô se apresenta como assistente virtual, manda o protocolo e o menu numerado de assuntos (o mesmo da triagem). A escolha do cliente vira o assunto e segue para o atendente.
+
+Conversa com **responsável humano** (botão "Com você" / "Minhas") nunca recebe resposta do robô: para devolver, use **Devolver à IA**.
+
 Uma resposta por espera: depois que a IA respondeu, as próximas falas do cliente viram sugestão até um atendente responder (mesma regra da resposta automática).
 
 ## Travas, todas caindo na sugestão ao atendente

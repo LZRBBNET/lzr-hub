@@ -333,6 +333,18 @@ export async function processChannelMessage(
     if (answered) return answered;
   }
 
+  // Cumprimento ou pedido vago ("oi") no horário comercial: o robô também pergunta o assunto,
+  // como faria alguém atendendo. É o mesmo menu da triagem; a resposta do cliente a ele vira
+  // assunto e segue para o atendente (os autoatendimentos continuam atrás de `autoReply`).
+  if (!options.autoReply && options.doubtBot && !menuIntent) {
+    const asking = options.triage?.clarification(classified);
+    if (asking) {
+      return triageTurn(repository, input, metrics, { ...options, autoReply: true, send: options.doubtBot.send }, {
+        text: asking.text, interactive: asking.interactive, status: CLARIFYING_STATUS, intent: classified.intent, label: "Pergunta do assunto", clarifying: true,
+      }, classified);
+    }
+  }
+
   const result = runAgentPipeline(input.text, history, {
     channel: "whatsapp",
     intentOverride: { intent: classified.intent, confidence: classified.confidence },
