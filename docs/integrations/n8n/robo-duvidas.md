@@ -3,7 +3,7 @@
 No **horário comercial** o LZR pede ao n8n a resposta de uma **dúvida** e a envia ao cliente pelo WhatsApp. Fora do horário quem fala é a triagem (`FEATURE_OFF_HOURS_AUTOREPLY`).
 
 ```
-cliente → Meta → LZR ──(pergunta + trechos da base)──► n8n ──► Groq (Llama 3.3 70B)
+cliente → Meta → LZR ──(pergunta + trechos da base)──► n8n ──► Groq (gpt-oss-120b)
                   ▲                                      │
                   └────────── texto da resposta ◄────────┘
 LZR confere o texto e envia pela Cloud API
@@ -30,7 +30,7 @@ Uma resposta por espera: depois que a IA respondeu, as próximas falas do client
 1. **Credenciais** (Credentials → Create):
    - *Header Auth* com nome `Authorization` e valor `Bearer <SEGREDO>` — é o que protege o webhook. `<SEGREDO>` é uma sequência aleatória longa que você gera (não use senha reaproveitada). Deve ser **igual** ao `N8N_BOT_SECRET` do Railway.
    - *Header Auth* com nome `Authorization` e valor `Bearer <GROQ_API_KEY>` — para chamar a Groq.
-2. **Importar** `robo-duvidas.workflow.json` (menu ⋯ → Import from file). Abra o nó **Pergunta do LZR** e escolha a primeira credencial; abra **Groq (Llama 3.3 70B)** e escolha a segunda.
+2. **Importar** `robo-duvidas.workflow.json` (menu ⋯ → Import from file). Abra o nó **Pergunta do LZR** e escolha a primeira credencial; abra **Groq (gpt-oss-120b)** e escolha a segunda.
 3. **Ativar** o fluxo (botão *Active*). A URL de produção do webhook é `https://n8n.bbnetup.com.br/webhook/duvidas` — não a de teste (`/webhook-test/`).
 4. Teste de fora, sem passar pelo WhatsApp:
 
