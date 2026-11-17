@@ -55,3 +55,15 @@ Deve voltar `{"answer":"..."}`. Sem o cabeçalho, 403.
 | `FEATURE_N8N_BOT` | `true` — **por último**, depois de testar o webhook |
 
 Para mudar o tom ou as regras do robô, edite o prompt no nó **Monta o pedido ao modelo**. O LZR continua conferindo o texto que volta, então um prompt ruim no n8n não vira promessa falsa ao cliente.
+
+## Modo autônomo (`FEATURE_AI_AGENT`)
+
+Com `FEATURE_AI_AGENT=true` (mais `N8N_BOT_URL` e `N8N_BOT_SECRET`), o mesmo fluxo vira o atendente de primeira linha, **a qualquer hora**:
+
+- a IA responde **cada fala** do cliente pela base de conhecimento, guiando passo a passo;
+- segunda via, PIX e diagnóstico de conexão continuam pelos fluxos do LZR (com CPF do titular);
+- pedido de atendente, cancelamento, reclamação e desconto vão direto para a fila;
+- quando a resposta diz que "um atendente" vai fazer algo, a conversa fica na fila e a IA se cala até alguém clicar **Devolver à IA**;
+- conversa que a IA resolveu **sai da fila** sozinha.
+
+O prompt do nó **Monta o pedido ao modelo** devolve `NAO_SEI` quando o cliente já fez o que a base orienta e o problema continua — é o que leva a conversa ao atendente em vez de repetir o mesmo passo.

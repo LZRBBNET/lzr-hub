@@ -113,15 +113,27 @@ export function metaAutoReplySender(deps: MetaAutoReplyDeps): AutoReplySender {
  * pergunta seria um beco. Cada pergunta tem limite (o assunto uma vez, o CPF duas).
  */
 export async function metaAutoReplyOptions(
-  deps: MetaAutoReplyDeps & { enabled: boolean; states: ConversationStateRepository; messages: Pick<ChannelRepository, "getHistory">; awaitingAnswer?: boolean },
+  deps: MetaAutoReplyDeps & {
+    enabled: boolean; states: ConversationStateRepository; messages: Pick<ChannelRepository, "getHistory">; awaitingAnswer?: boolean;
+    /**
+     * Modo autônomo (`FEATURE_AI_AGENT`): a IA conduz a conversa e responde cada fala,
+     * sem o limite de uma por espera. Ela para quando passa para o atendente
+     * (`handedOff`) ou quando um humano assume — o que vier primeiro.
+     */
+    conversational?: boolean; handedOff?: boolean;
+  },
   conversationId: string,
 ): Promise<Pick<ChannelOptions, "autoReply" | "send">> {
   if (!deps.enabled) return { autoReply: false };
   try {
     const row = await deps.states.get(deps.channel, conversationId);
     if (!botMayReply(row)) return { autoReply: false };
-    const history = await deps.messages.getHistory(deps.channel, conversationId);
-    if (!deps.awaitingAnswer && autoReplyUsed(history, row?.status === "resolved" ? row.resolvedAt : null)) return { autoReply: false };
+    if (deps.conversational) {
+      if (deps.handedOff && !deps.awaitingAnswer) return { autoReply: false };
+    } else {
+      const history = await deps.messages.getHistory(deps.channel, conversationId);
+      if (!deps.awaitingAnswer && autoReplyUsed(history, row?.status === "resolved" ? row.resolvedAt : null)) return { autoReply: false };
+    }
   } catch {
     return { autoReply: false };
   }

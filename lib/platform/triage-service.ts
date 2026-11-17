@@ -81,6 +81,15 @@ export async function openOrContinueTicket(
 }
 
 /** Atendimento aberto fecha quando alguém resolve a conversa. A próxima fala abre outro, com outro protocolo. */
+/**
+ * "Devolver à IA" depois de a IA ter passado para o atendente: o atendimento volta
+ * a ser dela. Sem isso, a conversa devolvida continuaria calada até fechar.
+ */
+export async function resumeTicketForAi(repository: TicketRepository, channel: string, conversationId: string): Promise<void> {
+  const open = await repository.findOpen(channel, conversationId);
+  if (open?.stage === "handoff") await repository.update(open.id, { stage: "routed" });
+}
+
 export async function closeOpenTicket(repository: TicketRepository, channel: string, conversationId: string, now = Date.now()): Promise<void> {
   const open = await repository.findOpen(channel, conversationId);
   if (open) await repository.update(open.id, { status: "closed", closedAt: iso(now), closedReason: "resolved" });
@@ -142,7 +151,7 @@ export function knownCustomer(ticket: TicketRow): CustomerLookup {
 export async function recordTriage(
   repository: TicketRepository,
   ticket: TicketRow,
-  entry: { intent: string; source: string; confidence: number; clarifying: boolean; delivered: boolean; protocolIncluded: boolean; now?: number },
+  entry: { intent: string; source: string; confidence: number; clarifying: boolean; delivered: boolean; protocolIncluded: boolean; handoff?: boolean; now?: number },
 ): Promise<void> {
   const patch: TicketPatch = {};
   const confident = entry.source === "menu" || (entry.confidence >= CLARIFY_BELOW && entry.intent !== "general_information");
@@ -156,7 +165,11 @@ export async function recordTriage(
   // pergunta (modo observação) deixa a etapa como está: se a resposta automática
   // for ligada no meio, a pergunta ainda pode ser feita.
   let stage: TicketStage | undefined;
-  if (entry.clarifying) stage = entry.delivered ? "clarifying" : undefined;
+  // A IA disse ao cliente que um atendente continua: daqui em diante ela se cala
+  // (modo autônomo). Só vale se a frase chegou — sugestão não passou nada a ninguém.
+  if (entry.handoff && entry.delivered) stage = "handoff";
+  else if (ticket.stage === "handoff") stage = undefined;
+  else if (entry.clarifying) stage = entry.delivered ? "clarifying" : undefined;
   else if (confident || ticket.stage === "clarifying") stage = "routed";
   if (stage) patch.stage = stage;
   if (entry.delivered && entry.protocolIncluded && !ticket.protocolSentAt) patch.protocolSentAt = iso(entry.now ?? Date.now());
@@ -419,7 +432,8 @@ export function triageHooks(repository: TicketRepository, ticket: TicketRow, dia
       const lines: string[] = [];
       if (ticket.protocol && !ticket.protocolSentAt) { lines.push(protocolFooter(ticket.protocol)); protocolInFooter = true; }
       // A abertura fora do horário já diz quando há gente; nas respostas, a promessa "um atendente" ganha data.
-      if (mode.offHours && !context?.clarifying) lines.push(offHoursNote(at()));
+      // Resposta que resolve (`handoff: false`) não precisa: ninguém foi prometido.
+      if (mode.offHours && !context?.clarifying && context?.handoff !== false) lines.push(offHoursNote(at()));
       return lines.length ? lines.join("\n") : undefined;
     },
     record: async (entry) => {
@@ -439,7 +453,7 @@ export function triageHooks(repository: TicketRepository, ticket: TicketRow, dia
 export async function startTriage(
   repository: TicketRepository,
   input: { channel: string; conversationId: string; lookup: CustomerLookup; diagnose?: Diagnose; invoice?: InvoiceOptions; offHours?: boolean; now?: number },
-): Promise<{ ticket: TicketRow; hooks: TriageHooks; knownCustomer: CustomerLookup; awaitingAnswer: boolean } | undefined> {
+): Promise<{ ticket: TicketRow; hooks: TriageHooks; knownCustomer: CustomerLookup; awaitingAnswer: boolean; handedOff: boolean } | undefined> {
   try {
     const { ticket: opened } = await openOrContinueTicket(repository, input);
     const ticket = await identifyTicketCustomer(repository, opened, input.lookup);
@@ -447,6 +461,8 @@ export async function startTriage(
       ticket, hooks: triageHooks(repository, ticket, input.diagnose, input.invoice, { offHours: input.offHours, now: input.now === undefined ? undefined : () => input.now as number }), knownCustomer: knownCustomer(ticket),
       // A IA perguntou algo (assunto ou CPF): a resposta do cliente merece resposta.
       awaitingAnswer: ticket.stage === "clarifying" || awaitingCpf(ticket),
+      // A IA passou para o atendente neste atendimento: no modo autônomo, ela não volta a falar sozinha.
+      handedOff: ticket.stage === "handoff",
     };
   } catch {
     return undefined;

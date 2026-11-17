@@ -84,6 +84,25 @@ export function buildClassifierInput(message: string, context: ChatMessage[] = [
 export interface LlmConfig { apiKey: string; model: string; baseUrl: string; fetcher?: typeof fetch }
 
 /**
+ * Modelo padrão na Groq. O `llama-3.3-70b-versatile`, padrão anterior, saiu do catálogo
+ * (a Groq responde "model_not_found") — e como a falha cai na regex em silêncio, o
+ * classificador passou a ser só regex sem ninguém notar. Medido em 17/11/2026 com o
+ * prompt deste arquivo: 8 de 8 mensagens reais classificadas certo, 0,3–0,9 s.
+ */
+export const DEFAULT_LLM_MODEL = "openai/gpt-oss-120b";
+
+/**
+ * Parâmetros de tamanho da resposta. Modelo de raciocínio (gpt-oss) gasta tokens
+ * pensando antes de responder: com o teto antigo (60) a resposta saía vazia. Neles
+ * vai `reasoning_effort: low` e um teto maior; nos outros, o `max_tokens` de sempre.
+ */
+export function completionLimits(model: string, maxTokens: number): Record<string, unknown> {
+  return /gpt-oss/.test(model)
+    ? { max_completion_tokens: Math.max(maxTokens, 400), reasoning_effort: "low" }
+    : { max_tokens: maxTokens };
+}
+
+/**
  * Lê a configuração do ambiente. Sem `GROQ_API_KEY` devolve undefined, e quem
  * chama usa a regex — a flag não liga nada sozinha se o segredo não estiver lá.
  */
@@ -93,7 +112,7 @@ export function llmConfigFromEnv(env: Record<string, string | undefined> = proce
   if (!apiKey) return undefined;
   return {
     apiKey,
-    model: env.LLM_MODEL?.trim() || "llama-3.3-70b-versatile",
+    model: env.LLM_MODEL?.trim() || DEFAULT_LLM_MODEL,
     baseUrl: env.LLM_BASE_URL?.trim() || "https://api.groq.com/openai/v1",
   };
 }
@@ -149,7 +168,7 @@ export async function classifyIntent(
       body: JSON.stringify({
         model: config.model,
         temperature: 0,
-        max_tokens: 60,
+        ...completionLimits(config.model, 60),
         messages: [
           { role: "system", content: SYSTEM_PROMPT },
           { role: "user", content: buildClassifierInput(message, context) },

@@ -73,10 +73,20 @@ export function botMayReply(row: ConversationStateRow | undefined): boolean {
  */
 export const AI_SENDER = "ia";
 export const AI_SENDER_NAME = "IA";
+/**
+ * A IA **atendeu** (modo autônomo, `FEATURE_AI_AGENT`): a resposta resolve a fala
+ * do cliente em vez de prometer um atendente. Conta como resposta — a conversa
+ * sai da fila. Quando a IA passa para o atendente, a resposta continua `ia` e a
+ * conversa fica na fila, como a primeira resposta sempre ficou.
+ */
+export const AI_AGENT_SENDER = "ia-agente";
+export const isAiSender = (sentBy: string | null | undefined) => sentBy === AI_SENDER || sentBy === AI_AGENT_SENDER;
 
 type SentRow = { role: string; sentBy?: string | null; createdAt?: string };
-const isAiReply = (row: SentRow) => row.role === "agent" && row.sentBy === AI_SENDER;
-const isHumanReply = (row: SentRow) => row.role === "agent" && !!row.sentBy && row.sentBy !== AI_SENDER;
+const isAiReply = (row: SentRow) => row.role === "agent" && isAiSender(row.sentBy);
+/** Só a primeira resposta (ou a passagem para o atendente) mantém a espera. */
+const isWaitingAiReply = (row: SentRow) => row.role === "agent" && row.sentBy === AI_SENDER;
+const isHumanReply = (row: SentRow) => row.role === "agent" && !!row.sentBy && !isAiSender(row.sentBy);
 
 /**
  * A resposta automática é **primeira resposta**, uma por espera. As respostas
@@ -105,7 +115,8 @@ export function autoReplyUsed(historyOldestFirst: SentRow[], resolvedAt: string 
 export function awaitingSinceFrom(rowsNewestFirst: SentRow[]): string | undefined {
   let since: string | undefined;
   for (const row of rowsNewestFirst) {
-    if (row.role === "suggestion" || isAiReply(row)) continue;
+    // A IA que atendeu (modo autônomo) respondeu de verdade: a espera para ali.
+    if (row.role === "suggestion" || isWaitingAiReply(row)) continue;
     if (row.role !== "customer") break;
     since = row.createdAt;
   }

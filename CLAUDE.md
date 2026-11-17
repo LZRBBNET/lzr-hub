@@ -105,6 +105,7 @@ Flags relevantes:
 | `FEATURE_AI_INVOICE` | Com o titular confirmado pelo CPF, a IA **manda os dados da fatura** (vencimento, valor e o **PIX copia e cola**). Só vale com `FEATURE_N8N_AUTOREPLY` | desligada — PIX provado no IXC real em 16/11; pode ligar junto com a resposta automática |
 | `FEATURE_OFF_HOURS_AUTOREPLY` | **Fora do horário comercial** (seg–sex, 8h–12h e 14h–18h, Brasília, exceto feriado) a IA responde sozinha: lista clicável de assuntos, respostas aprovadas, 2ª via com PIX e resposta pelo diagnóstico. Dentro do horário nada muda | desligada |
 | `FEATURE_N8N_BOT` | **Robô de dúvidas** no horário comercial: o LZR pede ao n8n (Groq) a resposta de uma dúvida que a base de conhecimento sustenta e a envia. Exige `N8N_BOT_URL` (https) e `N8N_BOT_SECRET`. Ver `docs/integrations/n8n/robo-duvidas.md` | desligada |
+| `FEATURE_AI_AGENT` | **Modo autônomo**: a IA atende sozinha, a qualquer hora, e **conduz a conversa** — responde cada fala pela base de conhecimento (n8n), roda os autoatendimentos e só passa ao atendente o que exige gente (aí se cala até devolverem a conversa). Usa `N8N_BOT_URL`/`N8N_BOT_SECRET`; sem eles não liga. Ver *Modo autônomo* abaixo | desligada |
 | `FEATURE_QUEUES` | Filas reais (Redis/BullMQ) | desligada |
 | `FEATURE_IXC_WRITE` | Escrita no ERP — as 4 operações do catálogo (segunda via, OS, renegociação, cadastro de cliente) | **ligada** |
 | `FEATURE_IXC_FULL_BASE` | Leitura da **base inteira** do IXC, não só da allowlist | **ligada** |
@@ -276,6 +277,16 @@ O que as sondagens (`scripts/ixc-probe-self-service.mjs`) e a coleção Postman 
 - **Dentro do horário, o robô de dúvidas** (`doubt-bot-service.ts`, `FEATURE_N8N_BOT`): só para `general_information` e `sales_inquiry` com trecho na base; fatura, bloqueio, sem internet, OS e cancelamento não passam por ele. O n8n recebe texto sanitizado e devolve texto — não tem a Meta nem o IXC; o LZR confere (`checkBotAnswer`: sem PII, link, "já abri…") e envia pelas mesmas travas da resposta automática. Uma por espera. Falha → sugestão + `whatsapp.doubtbot.failed`.
 - Para a IA mandar a fatura sozinha também é preciso `FEATURE_AI_INVOICE`.
 
+**Modo autônomo** (`FEATURE_AI_AGENT`, pedido do Vinícius em 17/11/2026: "quero que ela mesma responda a pessoa"). Liga a IA a qualquer hora (`botSpeaks`) e troca a regra "uma por espera" por **conversa** (`conversational` em `metaAutoReplyOptions`):
+
+- **Cada fala** passa pelos fluxos de sempre (CPF → fatura → PIX, diagnóstico, menu na primeira fala vaga) e, no lugar da resposta aprovada fixa, pelo **robô da base** (n8n, `doubt-bot-service.ts`) — qualquer assunto, menos os que exigem gente (`AGENT_HUMAN_INTENTS`: pedido de atendente, cancelamento, reclamação, desconto, pedido não autorizado) e fatura/PIX (`AGENT_FLOW_INTENTS`, que só saem pela conferência do titular). O robô recebe o **documento inteiro**, não um parágrafo: com um parágrafo ele repetia o primeiro passo a quem já tinha reiniciado.
+- **Passar ao atendente** (`stage = handoff` no atendimento): quando a resposta promete gente (`promisesHuman`: "um atendente…") ou o assunto exige. Daí a IA **se cala** até alguém clicar **Devolver à IA** (`resumeTicketForAi`) ou o atendimento fechar. "Não entendi" (baixa confiança) **não** passa a conversa — senão um "obrigado" calaria a IA.
+- **Fila**: resposta que atendeu é gravada com `sent_by = 'ia-agente'` e **tira a conversa da fila** (`awaitingSinceFrom`); a que passou ao atendente continua `ia` e a conversa fica na fila, como a primeira resposta sempre ficou. A tela mostra "IA" nas duas.
+- "obrigado"/"ok" ganham cortesia (`courtesyReply`), não o menu. Fora do horário, o aviso "o atendimento com pessoas volta…" sai só quando a IA passa ao atendente — a cada fala ele se repetiria.
+- Humano com a conversa (assumiu ou respondeu pela tela) continua mandando: a IA não fala por cima, em nenhum modo.
+- **Base inicial**: migração `0022_seed_knowledge_base` cria 19 documentos publicados (horário, sem conexão com luz LOS e reinício, lentidão, Wi-Fi, senha, segunda via, já paguei, bloqueio e desbloqueio de confiança, formas de pagamento, planos, mudança de endereço, titularidade, visita técnica, protocolo, quedas, velocidade contratada pela Resolução Anatel 765/2023, aplicativo específico, roteador novo). **Sem preço, endereço, telefone ou link**: o que é da BBNET e não estava confirmado fica com "um atendente informa". Editáveis na tela; `ON CONFLICT DO NOTHING` não ressuscita documento apagado. Testado contra o n8n de produção com 8 perguntas reais (17/11): responde, guia passo a passo, passa ao atendente quando o cliente já tentou, recusa instrução embutida.
+- **Modelo**: o padrão do classificador e do copiloto passou a `openai/gpt-oss-120b` (`DEFAULT_LLM_MODEL`) — o `llama-3.3-70b-versatile` saiu da Groq e, como a falha cai na regex em silêncio, o classificador era só regex. Medido: 8 de 8 mensagens reais certas, 0,3–0,9 s. Modelo de raciocínio leva `reasoning_effort: low` e teto maior (`completionLimits`).
+
 **Resposta do atendente pela tela** (`FEATURE_ATTENDANT_REPLY`, `lib/platform/attendant-reply-service.ts`). Segue a régua da escrita no ERP: idempotência (chave por clique, reservada em `channel_idempotency_keys` **antes** de chamar a Meta) → política (login obrigatório, texto de homologação recusado, janela de 24 horas) → flag → chamada. Bloqueio e falha também entram na auditoria. Em **timeout a reserva não é solta**: a mensagem pode ter saído, e liberar convidaria um reenvio em dobro. A autoria fica em `channel_messages.sent_by`; nulo é "não registrado", nunca "a IA". Antes de responder, a mensagem do cliente é marcada como lida (melhor esforço, pelo `wamid` em `external_message_id`).
 
 ## Auditoria de contratos
@@ -330,7 +341,7 @@ Tabela é `.table` com `.tr` em grade e as colunas em `--cols`. ⚠️ Cada `.tr
 npm run typecheck && npm run lint && npm test
 ```
 
-Os três precisam passar. Hoje a suíte tem **1343 testes** (18 falhas conhecidas de tela/inicialização sintética, vindas da frente do Breno).
+Os três precisam passar. Hoje a suíte tem **1354 testes** (18 falhas conhecidas de tela/inicialização sintética, vindas da frente do Breno).
 
 ## Segurança — pontos já decididos
 

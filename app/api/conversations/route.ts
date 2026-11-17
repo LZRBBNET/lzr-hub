@@ -30,7 +30,8 @@ export async function GET(request: Request) {
   // um campo ativo que sempre falha seria pior que um campo desabilitado.
   const channelState = {
     enabled: channelEnabled,
-    autoReply: channelEnabled && process.env.FEATURE_N8N_AUTOREPLY === "true",
+    // O modo autônomo também é "a IA responde sozinha": a tela não pode dizer "modo observação".
+    autoReply: channelEnabled && (process.env.FEATURE_N8N_AUTOREPLY === "true" || process.env.FEATURE_AI_AGENT === "true"),
     canReply: Boolean(guard.user && can(guard.user.role, "support.write")) && attendantReplyEnabled() && authEnforced() && Boolean(metaSendConfigFromEnv()),
   };
 

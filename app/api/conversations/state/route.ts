@@ -3,7 +3,7 @@ import { getDb } from "@/db";
 import { CHANNEL_NAME } from "@/lib/platform/n8n-channel-service";
 import { DbConversationStateRepository, changeConversationState } from "@/lib/platform/conversation-state-service";
 import { authorize } from "@/lib/platform/session-guard";
-import { DbTicketRepository, closeOpenTicket } from "@/lib/platform/triage-service";
+import { DbTicketRepository, closeOpenTicket, resumeTicketForAi } from "@/lib/platform/triage-service";
 
 /**
  * Assumir, devolver para a IA, resolver ou reabrir uma conversa.
@@ -32,6 +32,8 @@ export async function POST(request: Request) {
     // Resolver fecha o atendimento: a próxima fala do cliente ganha outro protocolo.
     // Melhor esforço — a conversa já está resolvida, e o atendimento parado fecha sozinho em 24 horas.
     if (result.changed && result.state.status === "resolved") await closeOpenTicket(new DbTicketRepository(db), CHANNEL_NAME, conversationId.trim()).catch(() => undefined);
+    // Devolver à IA depois de ela ter passado ao atendente: o atendimento volta a ser dela (modo autônomo).
+    if (result.changed && result.state.status === "open" && !result.state.assigneeId) await resumeTicketForAi(new DbTicketRepository(db), CHANNEL_NAME, conversationId.trim()).catch(() => undefined);
     return NextResponse.json({ ok: true, state: result.state, changed: result.changed });
   } catch {
     return NextResponse.json({ ok: false, status: "unconfirmed", error: "Mudança não confirmada. Atualize e confira o responsável antes de tentar novamente." }, { status: 503 });

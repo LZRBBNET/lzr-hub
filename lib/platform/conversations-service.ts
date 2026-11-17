@@ -2,7 +2,7 @@ import { and, desc, eq, exists, ilike, inArray, like, notLike, or, sql } from "d
 import type { AnyPgColumn } from "drizzle-orm/pg-core";
 import { NON_CUSTOMER_LIKE, isNonCustomerConversation } from "./conversation-scope.ts";
 import { channelContacts, channelMessages, conversationOutcomes, conversationStates, users } from "../../db/schema.ts";
-import { AI_SENDER, AI_SENDER_NAME, awaitingSinceFrom, effectiveState, type ConversationStateRow, type EffectiveState } from "./conversation-state-shared.ts";
+import { AI_SENDER_NAME, awaitingSinceFrom, isAiSender, effectiveState, type ConversationStateRow, type EffectiveState } from "./conversation-state-shared.ts";
 
 /**
  * Conversas reais recebidas pelos canais (hoje só o n8n/WhatsApp). Nada aqui é
@@ -69,7 +69,7 @@ export { awaitingSinceFrom };
 
 /** O nome que aparece na bolha. A resposta automática não tem conta: é a IA, e a tela diz isso. */
 const senderName = (sentBy: string | null | undefined, names: Map<string, string>) =>
-  !sentBy ? undefined : sentBy === AI_SENDER ? AI_SENDER_NAME : names.get(sentBy);
+  !sentBy ? undefined : isAiSender(sentBy) ? AI_SENDER_NAME : names.get(sentBy);
 
 /**
  * A janela em que a Meta aceita texto livre: 24 horas desde a última fala do

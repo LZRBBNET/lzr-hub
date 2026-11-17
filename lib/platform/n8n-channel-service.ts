@@ -12,8 +12,8 @@ import type { ChatMessage, Intent } from "../agent/types.ts";
 import { appVersion } from "../runtime/app-version.ts";
 import { traceAgentResult } from "../observability/trace-agent-result.ts";
 import { type ReplyOverrides } from "./reply-templates-shared.ts";
-import { AI_SENDER } from "./conversation-state-shared.ts";
-import { listAsText, type InteractiveList } from "./triage-shared.ts";
+import { AI_AGENT_SENDER, AI_SENDER } from "./conversation-state-shared.ts";
+import { TRIAGE_MENU, listAsText, type InteractiveList } from "./triage-shared.ts";
 import type { DoubtBotInput, DoubtBotResult } from "./doubt-bot-service.ts";
 import {
   CSAT_QUESTION,
@@ -111,15 +111,45 @@ export interface ChannelOptions {
   /** Triagem do atendimento (rota da Meta): menu de assunto, protocolo e setor. Ver `triage-service.ts`. */
   triage?: TriageHooks;
   /**
-   * Robô de dúvidas (n8n), no horário comercial. Só vale com `autoReply` falso: é a
-   * exceção em que a IA fala sozinha **uma** vez, e só de dúvida que a base sustenta.
-   * Qualquer falha cai no caminho de sempre (sugestão ao atendente). Ver `doubt-bot-service.ts`.
+   * Robô de dúvidas (n8n). Dois modos:
+   * - sem `agent`, no horário comercial: só vale com `autoReply` falso — a exceção em que a
+   *   IA fala sozinha **uma** vez, e só de dúvida que a base sustenta;
+   * - com `agent` (`FEATURE_AI_AGENT`, modo autônomo): a IA conduz a conversa e o robô
+   *   responde qualquer assunto que não exija gente (`AGENT_HUMAN_INTENTS`), a cada fala.
+   * Qualquer falha cai no caminho de sempre (resposta aprovada). Ver `doubt-bot-service.ts`.
    */
-  doubtBot?: { answer(input: DoubtBotInput): Promise<DoubtBotResult>; send: AutoReplySender };
+  doubtBot?: { answer(input: DoubtBotInput): Promise<DoubtBotResult>; send: AutoReplySender; agent?: boolean };
 }
 
 /** O que o robô de dúvidas pode responder. O resto (fatura, bloqueio, sem internet, cancelamento) tem fluxo próprio. */
 export const DOUBT_INTENTS: ReadonlySet<string> = new Set(["general_information", "sales_inquiry"]);
+
+/**
+ * O que exige gente mesmo no modo autônomo: o cliente pediu atendente, quer cancelar,
+ * reclama formalmente, pede desconto ou algo que a IA não pode fazer. A IA responde a
+ * resposta aprovada (que promete um atendente) e se cala até alguém devolver a conversa.
+ */
+export const AGENT_HUMAN_INTENTS: ReadonlySet<string> = new Set(["human_handoff", "cancellation_risk", "complaint", "financial_discount_request", "unauthorized_request"]);
+
+/**
+ * Fatura e PIX têm fluxo próprio (CPF do titular → fatura → PIX). Quando o fluxo não
+ * pode rodar (número sem cadastro único), a base não substitui a conferência: segue a
+ * resposta aprovada, que passa ao financeiro.
+ */
+export const AGENT_FLOW_INTENTS: ReadonlySet<string> = new Set(["financial_invoice", "financial_pix"]);
+
+/** A frase promete um atendente: no modo autônomo isso é passar a conversa — a IA não fala por cima da promessa. */
+export const promisesHuman = (text: string) => /\b(um|uma) atendente\b|\ba equipe precisa\b/i.test(text);
+
+/** Agradecimento ou "ok" no fim da conversa: no modo autônomo a IA responde com cortesia em vez do menu de assuntos. */
+const THANKS = /^(muito\s+)?(obrigad[oa]|obg|brigad[oa]|valeu|vlw|agrade[cç]o)\b[^?]{0,40}$/i;
+const ACK = /^(ok|okay|blz|beleza|certo|entendi|show|perfeito|t[aá] bom|tudo bem|combinado)[!.\s]*$/i;
+export function courtesyReply(text: string): string | undefined {
+  const value = text.trim();
+  if (THANKS.test(value)) return "Por nada! Se precisar de mais alguma coisa, é só chamar por aqui.";
+  if (ACK.test(value)) return "Combinado! Se precisar de mais alguma coisa, é só me chamar.";
+  return undefined;
+}
 
 /**
  * O que a triagem acrescenta ao turno. O canal não conhece atendimento nem
@@ -138,8 +168,8 @@ export interface TriageHooks {
   /** Depois de saber o assunto: um passo de autoatendimento no lugar da resposta aprovada (pedir o CPF, conferir o titular). */
   afterClassify?(classified: Classification, context: { text: string; autoReply: boolean }): Promise<TriageTurn | undefined>;
   /** O que vai no fim da resposta: o protocolo (na primeira) e, fora do horário, quando o atendimento com pessoas volta. */
-  footer(context?: { clarifying?: boolean }): string | undefined;
-  record(entry: { intent: string; source: string; confidence: number; clarifying: boolean; delivered: boolean; protocolIncluded: boolean }): Promise<void>;
+  footer(context?: { clarifying?: boolean; handoff?: boolean }): string | undefined;
+  record(entry: { intent: string; source: string; confidence: number; clarifying: boolean; delivered: boolean; protocolIncluded: boolean; handoff?: boolean }): Promise<void>;
 }
 
 /**
@@ -157,6 +187,8 @@ export interface TriageTurn {
   clarifying?: boolean;
   /** Vai como lista clicável; o histórico guarda o texto e as opções numeradas. */
   interactive?: InteractiveList;
+  /** A frase passa para o atendente. Sem valor, vale `promisesHuman(text)`. */
+  handoff?: boolean;
   after?(delivered: boolean): Promise<void>;
 }
 
@@ -179,9 +211,16 @@ async function deliver(options: ChannelOptions, input: ChannelMessageInput, text
   }
 }
 
-/** O que o canal enviou leva o `wamid` (casa o recibo de entrega) e o autor `ia`; o que o n8n diz ter enviado fica sem autor — não registrado. */
-const sentFields = (delivery: Delivery): Pick<ChannelMessageRow, "externalMessageId" | "sentBy"> =>
-  delivery.sent && delivery.messageId ? { externalMessageId: delivery.messageId, sentBy: AI_SENDER } : {};
+/**
+ * O que o canal enviou leva o `wamid` (casa o recibo de entrega) e o autor da IA; o que o
+ * n8n diz ter enviado fica sem autor — não registrado. `ia-agente` = a IA atendeu (sai da
+ * fila); `ia` = primeira resposta ou passagem para o atendente (fica na fila).
+ */
+const sentFields = (delivery: Delivery, sender: string = AI_SENDER): Pick<ChannelMessageRow, "externalMessageId" | "sentBy"> =>
+  delivery.sent && delivery.messageId ? { externalMessageId: delivery.messageId, sentBy: sender } : {};
+
+/** O modo autônomo está valendo nesta fala: a IA fala (`autoReply`) e conduz a conversa. */
+const agentMode = (options: ChannelOptions) => !!options.doubtBot?.agent && options.autoReply;
 
 /** A falha do envio automático tem linha própria na auditoria: "a IA tentou responder e não conseguiu" precisa ser achável. */
 async function auditFailure(repository: ChannelRepository, input: ChannelMessageInput, delivery: Delivery, text: string): Promise<void> {
@@ -307,6 +346,12 @@ export async function processChannelMessage(
 
   // O assunto escolhido no menu da triagem dispensa o classificador: o cliente disse.
   const menuIntent = options.triage?.menuChoice(input.text);
+
+  // Modo autônomo: "obrigado" e "ok" ganham cortesia, não o menu de assuntos.
+  const courtesy = !menuIntent && agentMode(options) ? courtesyReply(input.text) : undefined;
+  if (courtesy) {
+    return triageTurn(repository, input, metrics, options, { text: courtesy, status: AUTO_REPLIED_STATUS, intent: "general_information", label: "Resposta de cortesia", handoff: false }, { intent: "general_information", confidence: 1, source: "flow" });
+  }
   // Classifica antes de rodar o pipeline: sem chave configurada isto cai na
   // regex e o comportamento é idêntico ao de antes. O contexto é o que o
   // modelo precisa para entender "sim" e "continua igual".
@@ -326,10 +371,17 @@ export async function processChannelMessage(
   const step = await options.triage?.afterClassify?.(classified, { text: input.text, autoReply: options.autoReply });
   if (step) return triageTurn(repository, input, metrics, options, step, classified);
 
-  // Dúvida que a base sustenta: o robô do n8n responde, uma vez. Não entra quando a
-  // IA já fala por outro caminho (`autoReply`) nem quando o cliente escolheu no menu.
-  if (!options.autoReply && options.doubtBot && !menuIntent && DOUBT_INTENTS.has(classified.intent)) {
-    const answered = await doubtBotTurn(repository, input, metrics, options, options.doubtBot, classified, contextForClassifier(historyRows));
+  // O robô do n8n responde pela base de conhecimento. No modo autônomo, qualquer assunto
+  // que não exija gente, a cada fala; fora dele, só dúvida, uma vez, quando a IA não fala
+  // por outro caminho e o cliente não escolheu no menu.
+  const agent = agentMode(options);
+  const botAnswers = !!options.doubtBot && (agent
+    ? !AGENT_HUMAN_INTENTS.has(classified.intent) && !AGENT_FLOW_INTENTS.has(classified.intent)
+    : !options.autoReply && !menuIntent && DOUBT_INTENTS.has(classified.intent));
+  if (botAnswers && options.doubtBot) {
+    // Quem escolheu "2" no menu perguntou pelo assunto da opção, não pelo número.
+    const question = menuIntent ? TRIAGE_MENU.find((option) => option.intent === menuIntent)?.label ?? input.text : input.text;
+    const answered = await doubtBotTurn(repository, input, metrics, options, options.doubtBot, classified, contextForClassifier(historyRows), question);
     if (answered) return answered;
   }
 
@@ -360,8 +412,11 @@ export async function processChannelMessage(
     now: options.now ?? Date.now(), priorOutput: hasPriorOutput(historyRows),
     concise: servicePreferences(input.text, contextForSupport(historyRows)).conciseOpening || !!supportRequestForOpening(input.text),
   });
+  // Modo autônomo: só passa a conversa o que exige gente ou o que promete um atendente.
+  // "Não entendi" (baixa confiança) não cala a IA — ela segue conversando.
+  const handoff = agent && ((!!result.handoff.reason && result.handoff.reason !== "low_intent_confidence") || promisesHuman(opened));
   // A primeira resposta do atendimento leva o protocolo no fim.
-  const footer = options.triage?.footer();
+  const footer = options.triage?.footer(agent ? { handoff } : undefined);
   const approved = footer ? `${opened}
 
 ${footer}` : opened;
@@ -380,9 +435,10 @@ ${footer}` : opened;
     status: !delivery.sent ? SUGGESTED_STATUS
       : delivery.messageId && CLAIMS_RESOLUTION.has(result.finalStatus) ? AUTO_REPLIED_STATUS
       : result.finalStatus,
-    intent: result.intent, handoff: result.handoff.required, handoffReason: result.handoff.reason, classified, label: "Resposta",
+    intent: result.intent, handoff: result.handoff.required, handoffReason: result.handoff.reason, classified, label: handoff ? "Resposta (passada ao atendente)" : "Resposta",
+    sender: agent && !handoff ? AI_AGENT_SENDER : AI_SENDER,
   });
-  await options.triage?.record({ intent: result.intent, source: classified.source, confidence: classified.confidence, clarifying: false, delivered: delivery.sent, protocolIncluded: !!footer });
+  await options.triage?.record({ intent: result.intent, source: classified.source, confidence: classified.confidence, clarifying: false, delivered: delivery.sent, protocolIncluded: !!footer, handoff });
   return response;
 }
 
@@ -399,9 +455,10 @@ async function doubtBotTurn(
   bot: NonNullable<ChannelOptions["doubtBot"]>,
   classified: Classification,
   history: ChatMessage[],
+  question: string = input.text,
 ): Promise<ChannelResponse | undefined> {
   let result: DoubtBotResult;
-  try { result = await bot.answer({ question: input.text, intent: classified.intent, history }); } catch { result = { kind: "failed", reason: "Erro inesperado no robô de dúvidas." }; }
+  try { result = await bot.answer({ question, intent: classified.intent, history }); } catch { result = { kind: "failed", reason: "Erro inesperado no robô de dúvidas." }; }
   if (result.kind === "failed") {
     await repository.audit({
       correlationId: input.correlationId, entity: `conversation:${input.externalConversationId}`,
@@ -412,7 +469,10 @@ async function doubtBotTurn(
   }
   if (result.kind === "none") return undefined;
 
-  const footer = options.triage?.footer();
+  // A resposta da base pode prometer um atendente ("um atendente agenda a visita"): no modo
+  // autônomo isso é passar a conversa — ela fica na fila e a IA se cala, senão ninguém viria.
+  const handoff = !!bot.agent && promisesHuman(result.text);
+  const footer = options.triage?.footer(bot.agent ? { handoff } : undefined);
   const text = footer ? `${result.text}
 
 ${footer}` : result.text;
@@ -423,8 +483,10 @@ ${footer}` : result.text;
     // Primeira resposta, não atendimento: não conta como resolvido e a conversa continua na fila.
     status: delivery.sent ? AUTO_REPLIED_STATUS : SUGGESTED_STATUS,
     intent: classified.intent, handoff: false, handoffReason: null, classified, label,
+    // No modo autônomo a resposta do robô atendeu (a conversa sai da fila), salvo se ela passou ao atendente.
+    sender: bot.agent && !handoff ? AI_AGENT_SENDER : AI_SENDER,
   });
-  await options.triage?.record({ intent: classified.intent, source: classified.source, confidence: classified.confidence, clarifying: false, delivered: delivery.sent, protocolIncluded: !!footer });
+  await options.triage?.record({ intent: classified.intent, source: classified.source, confidence: classified.confidence, clarifying: false, delivered: delivery.sent, protocolIncluded: !!footer, handoff });
   return response;
 }
 
@@ -437,7 +499,10 @@ async function triageTurn(
   turn: TriageTurn,
   classified: Classification,
 ): Promise<ChannelResponse> {
-  const footer = options.triage?.footer({ clarifying: !!turn.clarifying });
+  const agent = agentMode(options);
+  const handoff = !turn.clarifying && (turn.handoff ?? promisesHuman(turn.text));
+  // O aviso de horário só deixa de sair, no modo autônomo, quando a IA resolveu: lá ele se repetiria a cada fala.
+  const footer = options.triage?.footer({ clarifying: !!turn.clarifying, handoff: agent ? handoff : undefined });
   const text = footer ? `${turn.text}\n\n${footer}` : turn.text;
   const delivery = await deliver(options, input, text, turn.interactive);
   // Lista clicável: o histórico mostra também as opções, que não estão no corpo.
@@ -445,8 +510,9 @@ async function triageTurn(
   const response = await recordTurn(repository, input, metrics, {
     content: delivery.sent ? delivery.text ?? shown : shown, delivery, status: delivery.sent ? turn.status : SUGGESTED_STATUS,
     intent: turn.intent, handoff: false, handoffReason: null, classified, label: turn.label,
+    sender: agent && !handoff ? AI_AGENT_SENDER : AI_SENDER,
   });
-  await options.triage?.record({ intent: turn.intent, source: classified.source, confidence: classified.confidence, clarifying: !!turn.clarifying, delivered: delivery.sent, protocolIncluded: !!footer });
+  await options.triage?.record({ intent: turn.intent, source: classified.source, confidence: classified.confidence, clarifying: !!turn.clarifying, delivered: delivery.sent, protocolIncluded: !!footer, handoff: agent && handoff });
   await turn.after?.(delivery.sent).catch(() => undefined);
   return response;
 }
@@ -460,13 +526,13 @@ async function recordTurn(
   repository: ChannelRepository,
   input: ChannelMessageInput,
   metrics: SupportMetricsRepository | undefined,
-  turn: { content: string; delivery: Delivery; status: string; intent: string; handoff: boolean; handoffReason: string | null; classified: Classification; label: string },
+  turn: { content: string; delivery: Delivery; status: string; intent: string; handoff: boolean; handoffReason: string | null; classified: Classification; label: string; sender?: string },
 ): Promise<ChannelResponse> {
   const { content, delivery } = turn;
   await repository.saveMessages(CHANNEL_NAME, input.externalConversationId, [
     { role: "customer", content: input.text, correlationId: input.correlationId, externalMessageId: input.idempotencyKey },
     // O `wamid` da resposta é o que casa o recibo de entrega com esta linha.
-    { role: delivery.sent ? "agent" : SUGGESTION_ROLE, content, correlationId: input.correlationId, ...sentFields(delivery) },
+    { role: delivery.sent ? "agent" : SUGGESTION_ROLE, content, correlationId: input.correlationId, ...sentFields(delivery, turn.sender) },
   ]);
 
   const response: ChannelResponse = {

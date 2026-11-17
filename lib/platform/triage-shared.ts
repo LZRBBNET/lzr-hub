@@ -211,7 +211,8 @@ export function formatProtocol(seq: number, at: Date): string {
 
 export const protocolFooter = (protocol: string) => `Protocolo do atendimento: ${protocol}`;
 
-export type TicketStage = "new" | "clarifying" | "routed";
+/** `handoff`: a IA (modo autônomo) passou para o atendente e se cala até alguém devolver a conversa a ela. */
+export type TicketStage = "new" | "clarifying" | "routed" | "handoff";
 export type TicketIdentification = "pending" | "identified" | "not_found" | "unavailable";
 
 /** O que a tela mostra do atendimento. */
@@ -242,6 +243,7 @@ export const STAGE_LABELS: Record<TicketStage, string> = {
   new: "Recebido",
   clarifying: "IA perguntou o assunto",
   routed: "Encaminhado ao setor",
+  handoff: "IA passou ao atendente",
 };
 
 export const IDENTIFICATION_LABELS: Record<TicketIdentification, string> = {

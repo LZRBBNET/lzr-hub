@@ -1,6 +1,7 @@
+import { DEFAULT_LLM_MODEL, completionLimits } from "../agent/llm-classifier.ts";
 import { sanitizeHandoffText } from "../agent/handoff.ts";
 import { searchDocuments, type KnowledgeDoc } from "./knowledge-service.ts";
-import { AI_SENDER, type EffectiveState } from "./conversation-state-shared.ts";
+import { isAiSender, type EffectiveState } from "./conversation-state-shared.ts";
 import { reasonLabel } from "./teams-shared.ts";
 
 /**
@@ -135,7 +136,7 @@ export function copilotLlmConfigFromEnv(env: Record<string, string | undefined> 
   if (!apiKey) return undefined;
   return {
     apiKey,
-    model: env.LLM_MODEL?.trim() || "llama-3.3-70b-versatile",
+    model: env.LLM_MODEL?.trim() || DEFAULT_LLM_MODEL,
     baseUrl: env.LLM_BASE_URL?.trim() || "https://api.groq.com/openai/v1",
   };
 }
@@ -178,7 +179,7 @@ export async function writeGroundedAnswer(
       method: "POST",
       headers: { Authorization: `Bearer ${config.apiKey}`, "Content-Type": "application/json" },
       body: JSON.stringify({
-        model: config.model, temperature: 0.2, max_tokens: 320,
+        model: config.model, temperature: 0.2, ...completionLimits(config.model, 320),
         messages: [
           { role: "system", content: WRITER_PROMPT },
           { role: "user", content: `Trechos da base:\n\n${context}\n\nPergunta do atendente: ${sanitizeHandoffText(question).slice(0, 600)}` },
@@ -217,6 +218,7 @@ const INTENT_PT: Record<string, string> = {
   financial_unlock: "desbloqueio", financial_discount_request: "pedido de desconto", complaint: "reclamação",
   cancellation_risk: "risco de cancelamento", human_handoff: "pedido de atendente",
   unauthorized_request: "pedido não autorizado", out_of_scope: "fora de escopo", general_information: "informação geral",
+  sales_inquiry: "planos contratação",
 };
 
 /**
@@ -299,8 +301,8 @@ export function summarizeConversation(input: SummaryInput): string {
       : "Responsável atual: ainda não atribuído a um atendente.");
   }
   // Papel agent inclui IA, atendentes e registros antigos sem autoria. Não é recibo de entrega.
-  const ai = responses.filter((message) => message.sentBy === AI_SENDER).length;
-  const human = responses.filter((message) => !!message.sentBy && message.sentBy !== AI_SENDER).length;
+  const ai = responses.filter((message) => isAiSender(message.sentBy)).length;
+  const human = responses.filter((message) => !!message.sentBy && !isAiSender(message.sentBy)).length;
   lines.push(responses.length > 0
     ? `Respostas registradas neste histórico: ${ai} da IA, ${human} de atendentes, ${responses.length - ai - human} com autoria não registrada. O registro não comprova entrega ao cliente.`
     : "Nenhuma resposta enviada está registrada neste histórico.");

@@ -1,6 +1,6 @@
 import { sanitizeHandoffText } from "../agent/handoff.ts";
 import type { ChatMessage, Intent } from "../agent/types.ts";
-import { MAX_SOURCES, findSources, type CopilotSource } from "./copilot-service.ts";
+import { MAX_SOURCES, findSources, intentTerms, type CopilotSource } from "./copilot-service.ts";
 import type { KnowledgeDoc } from "./knowledge-service.ts";
 import { containsHomologationText } from "./reply-templates-shared.ts";
 
@@ -25,14 +25,19 @@ import { containsHomologationText } from "./reply-templates-shared.ts";
 
 export const DOUBT_BOT_TIMEOUT_MS = 7000;
 export const DOUBT_BOT_MAX_ANSWER = 900;
+/** Teto por documento enviado ao n8n: os da base inicial têm até ~1.500 caracteres. */
+export const BOT_SOURCE_LIMIT = 1800;
 /** O n8n devolve isto quando os trechos não respondem. Vira "não sei" — o atendente assume. */
 export const DOUBT_BOT_REFUSAL = "NAO_SEI";
 
 export interface DoubtBotConfig { url: string; secret: string; fetcher?: typeof fetch; timeoutMs?: number }
 
-/** Liga com `FEATURE_N8N_BOT`, `N8N_BOT_URL` (https) e `N8N_BOT_SECRET`. Faltou qualquer um: desligado. */
+/**
+ * Liga com `FEATURE_N8N_BOT` (dúvidas no horário comercial) ou `FEATURE_AI_AGENT` (modo
+ * autônomo), mais `N8N_BOT_URL` (https) e `N8N_BOT_SECRET`. Faltou qualquer um: desligado.
+ */
 export function doubtBotConfigFromEnv(env: Record<string, string | undefined> = process.env): DoubtBotConfig | undefined {
-  if (env.FEATURE_N8N_BOT !== "true") return undefined;
+  if (env.FEATURE_N8N_BOT !== "true" && env.FEATURE_AI_AGENT !== "true") return undefined;
   const url = env.N8N_BOT_URL?.trim();
   const secret = env.N8N_BOT_SECRET?.trim();
   if (!url || !secret || secret.length < 24) return undefined;
@@ -115,8 +120,14 @@ export function doubtBotAnswerer(config: DoubtBotConfig, loadDocuments: () => Pr
   return async (input: DoubtBotInput): Promise<DoubtBotResult> => {
     let documents: KnowledgeDoc[];
     try { documents = publishedAndValid(await loadDocuments(), now()); } catch { return { kind: "failed", reason: "A base de conhecimento não respondeu." }; }
-    const sources = findSources(documents, input.question);
+    // O assunto já entendido busca em separado: o cliente escreve "ta sem net", o documento diz "sem conexão".
+    const sources = findSources(documents, input.question, intentTerms(input.intent));
     if (sources.length === 0) return { kind: "none" };
-    return askDoubtBot(config, input, sources);
+    // O robô recebe o documento inteiro, não só o parágrafo que casou: medido em 17/11, com um
+    // parágrafo só ele repetia o primeiro passo ("veja se acontece em todos os aparelhos") a quem
+    // já tinha reiniciado, porque nunca via o passo seguinte nem o "se não voltar, um atendente".
+    const byId = new Map(documents.map((document) => [document.id, document]));
+    const whole = sources.map((source) => ({ ...source, excerpt: (byId.get(source.id)?.content ?? source.excerpt).slice(0, BOT_SOURCE_LIMIT) }));
+    return askDoubtBot(config, input, whole);
   };
 }

@@ -41,6 +41,13 @@ const aiInvoiceEnabled = () => process.env.FEATURE_AI_INVOICE === "true";
  * só com `FEATURE_N8N_AUTOREPLY`. Nasce desligada como toda flag com efeito no mundo.
  */
 const offHoursAutoReplyEnabled = () => process.env.FEATURE_OFF_HOURS_AUTOREPLY === "true";
+/**
+ * Modo autônomo: a IA atende sozinha, a qualquer hora, e conduz a conversa — responde
+ * cada fala pela base de conhecimento (n8n), roda os autoatendimentos e só passa para o
+ * atendente o que exige gente. Precisa do n8n configurado (`N8N_BOT_URL`/`N8N_BOT_SECRET`):
+ * sem ele, a flag não liga nada — respostas fixas a cada fala seriam piores que o modo atual.
+ */
+const aiAgentConfig = () => (process.env.FEATURE_AI_AGENT === "true" ? doubtBotConfigFromEnv() : undefined);
 
 /**
  * Verificação do webhook: a Meta chama com `hub.challenge` e espera o valor de
@@ -113,9 +120,10 @@ export async function POST(request: Request) {
     // atendimento, que a captação de lead aproveita em vez de repetir.
     const { provider, config: ixcConfig } = getIxcRuntime();
     const offHours = !isBusinessHours(new Date());
-    const botSpeaks = autoReplyEnabled() || (offHoursAutoReplyEnabled() && offHours);
-    // Robô de dúvidas (n8n): só no horário comercial e só quando a IA não fala por outro caminho.
-    const doubtBotConfig = !botSpeaks && !offHours ? doubtBotConfigFromEnv() : undefined;
+    const agentConfig = aiAgentConfig();
+    const botSpeaks = !!agentConfig || autoReplyEnabled() || (offHoursAutoReplyEnabled() && offHours);
+    // Robô de dúvidas (n8n): no modo autônomo, sempre; senão, só no horário comercial e só quando a IA não fala por outro caminho.
+    const doubtBotConfig = agentConfig ?? (!botSpeaks && !offHours ? doubtBotConfigFromEnv() : undefined);
     const triage = await startTriage(tickets, {
       offHours: offHours && botSpeaks,
       channel: CHANNEL_NAME, conversationId: message.phone, lookup: lookupCustomer,
@@ -138,6 +146,8 @@ export async function POST(request: Request) {
         enabled: botSpeaks || !!doubtBotConfig, states: new DbConversationStateRepository(db), messages: channel, claims: new DbReplyRepository(db),
         delivery: new DbConversationDelivery(db), config: sendConfig, channel: CHANNEL_NAME, customerMessageAt: message.sentAt,
         awaitingAnswer: triage?.awaitingAnswer,
+        // Modo autônomo: conversa inteira, até a IA passar para o atendente.
+        conversational: !!agentConfig, handedOff: triage?.handedOff,
       }, message.phone);
       results.push(await processChannelMessage(
         channel,
@@ -147,7 +157,7 @@ export async function POST(request: Request) {
           // Com o robô de dúvidas ligado e a IA sem falar por outro caminho, `send` é só do robô: o resto segue como sugestão.
           ...(botSpeaks ? auto : { autoReply: false }),
           doubtBot: doubtBotConfig && auto.autoReply && auto.send
-            ? { send: auto.send, answer: doubtBotAnswerer(doubtBotConfig, () => new DbKnowledgeRepository(db).list(200)) }
+            ? { send: auto.send, answer: doubtBotAnswerer(doubtBotConfig, () => new DbKnowledgeRepository(db).list(200)), agent: !!agentConfig }
             : undefined,
           templates,
           triage: triage?.hooks,
