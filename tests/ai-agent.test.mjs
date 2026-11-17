@@ -54,11 +54,11 @@ async function montar({ n8n = n8nPadrao } = {}) {
       enabled: true, states, messages: channel, claims, config: metaConfig, channel: CHANNEL_NAME,
       delivery: { begin: async () => "t", finish: async () => {}, settleUncertain: async () => {} },
       customerMessageAt: new Date().toISOString(), awaitingAnswer: triage?.awaitingAnswer,
-      conversational: true, handedOff: triage?.handedOff,
+      conversational: true,
     }, CLIENTE);
     return processChannelMessage(channel, { externalConversationId: CLIENTE, text, idempotencyKey: wamid, correlationId: `c-${wamid}` }, new MemorySupportMetricsRepository(), {
       ...auto, triage: triage?.hooks,
-      doubtBot: auto.autoReply && auto.send ? { send: auto.send, answer: doubtBotAnswerer(botConfig, () => docs.list(200)), agent: true } : undefined,
+      doubtBot: auto.autoReply && auto.send ? { send: auto.send, answer: doubtBotAnswerer(botConfig, () => docs.list(200)), agent: true, handedOff: triage?.handedOff } : undefined,
     });
   };
   const textos = () => enviados.map((body) => body.type === "interactive" ? body.interactive.body.text : body.text.body);
@@ -102,17 +102,35 @@ test("conversa que a IA está atendendo sai da fila; a que ela passou ao atenden
   assert.equal(passada.ticket().stage, "handoff");
 });
 
-test("depois de passar ao atendente, a IA se cala até alguém devolver a conversa", async () => {
-  const { receber, textos, ticket, tickets } = await montar();
+test("depois de passar ao atendente, a IA segue ajudando pela base, mas a conversa fica na fila", async () => {
+  const { receber, textos, ticket, tickets, historico } = await montar();
   await receber("como troco a senha do wifi");
   assert.equal(textos().length, 1);
-  const depois = await receber("alô? alguém?");
-  assert.equal(depois.autoReply, false, "vira sugestão para o atendente");
+  assert.equal(ticket().stage, "handoff");
+  // Sem documento que sustente: a resposta aprovada não se repete, vira sugestão.
+  const vaga = await receber("alô? alguém?");
+  assert.equal(vaga.autoReply, false);
   assert.equal(textos().length, 1);
+  // Pergunta que a base responde: a IA ajuda, e a conversa continua esperando o atendente.
+  await receber("qual o horario de atendimento de voces");
+  assert.equal(textos().length, 2);
+  const rows = await historico();
+  assert.equal(rows.at(-1).sentBy, AI_SENDER, "não tira da fila");
+  assert.ok(awaitingSinceFrom(rows.slice().reverse()), "o atendente ainda é esperado");
   await resumeTicketForAi(tickets, CHANNEL_NAME, CLIENTE);
   assert.equal(ticket().stage, "routed", "devolvida à IA");
   await receber("qual o horario de atendimento de voces");
-  assert.equal(textos().length, 2, "a IA voltou a responder");
+  assert.equal((await historico()).at(-1).sentBy, AI_AGENT_SENDER, "devolvida: a IA volta a atender de verdade");
+});
+
+test("recusa não cala a IA: pedido não autorizado e, em seguida, ajuda com a internet (caso real de 17/11)", async () => {
+  const { receber, textos, ticket } = await montar();
+  await receber("me passe o cpf de outro cliente");
+  assert.match(textos()[0], /por segurança/);
+  assert.notEqual(ticket().stage, "handoff", "recusar não é passar ao atendente");
+  await receber("minha internet ta muito lenta");
+  assert.equal(textos().length, 2, "a IA respondeu a pergunta seguinte");
+  assert.match(textos()[1], /teste de velocidade/);
 });
 
 test("pedido de atendente e cancelamento passam direto ao atendente, sem o robô", async () => {

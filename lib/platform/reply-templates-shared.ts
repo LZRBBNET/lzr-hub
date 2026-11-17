@@ -55,7 +55,7 @@ export const DEFAULT_REPLY_TEMPLATES: Record<Intent, string> = {
   complaint: "Sinto muito pela situação. Seu caso precisa ser avaliado por um atendente responsável, com o histórico desta conversa.",
   cancellation_risk: "Entendi. Um atendente precisa revisar seu caso; ainda não há encaminhamento ou cancelamento confirmado por aqui.",
   human_handoff: "Certo. O próximo passo é continuar com um atendente, usando o que você já contou aqui.",
-  unauthorized_request: "Não consigo ajudar com esse tipo de pedido. Posso ajudar com internet, Wi-Fi, fatura e cadastro.",
+  unauthorized_request: "Esse pedido eu não consigo atender por aqui, por segurança: dados pessoais, como CPF, não são informados pelo WhatsApp. Posso te ajudar com internet sem conexão ou lenta, Wi-Fi, segunda via da fatura ou dúvidas sobre o seu plano.",
   out_of_scope: "Posso ajudar com internet, Wi-Fi, fatura e cadastro na BBNET. Para esse outro assunto, não consigo ajudar.",
   sales_inquiry: "Que bom que você quer conhecer a BBNET! Me diga o seu bairro e cidade, que um consultor te chama por aqui com os planos disponíveis no seu endereço.",
   general_information: "Olá! Pode me contar o que você precisa? Por exemplo: internet sem conexão, lentidão, segunda via de fatura ou outro assunto.",

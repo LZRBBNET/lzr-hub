@@ -105,7 +105,7 @@ Flags relevantes:
 | `FEATURE_AI_INVOICE` | Com o titular confirmado pelo CPF, a IA **manda os dados da fatura** (vencimento, valor e o **PIX copia e cola**). Só vale com `FEATURE_N8N_AUTOREPLY` | desligada — PIX provado no IXC real em 16/11; pode ligar junto com a resposta automática |
 | `FEATURE_OFF_HOURS_AUTOREPLY` | **Fora do horário comercial** (seg–sex, 8h–12h e 14h–18h, Brasília, exceto feriado) a IA responde sozinha: lista clicável de assuntos, respostas aprovadas, 2ª via com PIX e resposta pelo diagnóstico. Dentro do horário nada muda | desligada |
 | `FEATURE_N8N_BOT` | **Robô de dúvidas** no horário comercial: o LZR pede ao n8n (Groq) a resposta de uma dúvida que a base de conhecimento sustenta e a envia. Exige `N8N_BOT_URL` (https) e `N8N_BOT_SECRET`. Ver `docs/integrations/n8n/robo-duvidas.md` | desligada |
-| `FEATURE_AI_AGENT` | **Modo autônomo**: a IA atende sozinha, a qualquer hora, e **conduz a conversa** — responde cada fala pela base de conhecimento (n8n), roda os autoatendimentos e só passa ao atendente o que exige gente (aí se cala até devolverem a conversa). Usa `N8N_BOT_URL`/`N8N_BOT_SECRET`; sem eles não liga. Ver *Modo autônomo* abaixo | desligada |
+| `FEATURE_AI_AGENT` | **Modo autônomo**: a IA atende sozinha, a qualquer hora, e **conduz a conversa** — responde cada fala pela base de conhecimento (n8n), roda os autoatendimentos e só passa ao atendente o que exige gente (a conversa fica na fila, e a IA segue ajudando pela base sem repetir "um atendente vai…"). Usa `N8N_BOT_URL`/`N8N_BOT_SECRET`; sem eles não liga. Ver *Modo autônomo* abaixo | desligada |
 | `FEATURE_QUEUES` | Filas reais (Redis/BullMQ) | desligada |
 | `FEATURE_IXC_WRITE` | Escrita no ERP — as 4 operações do catálogo (segunda via, OS, renegociação, cadastro de cliente) | **ligada** |
 | `FEATURE_IXC_FULL_BASE` | Leitura da **base inteira** do IXC, não só da allowlist | **ligada** |
@@ -280,7 +280,8 @@ O que as sondagens (`scripts/ixc-probe-self-service.mjs`) e a coleção Postman 
 **Modo autônomo** (`FEATURE_AI_AGENT`, pedido do Vinícius em 17/11/2026: "quero que ela mesma responda a pessoa"). Liga a IA a qualquer hora (`botSpeaks`) e troca a regra "uma por espera" por **conversa** (`conversational` em `metaAutoReplyOptions`):
 
 - **Cada fala** passa pelos fluxos de sempre (CPF → fatura → PIX, diagnóstico, menu na primeira fala vaga) e, no lugar da resposta aprovada fixa, pelo **robô da base** (n8n, `doubt-bot-service.ts`) — qualquer assunto, menos os que exigem gente (`AGENT_HUMAN_INTENTS`: pedido de atendente, cancelamento, reclamação, desconto, pedido não autorizado) e fatura/PIX (`AGENT_FLOW_INTENTS`, que só saem pela conferência do titular). O robô recebe o **documento inteiro**, não um parágrafo: com um parágrafo ele repetia o primeiro passo a quem já tinha reiniciado.
-- **Passar ao atendente** (`stage = handoff` no atendimento): quando a resposta promete gente (`promisesHuman`: "um atendente…") ou o assunto exige. Daí a IA **se cala** até alguém clicar **Devolver à IA** (`resumeTicketForAi`) ou o atendimento fechar. "Não entendi" (baixa confiança) **não** passa a conversa — senão um "obrigado" calaria a IA.
+- **Passar ao atendente** (`stage = handoff` no atendimento): quando a resposta promete gente (`promisesHuman`: "um atendente…") ou o assunto exige. Daí a conversa **fica na fila** até alguém assumir, clicar **Devolver à IA** (`resumeTicketForAi`) ou o atendimento fechar — mas a IA **continua ajudando** (base, autoatendimentos, cortesia), só sem tirar a conversa da fila e sem repetir a resposta aprovada, que vira sugestão (`doubtBot.handedOff`). Calar a IA de vez deixava o cliente falando sozinho até o dia seguinte. **Não** passam a conversa (`AGENT_KEEPS_TALKING`): "não entendi" (um "obrigado" calaria a IA) e recusa de pedido não autorizado — em 17/11 o "qual meu CPF?" calou a IA e o "quero ajuda na internet" seguinte ficou sem resposta.
+- A busca pelo assunto classificado ignora `general_information`/`out_of_scope`: "informação geral" casava todo documento da categoria "Geral" (a padrão da tela).
 - **Fila**: resposta que atendeu é gravada com `sent_by = 'ia-agente'` e **tira a conversa da fila** (`awaitingSinceFrom`); a que passou ao atendente continua `ia` e a conversa fica na fila, como a primeira resposta sempre ficou. A tela mostra "IA" nas duas.
 - "obrigado"/"ok" ganham cortesia (`courtesyReply`), não o menu. Fora do horário, o aviso "o atendimento com pessoas volta…" sai só quando a IA passa ao atendente — a cada fala ele se repetiria.
 - Humano com a conversa (assumiu ou respondeu pela tela) continua mandando: a IA não fala por cima, em nenhum modo.
@@ -341,7 +342,7 @@ Tabela é `.table` com `.tr` em grade e as colunas em `--cols`. ⚠️ Cada `.tr
 npm run typecheck && npm run lint && npm test
 ```
 
-Os três precisam passar. Hoje a suíte tem **1354 testes** (18 falhas conhecidas de tela/inicialização sintética, vindas da frente do Breno).
+Os três precisam passar. Hoje a suíte tem **1355 testes** (18 falhas conhecidas de tela/inicialização sintética, vindas da frente do Breno).
 
 ## Segurança — pontos já decididos
 

@@ -30,6 +30,9 @@ export const BOT_SOURCE_LIMIT = 1800;
 /** O n8n devolve isto quando os trechos não respondem. Vira "não sei" — o atendente assume. */
 export const DOUBT_BOT_REFUSAL = "NAO_SEI";
 
+/** Assuntos que não dizem nada sobre o que buscar. */
+const VAGUE_INTENTS: ReadonlySet<string> = new Set(["general_information", "out_of_scope"]);
+
 export interface DoubtBotConfig { url: string; secret: string; fetcher?: typeof fetch; timeoutMs?: number }
 
 /**
@@ -121,7 +124,10 @@ export function doubtBotAnswerer(config: DoubtBotConfig, loadDocuments: () => Pr
     let documents: KnowledgeDoc[];
     try { documents = publishedAndValid(await loadDocuments(), now()); } catch { return { kind: "failed", reason: "A base de conhecimento não respondeu." }; }
     // O assunto já entendido busca em separado: o cliente escreve "ta sem net", o documento diz "sem conexão".
-    const sources = findSources(documents, input.question, intentTerms(input.intent));
+    // "Informação geral" não é assunto: buscar por ela casava todo documento da categoria "Geral" (a
+    // padrão da tela) e mandava trechos aleatórios a quem só disse "alô? alguém?".
+    const hint = VAGUE_INTENTS.has(input.intent) ? "" : intentTerms(input.intent);
+    const sources = findSources(documents, input.question, hint);
     if (sources.length === 0) return { kind: "none" };
     // O robô recebe o documento inteiro, não só o parágrafo que casou: medido em 17/11, com um
     // parágrafo só ele repetia o primeiro passo ("veja se acontece em todos os aparelhos") a quem

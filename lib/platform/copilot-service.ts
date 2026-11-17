@@ -217,7 +217,8 @@ const INTENT_PT: Record<string, string> = {
   financial_invoice: "fatura / segunda via", financial_pix: "PIX", financial_payment: "pagamento",
   financial_unlock: "desbloqueio", financial_discount_request: "pedido de desconto", complaint: "reclamação",
   cancellation_risk: "risco de cancelamento", human_handoff: "pedido de atendente",
-  unauthorized_request: "pedido não autorizado", out_of_scope: "fora de escopo", general_information: "informação geral",
+  // "Informação geral" e "fora de escopo" não são assunto pesquisável: casavam todo documento da categoria "Geral".
+  unauthorized_request: "pedido não autorizado",
   sales_inquiry: "planos contratação",
 };
 

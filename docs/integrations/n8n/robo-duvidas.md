@@ -63,7 +63,8 @@ Com `FEATURE_AI_AGENT=true` (mais `N8N_BOT_URL` e `N8N_BOT_SECRET`), o mesmo flu
 - a IA responde **cada fala** do cliente pela base de conhecimento, guiando passo a passo;
 - segunda via, PIX e diagnóstico de conexão continuam pelos fluxos do LZR (com CPF do titular);
 - pedido de atendente, cancelamento, reclamação e desconto vão direto para a fila;
-- quando a resposta diz que "um atendente" vai fazer algo, a conversa fica na fila e a IA se cala até alguém clicar **Devolver à IA**;
+- quando a resposta diz que "um atendente" vai fazer algo, a conversa fica na fila até alguém assumir ou clicar **Devolver à IA**; enquanto isso a IA continua respondendo o que a base sustenta, sem repetir a promessa;
+- recusa ("qual meu CPF?") não passa a conversa: a IA recusa e segue ajudando;
 - conversa que a IA resolveu **sai da fila** sozinha.
 
 O prompt do nó **Monta o pedido ao modelo** devolve `NAO_SEI` quando o cliente já fez o que a base orienta e o problema continua — é o que leva a conversa ao atendente em vez de repetir o mesmo passo.

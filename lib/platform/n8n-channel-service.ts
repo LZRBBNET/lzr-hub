@@ -118,16 +118,25 @@ export interface ChannelOptions {
    *   responde qualquer assunto que não exija gente (`AGENT_HUMAN_INTENTS`), a cada fala.
    * Qualquer falha cai no caminho de sempre (resposta aprovada). Ver `doubt-bot-service.ts`.
    */
-  doubtBot?: { answer(input: DoubtBotInput): Promise<DoubtBotResult>; send: AutoReplySender; agent?: boolean };
+  doubtBot?: {
+    answer(input: DoubtBotInput): Promise<DoubtBotResult>; send: AutoReplySender; agent?: boolean;
+    /**
+     * Modo autônomo, depois de a IA ter passado ao atendente neste atendimento: ela continua
+     * ajudando (base, autoatendimentos, cortesia), mas tudo que diz mantém a conversa na fila
+     * e a resposta aprovada ("um atendente vai…") não se repete — vira sugestão.
+     */
+    handedOff?: boolean;
+  };
 }
 
 /** O que o robô de dúvidas pode responder. O resto (fatura, bloqueio, sem internet, cancelamento) tem fluxo próprio. */
 export const DOUBT_INTENTS: ReadonlySet<string> = new Set(["general_information", "sales_inquiry"]);
 
 /**
- * O que exige gente mesmo no modo autônomo: o cliente pediu atendente, quer cancelar,
- * reclama formalmente, pede desconto ou algo que a IA não pode fazer. A IA responde a
- * resposta aprovada (que promete um atendente) e se cala até alguém devolver a conversa.
+ * O que o robô da base não responde no modo autônomo: o cliente pediu atendente, quer
+ * cancelar, reclama formalmente, pede desconto ou algo que a IA não pode fazer. Sai a
+ * resposta aprovada. Os quatro primeiros passam a conversa ao atendente; o pedido não
+ * autorizado não (`AGENT_KEEPS_TALKING`): a IA recusa e segue a conversa.
  */
 export const AGENT_HUMAN_INTENTS: ReadonlySet<string> = new Set(["human_handoff", "cancellation_risk", "complaint", "financial_discount_request", "unauthorized_request"]);
 
@@ -136,6 +145,13 @@ export const AGENT_HUMAN_INTENTS: ReadonlySet<string> = new Set(["human_handoff"
  * pode rodar (número sem cadastro único), a base não substitui a conferência: segue a
  * resposta aprovada, que passa ao financeiro.
  */
+/**
+ * Motivos do pipeline que **não** passam a conversa no modo autônomo. "Não entendi" calaria a
+ * IA num "obrigado"; recusa de pedido não autorizado ("qual meu CPF?") calou a IA em 17/11 e o
+ * "quero ajuda na internet" seguinte ficou sem resposta.
+ */
+export const AGENT_KEEPS_TALKING: ReadonlySet<string> = new Set(["low_intent_confidence", "unauthorized_request"]);
+
 export const AGENT_FLOW_INTENTS: ReadonlySet<string> = new Set(["financial_invoice", "financial_pix"]);
 
 /** A frase promete um atendente: no modo autônomo isso é passar a conversa — a IA não fala por cima da promessa. */
@@ -221,6 +237,9 @@ const sentFields = (delivery: Delivery, sender: string = AI_SENDER): Pick<Channe
 
 /** O modo autônomo está valendo nesta fala: a IA fala (`autoReply`) e conduz a conversa. */
 const agentMode = (options: ChannelOptions) => !!options.doubtBot?.agent && options.autoReply;
+/** Quem assina a resposta da IA: `ia-agente` tira da fila; depois de passar ao atendente, nada tira. */
+const agentSender = (options: ChannelOptions, handoff: boolean) =>
+  agentMode(options) && !handoff && !options.doubtBot?.handedOff ? AI_AGENT_SENDER : AI_SENDER;
 
 /** A falha do envio automático tem linha própria na auditoria: "a IA tentou responder e não conseguiu" precisa ser achável. */
 async function auditFailure(repository: ChannelRepository, input: ChannelMessageInput, delivery: Delivery, text: string): Promise<void> {
@@ -414,7 +433,9 @@ export async function processChannelMessage(
   });
   // Modo autônomo: só passa a conversa o que exige gente ou o que promete um atendente.
   // "Não entendi" (baixa confiança) não cala a IA — ela segue conversando.
-  const handoff = agent && ((!!result.handoff.reason && result.handoff.reason !== "low_intent_confidence") || promisesHuman(opened));
+  const handoff = agent && ((!!result.handoff.reason && !AGENT_KEEPS_TALKING.has(result.handoff.reason)) || promisesHuman(opened));
+  // Já passada ao atendente: a resposta aprovada repetiria "um atendente vai…" a cada fala. Vira sugestão.
+  const pipelineOptions = agent && options.doubtBot?.handedOff ? { ...options, autoReply: false } : options;
   // A primeira resposta do atendimento leva o protocolo no fim.
   const footer = options.triage?.footer(agent ? { handoff } : undefined);
   const approved = footer ? `${opened}
@@ -426,7 +447,7 @@ ${footer}` : opened;
   // Meta: "um atendente retorna... Antes de encerrar, avalie" se contradiz.
   const askCsat = options.autoReply && !options.send && shouldAskCsat(result.finalStatus, result.handoff.required);
   const reply = askCsat ? `${approved}\n\n${CSAT_QUESTION}` : approved;
-  const delivery = await deliver(options, input, reply);
+  const delivery = await deliver(pipelineOptions, input, reply);
   // Não saiu: fica a resposta aprovada, sem a pergunta de avaliação — igual ao
   // modo observação. Saiu: fica o que o cliente recebeu.
   const content = delivery.sent ? delivery.text ?? reply : approved;
@@ -435,8 +456,10 @@ ${footer}` : opened;
     status: !delivery.sent ? SUGGESTED_STATUS
       : delivery.messageId && CLAIMS_RESOLUTION.has(result.finalStatus) ? AUTO_REPLIED_STATUS
       : result.finalStatus,
-    intent: result.intent, handoff: result.handoff.required, handoffReason: result.handoff.reason, classified, label: handoff ? "Resposta (passada ao atendente)" : "Resposta",
-    sender: agent && !handoff ? AI_AGENT_SENDER : AI_SENDER,
+    // No modo autônomo o "pede humano" da tela é a decisão da IA, não o "não entendi" do pipeline.
+    intent: result.intent, handoff: agent ? handoff : result.handoff.required, handoffReason: agent && !handoff ? null : result.handoff.reason,
+    classified, label: handoff ? "Resposta (passada ao atendente)" : "Resposta",
+    sender: agentSender(options, handoff),
   });
   await options.triage?.record({ intent: result.intent, source: classified.source, confidence: classified.confidence, clarifying: false, delivered: delivery.sent, protocolIncluded: !!footer, handoff });
   return response;
@@ -484,7 +507,7 @@ ${footer}` : result.text;
     status: delivery.sent ? AUTO_REPLIED_STATUS : SUGGESTED_STATUS,
     intent: classified.intent, handoff: false, handoffReason: null, classified, label,
     // No modo autônomo a resposta do robô atendeu (a conversa sai da fila), salvo se ela passou ao atendente.
-    sender: bot.agent && !handoff ? AI_AGENT_SENDER : AI_SENDER,
+    sender: agentSender(options, handoff),
   });
   await options.triage?.record({ intent: classified.intent, source: classified.source, confidence: classified.confidence, clarifying: false, delivered: delivery.sent, protocolIncluded: !!footer, handoff });
   return response;
@@ -510,7 +533,7 @@ async function triageTurn(
   const response = await recordTurn(repository, input, metrics, {
     content: delivery.sent ? delivery.text ?? shown : shown, delivery, status: delivery.sent ? turn.status : SUGGESTED_STATUS,
     intent: turn.intent, handoff: false, handoffReason: null, classified, label: turn.label,
-    sender: agent && !handoff ? AI_AGENT_SENDER : AI_SENDER,
+    sender: agentSender(options, handoff),
   });
   await options.triage?.record({ intent: turn.intent, source: classified.source, confidence: classified.confidence, clarifying: !!turn.clarifying, delivered: delivery.sent, protocolIncluded: !!footer, handoff: agent && handoff });
   await turn.after?.(delivery.sent).catch(() => undefined);

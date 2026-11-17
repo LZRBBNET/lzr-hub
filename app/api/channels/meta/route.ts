@@ -146,8 +146,8 @@ export async function POST(request: Request) {
         enabled: botSpeaks || !!doubtBotConfig, states: new DbConversationStateRepository(db), messages: channel, claims: new DbReplyRepository(db),
         delivery: new DbConversationDelivery(db), config: sendConfig, channel: CHANNEL_NAME, customerMessageAt: message.sentAt,
         awaitingAnswer: triage?.awaitingAnswer,
-        // Modo autônomo: conversa inteira, até a IA passar para o atendente.
-        conversational: !!agentConfig, handedOff: triage?.handedOff,
+        // Modo autônomo: conversa inteira, até um humano assumir.
+        conversational: !!agentConfig,
       }, message.phone);
       results.push(await processChannelMessage(
         channel,
@@ -157,7 +157,7 @@ export async function POST(request: Request) {
           // Com o robô de dúvidas ligado e a IA sem falar por outro caminho, `send` é só do robô: o resto segue como sugestão.
           ...(botSpeaks ? auto : { autoReply: false }),
           doubtBot: doubtBotConfig && auto.autoReply && auto.send
-            ? { send: auto.send, answer: doubtBotAnswerer(doubtBotConfig, () => new DbKnowledgeRepository(db).list(200)), agent: !!agentConfig }
+            ? { send: auto.send, answer: doubtBotAnswerer(doubtBotConfig, () => new DbKnowledgeRepository(db).list(200)), agent: !!agentConfig, handedOff: triage?.handedOff }
             : undefined,
           templates,
           triage: triage?.hooks,
