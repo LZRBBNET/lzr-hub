@@ -8,7 +8,7 @@ import { metaAutoReplyOptions } from "../lib/platform/meta-auto-reply-service.ts
 import { MemoryTicketRepository, diagnosisReply, startTriage } from "../lib/platform/triage-service.ts";
 import { diagnoseConnection } from "../lib/platform/connection-diagnosis-shared.ts";
 import { DEFAULT_REPLY_TEMPLATES } from "../lib/platform/reply-templates-shared.ts";
-import { TRIAGE_LIST, isBusinessHours, menuChoice, nextOpeningText } from "../lib/platform/triage-shared.ts";
+import { TRIAGE_LIST, holidayName, isBusinessHours, menuChoice, nextOpeningText, offHoursMenuText } from "../lib/platform/triage-shared.ts";
 import { sendInteractiveList } from "../lib/integrations/meta/cloud-client.ts";
 
 /**
@@ -36,6 +36,43 @@ test("quando o atendimento com pessoas volta, em palavras", () => {
   assert.equal(nextOpeningText(new Date("2026-11-17T22:00:00Z")), "amanhã às 8h");
   assert.equal(nextOpeningText(new Date("2026-11-20T22:00:00Z")), "segunda-feira às 8h", "sexta à noite");
   assert.equal(nextOpeningText(new Date("2026-11-22T12:00:00Z")), "amanhã às 8h", "domingo");
+});
+
+test("feriado em dia útil é fora do horário: fixos, Sergipe e móveis pela Páscoa", () => {
+  assert.equal(isBusinessHours(new Date("2026-11-20T13:00:00Z")), false, "sexta 20/11, Consciência Negra, 10h");
+  assert.equal(isBusinessHours(new Date("2026-12-25T13:00:00Z")), false, "Natal");
+  assert.equal(isBusinessHours(new Date("2027-07-08T13:00:00Z")), false, "Emancipação de Sergipe");
+  // Páscoa de 2027: 28/03 → Sexta-feira Santa 26/03, Carnaval 08 e 09/02, Corpus Christi 27/05.
+  assert.equal(holidayName("2027-03-26"), "Sexta-feira Santa");
+  assert.equal(holidayName("2027-02-08"), "Carnaval");
+  assert.equal(holidayName("2027-02-09"), "Carnaval");
+  assert.equal(holidayName("2027-05-27"), "Corpus Christi");
+  assert.equal(holidayName("2026-04-03"), "Sexta-feira Santa", "Páscoa de 2026 em 05/04");
+  assert.equal(holidayName("2026-11-18"), undefined);
+});
+
+test("a volta do atendimento pula o feriado", () => {
+  assert.equal(nextOpeningText(new Date("2026-11-19T22:00:00Z")), "segunda-feira às 8h", "quinta à noite, sexta é feriado");
+  assert.equal(nextOpeningText(new Date("2026-11-20T13:00:00Z")), "segunda-feira às 8h", "no próprio feriado, de manhã");
+  assert.equal(nextOpeningText(new Date("2026-12-24T22:00:00Z")), "segunda-feira às 8h", "véspera de Natal numa quinta");
+  assert.equal(nextOpeningText(new Date("2027-02-05T22:00:00Z")), "quarta-feira às 8h", "sexta antes do Carnaval");
+});
+
+test("no feriado a abertura diz que é feriado", () => {
+  assert.match(offHoursMenuText(new Date("2026-11-20T13:00:00Z")), /Hoje é feriado \(Dia da Consciência Negra\)\. Ele volta segunda-feira às 8h/);
+  assert.doesNotMatch(offHoursMenuText(new Date("2026-11-21T13:00:00Z")), /feriado/, "sábado não é anunciado como feriado");
+});
+
+test("feriado municipal vem de BUSINESS_HOLIDAYS, todo ano (MM-DD) ou data única", () => {
+  const antes = process.env.BUSINESS_HOLIDAYS;
+  try {
+    process.env.BUSINESS_HOLIDAYS = "03-17, 2026-11-24, lixo";
+    assert.equal(holidayName("2027-03-17"), "Feriado");
+    assert.equal(isBusinessHours(new Date("2026-11-24T13:00:00Z")), false);
+    assert.equal(isBusinessHours(new Date("2027-11-24T13:00:00Z")), true, "data com ano vale só naquele ano");
+  } finally {
+    if (antes === undefined) delete process.env.BUSINESS_HOLIDAYS; else process.env.BUSINESS_HOLIDAYS = antes;
+  }
 });
 
 test("a lista clicável cabe nos limites da Meta, e a escolha chega pelo título", () => {
@@ -94,7 +131,7 @@ test("fora do horário, a abertura vai como lista clicável dizendo quando há g
   const result = await receber("oi");
   assert.equal(result.status, "clarifying");
   assert.equal(enviados[0].type, "interactive", "lista clicável, não texto numerado");
-  assert.match(enviados[0].interactive.body.text, /das 8h às 12h e das 14h às 18h, e volta amanhã às 8h/);
+  assert.match(enviados[0].interactive.body.text, /das 8h às 12h e das 14h às 18h\. Ele volta amanhã às 8h/);
   assert.match(enviados[0].interactive.body.text, /Protocolo do atendimento:/);
   assert.equal(enviados[0].interactive.action.sections[0].rows.length, TRIAGE_LIST.rows.length);
   const historico = await channel.getHistory(CHANNEL_NAME, CLIENTE);

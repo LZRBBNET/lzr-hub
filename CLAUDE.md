@@ -103,7 +103,7 @@ Flags relevantes:
 | `FEATURE_N8N_CHANNEL` | Canal WhatsApp recebe e registra mensagem (nome histórico: o n8n saiu do caminho, a Evolution chama a API direto) | **ligada** (modo observação — ver abaixo) |
 | `FEATURE_N8N_AUTOREPLY` | A IA **responde ao cliente** pelo canal — pela Meta, como **primeira resposta**, uma por espera (ver *Auditoria do que a IA faz*) | desligada |
 | `FEATURE_AI_INVOICE` | Com o titular confirmado pelo CPF, a IA **manda os dados da fatura** (vencimento, valor e o **PIX copia e cola**). Só vale com `FEATURE_N8N_AUTOREPLY` | desligada — PIX provado no IXC real em 16/11; pode ligar junto com a resposta automática |
-| `FEATURE_OFF_HOURS_AUTOREPLY` | **Fora do horário comercial** (seg–sex, 8h–12h e 14h–18h, Brasília) a IA responde sozinha: lista clicável de assuntos, respostas aprovadas, 2ª via com PIX e resposta pelo diagnóstico. Dentro do horário nada muda | desligada |
+| `FEATURE_OFF_HOURS_AUTOREPLY` | **Fora do horário comercial** (seg–sex, 8h–12h e 14h–18h, Brasília, exceto feriado) a IA responde sozinha: lista clicável de assuntos, respostas aprovadas, 2ª via com PIX e resposta pelo diagnóstico. Dentro do horário nada muda | desligada |
 | `FEATURE_QUEUES` | Filas reais (Redis/BullMQ) | desligada |
 | `FEATURE_IXC_WRITE` | Escrita no ERP — as 4 operações do catálogo (segunda via, OS, renegociação, cadastro de cliente) | **ligada** |
 | `FEATURE_IXC_FULL_BASE` | Leitura da **base inteira** do IXC, não só da allowlist | **ligada** |
@@ -271,7 +271,8 @@ O que as sondagens (`scripts/ixc-probe-self-service.mjs`) e a coleção Postman 
 - **Abertura em lista clicável** (`sendInteractiveList`, `TRIAGE_LIST`): "Sou a assistente virtual… atendimento com pessoas de segunda a sexta… volta amanhã às 8h" + botão "Ver assuntos". A Meta corta título de opção acima de 24 caracteres, por isso `TRIAGE_MENU` tem `title` curto além do `label`. A escolha chega pelo título (ou pelo número digitado). O histórico guarda o texto e as opções numeradas, para o atendente ver o que o cliente viu. Só aparece quando a IA não tem certeza do assunto: "estou sem internet" vai direto à resposta.
 - **Toda resposta fora do horário** termina com quando o atendimento com pessoas volta (`offHoursNote`): a promessa "um atendente retorna" ganha data. O protocolo só conta como informado se esteve no rodapé daquela resposta.
 - **Sem internet responde pelo diagnóstico** (`diagnosisReply`), feito antes da resposta quando a IA fala sozinha: bloqueio por atraso → diz o motivo e **já pede o CPF** (entra no fluxo da 2ª via e termina no PIX); bloqueio manual → um atendente confere; massiva no bairro → avisa a instabilidade; OS aberta → informa o nº do chamado; conexão chegando ao equipamento → Wi-Fi e aparelho. Offline sem causa conhecida segue a resposta aprovada (reinício). Nenhum texto afirma ação que não aconteceu.
-- ⚠️ **Feriado não existe** no cálculo: num feriado em dia útil a IA acha que há gente e não fala sozinha. Para a IA mandar a fatura sozinha também é preciso `FEATURE_AI_INVOICE`.
+- **Feriado é fora do horário** (`holidayName`): os nacionais fixos (inclusive 20/11), a Emancipação de Sergipe (8/7) e os móveis pela Páscoa — Sexta-feira Santa, e também Carnaval (seg e ter) e Corpus Christi, que são ponto facultativo: na dúvida é melhor a IA responder num dia com gente do que o cliente ficar sem resposta num dia sem. A abertura diz "Hoje é feriado (…)" e a data de volta pula o feriado. **Municipal varia com a cidade** e fica em `BUSINESS_HOLIDAYS` (`MM-DD` para todo ano, `AAAA-MM-DD` para um só, separados por vírgula) — sem isso, o feriado da cidade conta como dia de gente.
+- Para a IA mandar a fatura sozinha também é preciso `FEATURE_AI_INVOICE`.
 
 **Resposta do atendente pela tela** (`FEATURE_ATTENDANT_REPLY`, `lib/platform/attendant-reply-service.ts`). Segue a régua da escrita no ERP: idempotência (chave por clique, reservada em `channel_idempotency_keys` **antes** de chamar a Meta) → política (login obrigatório, texto de homologação recusado, janela de 24 horas) → flag → chamada. Bloqueio e falha também entram na auditoria. Em **timeout a reserva não é solta**: a mensagem pode ter saído, e liberar convidaria um reenvio em dobro. A autoria fica em `channel_messages.sent_by`; nulo é "não registrado", nunca "a IA". Antes de responder, a mensagem do cliente é marcada como lida (melhor esforço, pelo `wamid` em `external_message_id`).
 
@@ -327,7 +328,7 @@ Tabela é `.table` com `.tr` em grade e as colunas em `--cols`. ⚠️ Cada `.tr
 npm run typecheck && npm run lint && npm test
 ```
 
-Os três precisam passar. Hoje a suíte tem **1328 testes** (18 falhas conhecidas de tela/inicialização sintética, vindas da frente do Breno).
+Os três precisam passar. Hoje a suíte tem **1332 testes** (18 falhas conhecidas de tela/inicialização sintética, vindas da frente do Breno).
 
 ## Segurança — pontos já decididos
 

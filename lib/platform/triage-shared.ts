@@ -91,13 +91,68 @@ export function menuChoice(text: string): Intent | undefined {
 /* ------------------------------------------------- horário de atendimento --- */
 
 /**
- * Atendimento humano: segunda a sexta, 8h–12h e 14h–18h, em Brasília. Fora
- * disso (almoço, noite, fim de semana) a IA conduz sozinha com a lista e as
- * respostas aprovadas. ⚠️ Feriado não está aqui: num feriado em dia útil a IA
- * acha que há gente para atender.
+ * Atendimento humano: segunda a sexta, 8h–12h e 14h–18h, em Brasília, exceto
+ * feriado. Fora disso (almoço, noite, fim de semana, feriado) a IA conduz
+ * sozinha com a lista e as respostas aprovadas.
  */
 export const BUSINESS_SHIFTS: ReadonlyArray<[number, number]> = [[8 * 60, 12 * 60], [14 * 60, 18 * 60]];
 export const BUSINESS_DAYS = new Set([1, 2, 3, 4, 5]);
+
+/**
+ * Feriados fixos: os nacionais (Lei 662/1949 e alterações; 20/11 desde a Lei
+ * 14.759/2023) e a Emancipação Política de Sergipe (8/7). Municipal varia com a
+ * cidade, por isso fica em `BUSINESS_HOLIDAYS`.
+ */
+const FIXED_HOLIDAYS: Record<string, string> = {
+  "01-01": "Confraternização Universal",
+  "04-21": "Tiradentes",
+  "05-01": "Dia do Trabalho",
+  "07-08": "Emancipação Política de Sergipe",
+  "09-07": "Independência do Brasil",
+  "10-12": "Nossa Senhora Aparecida",
+  "11-02": "Finados",
+  "11-15": "Proclamação da República",
+  "11-20": "Dia da Consciência Negra",
+  "12-25": "Natal",
+};
+
+/** Domingo de Páscoa (algoritmo de Meeus/Jones/Butcher), em UTC ao meio-dia para a conta de dias não escorregar. */
+function easter(year: number): Date {
+  const a = year % 19, b = Math.floor(year / 100), c = year % 100, d = Math.floor(b / 4), e = b % 4;
+  const f = Math.floor((b + 8) / 25), g = Math.floor((b - f + 1) / 3), h = (19 * a + b - d - g + 15) % 30;
+  const i = Math.floor(c / 4), k = c % 4, l = (32 + 2 * e + 2 * i - h - k) % 7, m = Math.floor((a + 11 * h + 22 * l) / 451);
+  const month = Math.floor((h + l - 7 * m + 114) / 31), day = ((h + l - 7 * m + 114) % 31) + 1;
+  return new Date(Date.UTC(year, month - 1, day, 12));
+}
+
+/**
+ * Feriados móveis, a partir da Páscoa. Carnaval e Corpus Christi são ponto
+ * facultativo, não feriado nacional — entram porque, na dúvida, é melhor a IA
+ * responder num dia em que há gente do que o cliente ficar sem resposta num dia
+ * em que não há: a resposta automática é só a primeira, e a conversa continua na fila.
+ */
+function movableHolidays(year: number): Record<string, string> {
+  const base = easter(year).getTime();
+  const at = (offset: number) => new Date(base + offset * 86_400_000).toISOString().slice(0, 10);
+  return { [at(-48)]: "Carnaval", [at(-47)]: "Carnaval", [at(-2)]: "Sexta-feira Santa", [at(60)]: "Corpus Christi" };
+}
+
+/**
+ * Feriados extras da operação (municipais, emendas): `BUSINESS_HOLIDAYS` com
+ * datas separadas por vírgula, `MM-DD` para todo ano ou `AAAA-MM-DD` para um só.
+ * Lido do ambiente quando existe — no navegador não existe, e a lista fica vazia.
+ */
+function extraHolidays(): Set<string> {
+  const raw = (globalThis as { process?: { env?: Record<string, string | undefined> } }).process?.env?.BUSINESS_HOLIDAYS ?? "";
+  return new Set(raw.split(",").map((value) => value.trim()).filter((value) => /^(\d{4}-)?\d{2}-\d{2}$/.test(value)));
+}
+
+/** O nome do feriado no dia (`AAAA-MM-DD`, Brasília), ou `undefined` se for dia comum. */
+export function holidayName(day: string): string | undefined {
+  const monthDay = day.slice(5);
+  const extras = extraHolidays();
+  return FIXED_HOLIDAYS[monthDay] ?? movableHolidays(Number(day.slice(0, 4)))[day] ?? (extras.has(day) || extras.has(monthDay) ? "Feriado" : undefined);
+}
 
 function saoPaulo(at: Date): { weekday: number; minutes: number; day: string } {
   const parts = Object.fromEntries(new Intl.DateTimeFormat("en-US", { timeZone: "America/Sao_Paulo", weekday: "short", hour: "2-digit", minute: "2-digit", hour12: false, year: "numeric", month: "2-digit", day: "2-digit" })
@@ -106,30 +161,43 @@ function saoPaulo(at: Date): { weekday: number; minutes: number; day: string } {
   return { weekday, minutes: (Number(parts.hour) % 24) * 60 + Number(parts.minute), day: `${parts.year}-${parts.month}-${parts.day}` };
 }
 
+const isWorkday = (local: { weekday: number; day: string }) => BUSINESS_DAYS.has(local.weekday) && !holidayName(local.day);
+
 export function isBusinessHours(at: Date = new Date()): boolean {
-  const { weekday, minutes } = saoPaulo(at);
-  return BUSINESS_DAYS.has(weekday) && BUSINESS_SHIFTS.some(([start, end]) => minutes >= start && minutes < end);
+  const local = saoPaulo(at);
+  return isWorkday(local) && BUSINESS_SHIFTS.some(([start, end]) => local.minutes >= start && local.minutes < end);
 }
 
 const WEEKDAY_NAMES = ["domingo", "segunda-feira", "terça-feira", "quarta-feira", "quinta-feira", "sexta-feira", "sábado"];
 
-/** Quando o atendimento humano volta, em palavras: "hoje às 14h", "amanhã às 8h", "segunda-feira às 8h". */
+/** Quando o atendimento humano volta, em palavras: "hoje às 14h", "amanhã às 8h", "segunda-feira às 8h", "dia 26/12 às 8h". */
 export function nextOpeningText(at: Date = new Date()): string {
-  const { weekday, minutes } = saoPaulo(at);
-  if (BUSINESS_DAYS.has(weekday)) {
-    const later = BUSINESS_SHIFTS.find(([start]) => start > minutes);
+  const today = saoPaulo(at);
+  if (isWorkday(today)) {
+    const later = BUSINESS_SHIFTS.find(([start]) => start > today.minutes);
     if (later) return `hoje às ${later[0] / 60}h`;
   }
-  for (let ahead = 1; ahead <= 7; ahead++) {
-    const day = (weekday + ahead) % 7;
-    if (BUSINESS_DAYS.has(day)) return `${ahead === 1 ? "amanhã" : WEEKDAY_NAMES[day]} às ${BUSINESS_SHIFTS[0][0] / 60}h`;
+  // Até 15 dias: cobre feriado emendado com fim de semana e Carnaval.
+  for (let ahead = 1; ahead <= 15; ahead++) {
+    const local = saoPaulo(new Date(at.getTime() + ahead * 86_400_000));
+    if (!isWorkday(local)) continue;
+    const hour = `às ${BUSINESS_SHIFTS[0][0] / 60}h`;
+    if (ahead === 1) return `amanhã ${hour}`;
+    return ahead < 7 ? `${WEEKDAY_NAMES[local.weekday]} ${hour}` : `dia ${local.day.slice(8)}/${local.day.slice(5, 7)} ${hour}`;
   }
   return "no próximo dia útil";
 }
 
+/** "Hoje é feriado (Natal). " quando é, para o cliente entender por que não há gente num dia de semana. */
+function holidayPrefix(at: Date): string {
+  const today = saoPaulo(at);
+  const name = BUSINESS_DAYS.has(today.weekday) ? holidayName(today.day) : undefined;
+  return name ? `Hoje é feriado${name === "Feriado" ? "" : ` (${name})`}. ` : "";
+}
+
 /** A abertura do atendimento fora do horário: quem é, quando há gente, e a lista. */
 export function offHoursMenuText(at: Date = new Date()): string {
-  return `Olá! Sou a assistente virtual da BBNET. Nosso atendimento com pessoas funciona de segunda a sexta, das 8h às 12h e das 14h às 18h, e volta ${nextOpeningText(at)}. Enquanto isso, posso resolver várias coisas por aqui: toque em "${TRIAGE_LIST.button}" e escolha o assunto, ou escreva o que precisa.`;
+  return `Olá! Sou a assistente virtual da BBNET. Nosso atendimento com pessoas funciona de segunda a sexta, das 8h às 12h e das 14h às 18h. ${holidayPrefix(at)}Ele volta ${nextOpeningText(at)}. Enquanto isso, posso resolver várias coisas por aqui: toque em "${TRIAGE_LIST.button}" e escolha o assunto, ou escreva o que precisa.`;
 }
 
 /** Vai no fim das respostas fora do horário: a promessa "um atendente retorna" ganha data. */
