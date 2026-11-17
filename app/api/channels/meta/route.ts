@@ -18,6 +18,8 @@ import { fetchPixCode } from "@/lib/integrations/ixc/write-client";
 import { DbTicketRepository, ixcDiagnose, ixcInvoiceLookup, startTriage } from "@/lib/platform/triage-service";
 import { DbIncidentsRepository } from "@/lib/platform/incidents-service";
 import { isBusinessHours } from "@/lib/platform/triage-shared";
+import { doubtBotAnswerer, doubtBotConfigFromEnv } from "@/lib/platform/doubt-bot-service";
+import { DbKnowledgeRepository } from "@/lib/platform/knowledge-service";
 
 /**
  * Webhook oficial do **WhatsApp Business Platform (Cloud API)**.
@@ -112,6 +114,8 @@ export async function POST(request: Request) {
     const { provider, config: ixcConfig } = getIxcRuntime();
     const offHours = !isBusinessHours(new Date());
     const botSpeaks = autoReplyEnabled() || (offHoursAutoReplyEnabled() && offHours);
+    // Robô de dúvidas (n8n): só no horário comercial e só quando a IA não fala por outro caminho.
+    const doubtBotConfig = !botSpeaks && !offHours ? doubtBotConfigFromEnv() : undefined;
     const triage = await startTriage(tickets, {
       offHours: offHours && botSpeaks,
       channel: CHANNEL_NAME, conversationId: message.phone, lookup: lookupCustomer,
@@ -127,18 +131,24 @@ export async function POST(request: Request) {
     // recebe 200, e sem isso a reentrega viraria atendimento em dobro.
     if (message.kind === "text") {
       if (message.text.length > MAX_MESSAGE_LENGTH) { results.push({ ignored: true, reason: "mensagem-longa" }); continue; }
+      // Com um humano à frente da conversa a IA só sugere: não responde por cima dele.
+      // Quando responde, é pela Cloud API, e só fica gravado como enviado o que a Meta aceitou.
+      // O robô de dúvidas usa as mesmas travas (humano, uma por espera, janela de 24 horas, idempotência).
+      const auto = await metaAutoReplyOptions({
+        enabled: botSpeaks || !!doubtBotConfig, states: new DbConversationStateRepository(db), messages: channel, claims: new DbReplyRepository(db),
+        delivery: new DbConversationDelivery(db), config: sendConfig, channel: CHANNEL_NAME, customerMessageAt: message.sentAt,
+        awaitingAnswer: triage?.awaitingAnswer,
+      }, message.phone);
       results.push(await processChannelMessage(
         channel,
         { externalConversationId: message.phone, text: message.text, idempotencyKey: message.messageId, correlationId },
         new DbSupportMetricsRepository(db),
-        // Com um humano à frente da conversa a IA só sugere: não responde por cima dele.
-        // Quando responde, é pela Cloud API, e só fica gravado como enviado o que a Meta aceitou.
         {
-          ...await metaAutoReplyOptions({
-            enabled: botSpeaks, states: new DbConversationStateRepository(db), messages: channel, claims: new DbReplyRepository(db),
-            delivery: new DbConversationDelivery(db), config: sendConfig, channel: CHANNEL_NAME, customerMessageAt: message.sentAt,
-            awaitingAnswer: triage?.awaitingAnswer,
-          }, message.phone),
+          // Com o robô de dúvidas ligado e a IA sem falar por outro caminho, `send` é só do robô: o resto segue como sugestão.
+          ...(botSpeaks ? auto : { autoReply: false }),
+          doubtBot: doubtBotConfig && auto.autoReply && auto.send
+            ? { send: auto.send, answer: doubtBotAnswerer(doubtBotConfig, () => new DbKnowledgeRepository(db).list(200)) }
+            : undefined,
           templates,
           triage: triage?.hooks,
         },

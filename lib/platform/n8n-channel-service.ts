@@ -14,6 +14,7 @@ import { traceAgentResult } from "../observability/trace-agent-result.ts";
 import { type ReplyOverrides } from "./reply-templates-shared.ts";
 import { AI_SENDER } from "./conversation-state-shared.ts";
 import { listAsText, type InteractiveList } from "./triage-shared.ts";
+import type { DoubtBotInput, DoubtBotResult } from "./doubt-bot-service.ts";
 import {
   CSAT_QUESTION,
   CSAT_THANKS,
@@ -109,7 +110,16 @@ export interface ChannelOptions {
   send?: AutoReplySender;
   /** Triagem do atendimento (rota da Meta): menu de assunto, protocolo e setor. Ver `triage-service.ts`. */
   triage?: TriageHooks;
+  /**
+   * Robô de dúvidas (n8n), no horário comercial. Só vale com `autoReply` falso: é a
+   * exceção em que a IA fala sozinha **uma** vez, e só de dúvida que a base sustenta.
+   * Qualquer falha cai no caminho de sempre (sugestão ao atendente). Ver `doubt-bot-service.ts`.
+   */
+  doubtBot?: { answer(input: DoubtBotInput): Promise<DoubtBotResult>; send: AutoReplySender };
 }
+
+/** O que o robô de dúvidas pode responder. O resto (fatura, bloqueio, sem internet, cancelamento) tem fluxo próprio. */
+export const DOUBT_INTENTS: ReadonlySet<string> = new Set(["general_information", "sales_inquiry"]);
 
 /**
  * O que a triagem acrescenta ao turno. O canal não conhece atendimento nem
@@ -316,6 +326,13 @@ export async function processChannelMessage(
   const step = await options.triage?.afterClassify?.(classified, { text: input.text, autoReply: options.autoReply });
   if (step) return triageTurn(repository, input, metrics, options, step, classified);
 
+  // Dúvida que a base sustenta: o robô do n8n responde, uma vez. Não entra quando a
+  // IA já fala por outro caminho (`autoReply`) nem quando o cliente escolheu no menu.
+  if (!options.autoReply && options.doubtBot && !menuIntent && DOUBT_INTENTS.has(classified.intent)) {
+    const answered = await doubtBotTurn(repository, input, metrics, options, options.doubtBot, classified, contextForClassifier(historyRows));
+    if (answered) return answered;
+  }
+
   const result = runAgentPipeline(input.text, history, {
     channel: "whatsapp",
     intentOverride: { intent: classified.intent, confidence: classified.confidence },
@@ -354,6 +371,48 @@ ${footer}` : opened;
     intent: result.intent, handoff: result.handoff.required, handoffReason: result.handoff.reason, classified, label: "Resposta",
   });
   await options.triage?.record({ intent: result.intent, source: classified.source, confidence: classified.confidence, clarifying: false, delivered: delivery.sent, protocolIncluded: !!footer });
+  return response;
+}
+
+/**
+ * O turno do robô de dúvidas. `undefined` = não houve resposta do robô (sem trecho
+ * na base, n8n fora, texto reprovado): o canal segue o caminho normal. Falha tem
+ * linha própria na auditoria; "a base não sabe" não é falha.
+ */
+async function doubtBotTurn(
+  repository: ChannelRepository,
+  input: ChannelMessageInput,
+  metrics: SupportMetricsRepository | undefined,
+  options: ChannelOptions,
+  bot: NonNullable<ChannelOptions["doubtBot"]>,
+  classified: Classification,
+  history: ChatMessage[],
+): Promise<ChannelResponse | undefined> {
+  let result: DoubtBotResult;
+  try { result = await bot.answer({ question: input.text, intent: classified.intent, history }); } catch { result = { kind: "failed", reason: "Erro inesperado no robô de dúvidas." }; }
+  if (result.kind === "failed") {
+    await repository.audit({
+      correlationId: input.correlationId, entity: `conversation:${input.externalConversationId}`,
+      action: "whatsapp.doubtbot.failed", result: "failed",
+      reason: `Robô de dúvidas (n8n) sem resposta: ${sanitizeHandoffText(result.reason)} A conversa segue para o atendente.`,
+    }).catch(() => undefined);
+    return undefined;
+  }
+  if (result.kind === "none") return undefined;
+
+  const footer = options.triage?.footer();
+  const text = footer ? `${result.text}
+
+${footer}` : result.text;
+  const delivery = await deliver({ ...options, autoReply: true, send: bot.send }, input, text);
+  const label = `Resposta do robô de dúvidas (fontes: ${result.sources.map((title) => sanitizeHandoffText(title)).join("; ")})`;
+  const response = await recordTurn(repository, input, metrics, {
+    content: delivery.sent ? delivery.text ?? text : text, delivery,
+    // Primeira resposta, não atendimento: não conta como resolvido e a conversa continua na fila.
+    status: delivery.sent ? AUTO_REPLIED_STATUS : SUGGESTED_STATUS,
+    intent: classified.intent, handoff: false, handoffReason: null, classified, label,
+  });
+  await options.triage?.record({ intent: classified.intent, source: classified.source, confidence: classified.confidence, clarifying: false, delivered: delivery.sent, protocolIncluded: !!footer });
   return response;
 }
 
