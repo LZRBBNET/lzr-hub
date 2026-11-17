@@ -11,7 +11,7 @@ import {
   extractDocument, invoiceDraft, type InvoiceSelfService,
 } from "./invoice-self-service-shared.ts";
 import {
-  CLARIFY_BELOW, CLARIFY_TEXT, DIAGNOSABLE_INTENTS, formatProtocol, menuChoice, protocolFooter, queueForIntent,
+  CLARIFY_BELOW, CLARIFY_TEXT, DIAGNOSABLE_INTENTS, TRIAGE_LIST, offHoursMenuText, offHoursNote, formatProtocol, menuChoice, protocolFooter, queueForIntent,
   type TicketIdentification, type TicketStage, type TicketSummary,
 } from "./triage-shared.ts";
 
@@ -84,6 +84,19 @@ export async function openOrContinueTicket(
 export async function closeOpenTicket(repository: TicketRepository, channel: string, conversationId: string, now = Date.now()): Promise<void> {
   const open = await repository.findOpen(channel, conversationId);
   if (open) await repository.update(open.id, { status: "closed", closedAt: iso(now), closedReason: "resolved" });
+}
+
+/**
+ * O atendente mandou uma mensagem com o protocolo (em geral, a sugestão da IA
+ * usada como rascunho): o cliente foi informado. Sem isto, no modo observação o
+ * protocolo só contava como "informado" quando a IA enviava — o que nunca
+ * acontece — e reaparecia no fim de toda sugestão seguinte.
+ */
+export async function markProtocolQuoted(repository: TicketRepository, channel: string, conversationId: string, text: string, now = Date.now()): Promise<boolean> {
+  const open = await repository.findOpen(channel, conversationId);
+  if (!open?.protocol || open.protocolSentAt || !text.includes(open.protocol)) return false;
+  await repository.update(open.id, { protocolSentAt: iso(now) });
+  return true;
 }
 
 /** Busca no IXC pelo telefone. Lança quando o IXC não responde; `undefined` = nenhum ou mais de um cadastro. */
@@ -336,17 +349,82 @@ function invoiceSteps(repository: TicketRepository, ticket: TicketRow, invoice: 
  * resposta, os passos da segunda via e o registro da decisão. Falha ao gravar
  * nunca derruba o atendimento.
  */
-export function triageHooks(repository: TicketRepository, ticket: TicketRow, diagnose?: Diagnose, invoice?: InvoiceOptions): TriageHooks {
+/**
+ * Resposta ao "sem internet" a partir do diagnóstico, quando a IA fala sozinha.
+ * Só os casos em que o diagnóstico muda o que dizer: bloqueio, massiva, OS já
+ * aberta e conexão chegando ao equipamento. Offline sem causa conhecida segue a
+ * resposta aprovada (reinício guiado). Nada aqui afirma ação que não aconteceu:
+ * a IA conta o que leu no IXC e o que vem a seguir.
+ */
+export function diagnosisReply(diagnosis: ConnectionDiagnosis, canAskCpf: boolean): { text: string; askCpf: boolean } | undefined {
+  if (diagnosis.verdict === "blocked") {
+    if (diagnosis.trustUnlockEligible || !diagnosis.facts.some((fact) => fact.includes("manualmente"))) {
+      return canAskCpf
+        ? { text: "Verifiquei seu cadastro: sua conexão está bloqueada por pendência financeira. Posso te enviar a fatura com o PIX para regularizar — me diga o CPF do titular do contrato, só os números.", askCpf: true }
+        : { text: "Verifiquei seu cadastro: sua conexão está bloqueada por pendência financeira. Um atendente te ajuda a regularizar por aqui.", askCpf: false };
+    }
+    return { text: "Verifiquei seu cadastro: o acesso do seu contrato está suspenso. Um atendente precisa conferir com você por aqui.", askCpf: false };
+  }
+  if (diagnosis.incident) return { text: `Identificamos uma instabilidade na rede da sua região (${diagnosis.incident.neighborhood}), que já está registrada com a equipe técnica. Assim que normalizar, sua internet volta sem você precisar mexer no equipamento.`, askCpf: false };
+  if (diagnosis.openServiceOrderId) return { text: `Já existe um chamado técnico aberto para você (nº ${diagnosis.openServiceOrderId}). A equipe segue com ele, não é preciso abrir outro.`, askCpf: false };
+  if (diagnosis.verdict === "online") return { text: "Verifiquei aqui: a conexão está chegando até o seu equipamento, então o problema deve estar no Wi-Fi ou no aparelho. Desligue o roteador da tomada por 30 segundos e ligue de novo; se continuar, me conte se acontece em todos os aparelhos.", askCpf: false };
+  return undefined;
+}
+
+export interface TriageMode {
+  /** Fora do horário comercial: lista clicável e aviso de quando o atendimento com pessoas volta. */
+  offHours?: boolean;
+  now?: () => number;
+}
+
+/**
+ * Como a triagem entra no canal: menu, pergunta do assunto, protocolo na primeira
+ * resposta, os passos da segunda via, a resposta pelo diagnóstico e o registro da
+ * decisão. Falha ao gravar nunca derruba o atendimento.
+ */
+export function triageHooks(repository: TicketRepository, ticket: TicketRow, diagnose?: Diagnose, invoice?: InvoiceOptions, mode: TriageMode = {}): TriageHooks {
+  const at = () => new Date((mode.now ?? Date.now)());
+  const invoiceHooks = invoiceSteps(repository, ticket, invoice);
+  // Diagnóstico feito para responder ao cliente não se repete no registro do turno.
+  let diagnosedNow = false;
+  // O protocolo só conta como informado se esteve no texto — o rodapé pode ter só o aviso de horário.
+  let protocolInFooter = false;
   return {
-    ...invoiceSteps(repository, ticket, invoice),
+    intercept: invoiceHooks.intercept,
+    afterClassify: async (classified, context) => {
+      const step = await invoiceHooks.afterClassify?.(classified, context);
+      if (step || !context.autoReply) return step;
+      if (!DIAGNOSABLE_INTENTS.has(classified.intent)) return undefined;
+      const diagnosis = await diagnoseTicket(repository, ticket, classified.intent, diagnose);
+      if (!diagnosis) return undefined;
+      diagnosedNow = true;
+      const canAskCpf = !!invoice && ticket.identification === "identified" && !!ticket.ixcCustomerId;
+      const reply = diagnosisReply(diagnosis, canAskCpf);
+      if (!reply) return undefined;
+      return {
+        text: reply.text, status: reply.askCpf ? "waiting_customer" : "replied", intent: classified.intent, label: "Resposta pelo diagnóstico",
+        // O cliente bloqueado por atraso já entra no fluxo da segunda via: a resposta dele é o CPF.
+        after: async (delivered) => { if (delivered && reply.askCpf) await repository.update(ticket.id, { selfService: { step: "awaiting_cpf", at: at().toISOString(), attempts: 0 } }); },
+      };
+    },
     menuChoice: (text) => (ticket.stage === "clarifying" ? menuChoice(text) : undefined),
     // Pergunta uma vez por atendimento: se a resposta à pergunta também for vaga,
     // segue o caminho normal (que passa para um atendente) em vez de repetir o menu.
-    clarification: (classified) => (ticket.stage === "new" && (classified.confidence < CLARIFY_BELOW || classified.intent === "general_information") ? { text: CLARIFY_TEXT } : undefined),
-    footer: () => (ticket.protocol && !ticket.protocolSentAt ? protocolFooter(ticket.protocol) : undefined),
+    // Fora do horário vai como lista clicável, já dizendo quando há gente.
+    clarification: (classified) => {
+      if (!(ticket.stage === "new" && (classified.confidence < CLARIFY_BELOW || classified.intent === "general_information"))) return undefined;
+      return mode.offHours ? { text: offHoursMenuText(at()), interactive: TRIAGE_LIST } : { text: CLARIFY_TEXT };
+    },
+    footer: (context) => {
+      const lines: string[] = [];
+      if (ticket.protocol && !ticket.protocolSentAt) { lines.push(protocolFooter(ticket.protocol)); protocolInFooter = true; }
+      // A abertura fora do horário já diz quando há gente; nas respostas, a promessa "um atendente" ganha data.
+      if (mode.offHours && !context?.clarifying) lines.push(offHoursNote(at()));
+      return lines.length ? lines.join("\n") : undefined;
+    },
     record: async (entry) => {
-      await recordTriage(repository, ticket, entry).catch(() => undefined);
-      if (!entry.clarifying) await diagnoseTicket(repository, ticket, entry.intent, diagnose);
+      await recordTriage(repository, ticket, { ...entry, protocolIncluded: entry.protocolIncluded && protocolInFooter }).catch(() => undefined);
+      if (!entry.clarifying && !diagnosedNow) await diagnoseTicket(repository, ticket, entry.intent, diagnose);
     },
   };
 }
@@ -360,13 +438,13 @@ export function triageHooks(repository: TicketRepository, ticket: TicketRow, dia
  */
 export async function startTriage(
   repository: TicketRepository,
-  input: { channel: string; conversationId: string; lookup: CustomerLookup; diagnose?: Diagnose; invoice?: InvoiceOptions; now?: number },
+  input: { channel: string; conversationId: string; lookup: CustomerLookup; diagnose?: Diagnose; invoice?: InvoiceOptions; offHours?: boolean; now?: number },
 ): Promise<{ ticket: TicketRow; hooks: TriageHooks; knownCustomer: CustomerLookup; awaitingAnswer: boolean } | undefined> {
   try {
     const { ticket: opened } = await openOrContinueTicket(repository, input);
     const ticket = await identifyTicketCustomer(repository, opened, input.lookup);
     return {
-      ticket, hooks: triageHooks(repository, ticket, input.diagnose, input.invoice), knownCustomer: knownCustomer(ticket),
+      ticket, hooks: triageHooks(repository, ticket, input.diagnose, input.invoice, { offHours: input.offHours, now: input.now === undefined ? undefined : () => input.now as number }), knownCustomer: knownCustomer(ticket),
       // A IA perguntou algo (assunto ou CPF): a resposta do cliente merece resposta.
       awaitingAnswer: ticket.stage === "clarifying" || awaitingCpf(ticket),
     };

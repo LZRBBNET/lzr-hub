@@ -1,5 +1,5 @@
 import type { ConversationDelivery } from "./conversation-delivery-service.ts";
-import { MAX_TEXT_LENGTH, sendTextMessage, type MetaSendConfig } from "../integrations/meta/cloud-client.ts";
+import { MAX_TEXT_LENGTH, sendInteractiveList, sendTextMessage, type MetaSendConfig } from "../integrations/meta/cloud-client.ts";
 import type { ReplyRepository } from "./attendant-reply-service.ts";
 import { isNonCustomerConversation } from "./conversation-scope.ts";
 import type { ConversationStateRepository } from "./conversation-state-service.ts";
@@ -42,7 +42,7 @@ const blocked = (reason: string): AutoReplyDelivery => ({ sent: false, outcome: 
 
 export function metaAutoReplySender(deps: MetaAutoReplyDeps): AutoReplySender {
   const now = deps.now ?? Date.now;
-  return async ({ conversationId, text, inboundMessageId }) => {
+  return async ({ conversationId, text, inboundMessageId, interactive }) => {
     // 1. Política. Nada daqui chega ao banco ou à Meta.
     const config = deps.config;
     if (!config) return blocked("O envio pela Meta não está configurado (META_ACCESS_TOKEN / META_PHONE_NUMBER_ID).");
@@ -80,7 +80,9 @@ export function metaAutoReplySender(deps: MetaAutoReplyDeps): AutoReplySender {
     const finish = () => deps.delivery!.finish(deps.channel, conversationId, deliveryToken).catch(() => undefined);
 
     // 3. Chamada.
-    const sent = await sendTextMessage(config, { to: conversationId, text });
+    const sent = interactive
+      ? await sendInteractiveList(config, { to: conversationId, body: text, button: interactive.button, rows: interactive.rows })
+      : await sendTextMessage(config, { to: conversationId, text });
     if (!sent.ok) {
       // Ambiguous transport/provider outcomes keep the durable reservation.
       if (["timeout", "unreachable", "rejected"].includes(sent.kind)) {

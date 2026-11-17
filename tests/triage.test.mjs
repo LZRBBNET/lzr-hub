@@ -242,3 +242,15 @@ test("se a pergunta não sai, o atendimento não fica esperando resposta a ela",
   assert.equal(ticket().stage, "new");
   assert.equal(ticket().protocolSentAt, null);
 });
+
+test("protocolo enviado pelo atendente (sugestão usada como rascunho) conta como informado e some das próximas sugestões", async () => {
+  const { markProtocolQuoted, triageHooks } = await import("../lib/platform/triage-service.ts");
+  const tickets = new MemoryTicketRepository();
+  const { ticket } = await openOrContinueTicket(tickets, { channel: CHANNEL_NAME, conversationId: CLIENTE });
+  assert.match(triageHooks(tickets, ticket).footer(), /Protocolo do atendimento/);
+  assert.equal(await markProtocolQuoted(tickets, CHANNEL_NAME, CLIENTE, "Olá! Vamos por partes.\n\nProtocolo do atendimento: outro"), false, "texto sem o protocolo não conta");
+  assert.equal(await markProtocolQuoted(tickets, CHANNEL_NAME, CLIENTE, `Vamos por partes.\n\nProtocolo do atendimento: ${ticket.protocol}`), true);
+  const depois = await tickets.findOpen(CHANNEL_NAME, CLIENTE);
+  assert.ok(depois.protocolSentAt);
+  assert.equal(triageHooks(tickets, depois).footer(), undefined, "a próxima sugestão sai sem o protocolo");
+});

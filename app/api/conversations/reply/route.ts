@@ -5,6 +5,7 @@ import { DbReplyRepository, attendantReplyEnabled, sendAttendantReply } from "@/
 import { CHANNEL_NAME } from "@/lib/platform/n8n-channel-service";
 import { DbConversationDelivery } from "@/lib/platform/conversation-delivery-service";
 import { authorize } from "@/lib/platform/session-guard";
+import { DbTicketRepository, markProtocolQuoted } from "@/lib/platform/triage-service";
 
 /**
  * O atendente responde ao cliente pelo WhatsApp (Meta Cloud API).
@@ -32,6 +33,8 @@ export async function POST(request: Request) {
       },
     );
     if (!result.ok) return NextResponse.json({ error: result.reason }, { status: result.status });
+    // Resposta com o protocolo informa o cliente: as próximas sugestões deixam de repeti-lo. Melhor esforço.
+    if (!result.duplicate) await markProtocolQuoted(new DbTicketRepository(await getDb()), CHANNEL_NAME, String(body.conversationId ?? "").trim(), String(body.text ?? "")).catch(() => false);
     return NextResponse.json({ ok: true, messageId: result.messageId, duplicate: result.duplicate, recorded: result.recorded });
   } catch {
     return NextResponse.json({ error: "Envio não confirmado. Confira a conversa antes de tentar novamente." }, { status: 503 });

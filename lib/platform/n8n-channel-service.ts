@@ -13,6 +13,7 @@ import { appVersion } from "../runtime/app-version.ts";
 import { traceAgentResult } from "../observability/trace-agent-result.ts";
 import { type ReplyOverrides } from "./reply-templates-shared.ts";
 import { AI_SENDER } from "./conversation-state-shared.ts";
+import { listAsText, type InteractiveList } from "./triage-shared.ts";
 import {
   CSAT_QUESTION,
   CSAT_THANKS,
@@ -88,7 +89,7 @@ export type AutoReplyDelivery =
   | { sent: true; messageId: string; /** O que de fato saiu, quando é reentrega de um envio já feito. */ text?: string }
   | { sent: false; outcome: "blocked" | "failed" | "unknown"; reason: string };
 /** `inboundMessageId` é a chave de idempotência da fala do cliente — o `wamid`, na Meta. */
-export type AutoReplySender = (input: { conversationId: string; text: string; inboundMessageId: string }) => Promise<AutoReplyDelivery>;
+export type AutoReplySender = (input: { conversationId: string; text: string; inboundMessageId: string; interactive?: InteractiveList }) => Promise<AutoReplyDelivery>;
 
 export interface ChannelOptions {
   autoReply: boolean;
@@ -117,8 +118,8 @@ export interface ChannelOptions {
 export interface TriageHooks {
   /** O assunto escolhido no menu, quando a fala é a resposta a ele. */
   menuChoice(text: string): Intent | undefined;
-  /** A pergunta do assunto, quando a IA não tem certeza e ainda não perguntou neste atendimento. */
-  clarification(classified: Classification): { text: string } | undefined;
+  /** A pergunta do assunto, quando a IA não tem certeza e ainda não perguntou neste atendimento. Com `interactive`, vai como lista clicável. */
+  clarification(classified: Classification): { text: string; interactive?: InteractiveList } | undefined;
   /**
    * A fala é a resposta a algo que a IA pediu (o CPF da segunda via): é tratada
    * antes do classificador — que nem chega a ver o documento.
@@ -126,8 +127,8 @@ export interface TriageHooks {
   intercept?(text: string, context: { autoReply: boolean }): Promise<TriageTurn | undefined>;
   /** Depois de saber o assunto: um passo de autoatendimento no lugar da resposta aprovada (pedir o CPF, conferir o titular). */
   afterClassify?(classified: Classification, context: { text: string; autoReply: boolean }): Promise<TriageTurn | undefined>;
-  /** O que vai no fim da primeira resposta do atendimento (o protocolo). */
-  footer(): string | undefined;
+  /** O que vai no fim da resposta: o protocolo (na primeira) e, fora do horário, quando o atendimento com pessoas volta. */
+  footer(context?: { clarifying?: boolean }): string | undefined;
   record(entry: { intent: string; source: string; confidence: number; clarifying: boolean; delivered: boolean; protocolIncluded: boolean }): Promise<void>;
 }
 
@@ -144,6 +145,8 @@ export interface TriageTurn {
   /** Como o turno aparece na auditoria ("Pedido do CPF ENVIADO…"). */
   label: string;
   clarifying?: boolean;
+  /** Vai como lista clicável; o histórico guarda o texto e as opções numeradas. */
+  interactive?: InteractiveList;
   after?(delivered: boolean): Promise<void>;
 }
 
@@ -154,11 +157,11 @@ type Delivery = { sent: true; messageId?: string; text?: string } | { sent: fals
  * sem que nada saísse quando ninguém do outro lado a enviava — e a tela afirmava
  * que o cliente tinha recebido. Aqui a gravação passa a seguir o envio.
  */
-async function deliver(options: ChannelOptions, input: ChannelMessageInput, text: string): Promise<Delivery> {
+async function deliver(options: ChannelOptions, input: ChannelMessageInput, text: string, interactive?: InteractiveList): Promise<Delivery> {
   if (!options.autoReply) return { sent: false };
   if (!options.send) return { sent: true };
   try {
-    const delivery = await options.send({ conversationId: input.externalConversationId, text, inboundMessageId: input.idempotencyKey });
+    const delivery = await options.send({ conversationId: input.externalConversationId, text, inboundMessageId: input.idempotencyKey, ...(interactive ? { interactive } : {}) });
     return delivery.sent ? delivery : { sent: false, failure: delivery };
   } catch {
     // Quem envia não deveria lançar; se lançou, não dá para afirmar nem que saiu nem que não.
@@ -305,7 +308,7 @@ export async function processChannelMessage(
   // modo observação o atendente lê a conversa e não precisa de menu.
   const clarification = !menuIntent && options.autoReply ? options.triage?.clarification(classified) : undefined;
   if (clarification) {
-    return triageTurn(repository, input, metrics, options, { text: clarification.text, status: CLARIFYING_STATUS, intent: classified.intent, label: "Pergunta do assunto", clarifying: true }, classified);
+    return triageTurn(repository, input, metrics, options, { text: clarification.text, interactive: clarification.interactive, status: CLARIFYING_STATUS, intent: classified.intent, label: "Pergunta do assunto", clarifying: true }, classified);
   }
 
   // Assunto com autoatendimento (segunda via): pedir o CPF ou conferir o titular
@@ -363,11 +366,13 @@ async function triageTurn(
   turn: TriageTurn,
   classified: Classification,
 ): Promise<ChannelResponse> {
-  const footer = options.triage?.footer();
+  const footer = options.triage?.footer({ clarifying: !!turn.clarifying });
   const text = footer ? `${turn.text}\n\n${footer}` : turn.text;
-  const delivery = await deliver(options, input, text);
+  const delivery = await deliver(options, input, text, turn.interactive);
+  // Lista clicável: o histórico mostra também as opções, que não estão no corpo.
+  const shown = turn.interactive ? `${text}\n\n${listAsText(turn.interactive)}` : text;
   const response = await recordTurn(repository, input, metrics, {
-    content: delivery.sent ? delivery.text ?? text : text, delivery, status: delivery.sent ? turn.status : SUGGESTED_STATUS,
+    content: delivery.sent ? delivery.text ?? shown : shown, delivery, status: delivery.sent ? turn.status : SUGGESTED_STATUS,
     intent: turn.intent, handoff: false, handoffReason: null, classified, label: turn.label,
   });
   await options.triage?.record({ intent: turn.intent, source: classified.source, confidence: classified.confidence, clarifying: !!turn.clarifying, delivered: delivery.sent, protocolIncluded: !!footer });

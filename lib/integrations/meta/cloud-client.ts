@@ -111,6 +111,38 @@ export async function sendTextMessage(config: MetaSendConfig, input: { to: strin
   return failureFrom(result.status, body);
 }
 
+/**
+ * Lista clicável (mensagem interativa `list`). Limites da Meta: corpo até 1024
+ * caracteres, botão até 20, título de opção até 24, descrição até 72, no máximo
+ * 10 opções — acima disso a Meta recusa a mensagem inteira, então cortamos aqui.
+ */
+export async function sendInteractiveList(
+  config: MetaSendConfig,
+  input: { to: string; body: string; button: string; rows: Array<{ id: string; title: string; description?: string }> },
+): Promise<SendResult> {
+  const result = await post(config, {
+    messaging_product: "whatsapp",
+    recipient_type: "individual",
+    to: input.to,
+    type: "interactive",
+    interactive: {
+      type: "list",
+      body: { text: input.body.slice(0, 1024) },
+      action: {
+        button: input.button.slice(0, 20),
+        sections: [{ title: "Assuntos", rows: input.rows.slice(0, 10).map((row) => ({ id: row.id, title: row.title.slice(0, 24), ...(row.description ? { description: row.description.slice(0, 72) } : {}) })) }],
+      },
+    },
+  });
+  if ("failure" in result) return result.failure;
+  const body = result.body as GraphError & { messages?: Array<{ id?: string }> };
+  if (result.status >= 200 && result.status < 300) {
+    const messageId = body.messages?.[0]?.id;
+    return messageId ? { ok: true, messageId } : { ok: false, kind: "rejected", reason: "A Meta respondeu sem identificar a mensagem enviada." };
+  }
+  return failureFrom(result.status, body);
+}
+
 /** Marca a mensagem do cliente como lida. Melhor esforço: quem chama ignora a falha. */
 export async function markAsRead(config: MetaSendConfig, messageId: string): Promise<boolean> {
   const result = await post(config, { messaging_product: "whatsapp", status: "read", message_id: messageId });

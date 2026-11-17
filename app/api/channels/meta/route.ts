@@ -17,6 +17,7 @@ import { metaSendConfigFromEnv } from "@/lib/integrations/meta/cloud-client";
 import { fetchPixCode } from "@/lib/integrations/ixc/write-client";
 import { DbTicketRepository, ixcDiagnose, ixcInvoiceLookup, startTriage } from "@/lib/platform/triage-service";
 import { DbIncidentsRepository } from "@/lib/platform/incidents-service";
+import { isBusinessHours } from "@/lib/platform/triage-shared";
 
 /**
  * Webhook oficial do **WhatsApp Business Platform (Cloud API)**.
@@ -32,6 +33,12 @@ const metaEnabled = () => process.env.FEATURE_META_WHATSAPP === "true";
 const autoReplyEnabled = () => process.env.FEATURE_N8N_AUTOREPLY === "true";
 /** A IA manda vencimento, valor e linha digitável ao cliente. Nasce desligada, como toda flag com efeito no mundo. */
 const aiInvoiceEnabled = () => process.env.FEATURE_AI_INVOICE === "true";
+/**
+ * Fora do horário comercial (seg–sex, 8h–12h e 14h–18h) a IA responde sozinha:
+ * lista de assuntos, respostas aprovadas e autoatendimento. Dentro do horário,
+ * só com `FEATURE_N8N_AUTOREPLY`. Nasce desligada como toda flag com efeito no mundo.
+ */
+const offHoursAutoReplyEnabled = () => process.env.FEATURE_OFF_HOURS_AUTOREPLY === "true";
 
 /**
  * Verificação do webhook: a Meta chama com `hub.challenge` e espera o valor de
@@ -103,7 +110,10 @@ export async function POST(request: Request) {
     // Atendimento, protocolo e cliente identificado — uma consulta ao IXC por
     // atendimento, que a captação de lead aproveita em vez de repetir.
     const { provider, config: ixcConfig } = getIxcRuntime();
+    const offHours = !isBusinessHours(new Date());
+    const botSpeaks = autoReplyEnabled() || (offHoursAutoReplyEnabled() && offHours);
     const triage = await startTriage(tickets, {
+      offHours: offHours && botSpeaks,
       channel: CHANNEL_NAME, conversationId: message.phone, lookup: lookupCustomer,
       // Atendimento técnico de cliente identificado ganha diagnóstico (contrato, login, massiva, OS aberta).
       diagnose: provider ? ixcDiagnose(provider, new DbIncidentsRepository(db), correlationId) : undefined,
@@ -125,7 +135,7 @@ export async function POST(request: Request) {
         // Quando responde, é pela Cloud API, e só fica gravado como enviado o que a Meta aceitou.
         {
           ...await metaAutoReplyOptions({
-            enabled: autoReplyEnabled(), states: new DbConversationStateRepository(db), messages: channel, claims: new DbReplyRepository(db),
+            enabled: botSpeaks, states: new DbConversationStateRepository(db), messages: channel, claims: new DbReplyRepository(db),
             delivery: new DbConversationDelivery(db), config: sendConfig, channel: CHANNEL_NAME, customerMessageAt: message.sentAt,
             awaitingAnswer: triage?.awaitingAnswer,
           }, message.phone),
