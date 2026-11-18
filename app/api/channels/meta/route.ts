@@ -13,7 +13,9 @@ import { parseMetaMessages, parseMetaStatuses, parseMetaWebhook, signatureIsVali
 import { DbConversationStateRepository } from "@/lib/platform/conversation-state-service";
 import { DbReplyRepository } from "@/lib/platform/attendant-reply-service";
 import { metaAutoReplyOptions } from "@/lib/platform/meta-auto-reply-service";
-import { metaSendConfigFromEnv } from "@/lib/integrations/meta/cloud-client";
+import { metaSendConfigFromEnv, sendTextMessage } from "@/lib/integrations/meta/cloud-client";
+import { DbOutboundRepository } from "@/lib/platform/outbound-service";
+import { OPT_IN_REPLY, OPT_OUT_REPLY, canonicalPhone, isOptIn, isOptOut } from "@/lib/platform/outbound-shared";
 import { fetchPixCode } from "@/lib/integrations/ixc/write-client";
 import { DbTicketRepository, ixcDiagnose, ixcInvoiceLookup, startTriage } from "@/lib/platform/triage-service";
 import { DbIncidentsRepository } from "@/lib/platform/incidents-service";
@@ -22,7 +24,8 @@ import { doubtBotAnswerer, doubtBotConfigFromEnv } from "@/lib/platform/doubt-bo
 import { DbKnowledgeRepository } from "@/lib/platform/knowledge-service";
 import { openAiServiceOrder } from "@/lib/platform/ai-service-order";
 import { DbIxcWriteOperationsRepository } from "@/lib/platform/ixc-write-service";
-import { openServiceOrder } from "@/lib/integrations/ixc/write-client";
+import { openServiceOrder, trustUnlock } from "@/lib/integrations/ixc/write-client";
+import { aiTrustUnlock } from "@/lib/platform/ai-trust-unlock";
 import { logUnauthenticatedAction } from "@/lib/platform/audit-log";
 
 /**
@@ -56,6 +59,8 @@ const offHoursAutoReplyEnabled = () => process.env.FEATURE_OFF_HOURS_AUTOREPLY =
  * exige `FEATURE_IXC_WRITE`. Nasce desligada: abre chamado real na fila da equipe técnica.
  */
 const aiServiceOrderEnabled = () => process.env.FEATURE_AI_SERVICE_ORDER === "true";
+/** A IA libera a internet em confiança pela regra da BBNET. Também exige `FEATURE_IXC_WRITE`. Nasce desligada. */
+const aiTrustUnlockEnabled = () => process.env.FEATURE_AI_TRUST_UNLOCK === "true";
 const aiAgentConfig = () => (process.env.FEATURE_AI_AGENT === "true" ? doubtBotConfigFromEnv() : undefined);
 
 /**
@@ -151,6 +156,19 @@ export async function POST(request: Request) {
         }
         return result;
       } : undefined,
+      trustUnlock: agentConfig && provider ? async (input) => {
+        const outcome = await aiTrustUnlock({
+          enabled: aiTrustUnlockEnabled(), provider, ledger: new DbIxcWriteOperationsRepository(db), correlationId,
+          unlock: (contractId, corr) => trustUnlock({ baseUrl: ixcConfig.ixcBaseUrl!, token: ixcConfig.ixcToken! }, contractId, corr),
+        }, input);
+        if (outcome.status !== "needs_cpf" && outcome.status !== "skipped") {
+          await logUnauthenticatedAction({
+            action: "ixc.write.trust_unlock", entity: `customer:${input.customerId}`, result: outcome.status, correlationId, actorNotApplicable: true,
+            reason: `Desbloqueio de confiança pela IA: ${outcome.status}${"reason" in outcome && outcome.reason ? ` (${outcome.reason})` : ""}`,
+          }).catch(() => undefined);
+        }
+        return outcome;
+      } : undefined,
       channel: CHANNEL_NAME, conversationId: message.phone, lookup: lookupCustomer,
       // Atendimento técnico de cliente identificado ganha diagnóstico (contrato, login, massiva, OS aberta).
       diagnose: provider ? ixcDiagnose(provider, new DbIncidentsRepository(db), correlationId) : undefined,
@@ -164,6 +182,23 @@ export async function POST(request: Request) {
     // recebe 200, e sem isso a reentrega viraria atendimento em dobro.
     if (message.kind === "text") {
       if (message.text.length > MAX_MESSAGE_LENGTH) { results.push({ ignored: true, reason: "mensagem-longa" }); continue; }
+      // SAIR / VOLTAR: descadastro dos avisos automáticos de fatura e rede. Não é atendimento — a IA
+      // não entra, e o atendimento pelo WhatsApp continua. Reentrega do webhook não responde duas vezes.
+      if (isOptOut(message.text) || isOptIn(message.text)) {
+        const out = isOptOut(message.text);
+        if (!(await channel.findIdempotent(message.messageId))) {
+          await new DbOutboundRepository(db).setOptOut(canonicalPhone(message.phone), out, "whatsapp").catch(() => undefined);
+          const reply = out ? OPT_OUT_REPLY : OPT_IN_REPLY;
+          const sent = sendConfig ? await sendTextMessage(sendConfig, { to: message.phone, text: reply }) : undefined;
+          await channel.saveMessages(CHANNEL_NAME, message.phone, [
+            { role: "customer", content: message.text, correlationId, externalMessageId: message.messageId },
+            { role: sent?.ok ? "agent" : "suggestion", content: reply, correlationId, ...(sent?.ok ? { externalMessageId: sent.messageId, sentBy: "ia" } : {}) },
+          ]);
+          await channel.saveIdempotency(message.messageId, CHANNEL_NAME, message.phone, { response: sent?.ok ? reply : null, autoReply: !!sent?.ok, status: out ? "opted_out" : "opted_in", handoff: false, correlationId });
+        }
+        results.push({ status: out ? "opted_out" : "opted_in" });
+        continue;
+      }
       // Com um humano à frente da conversa a IA só sugere: não responde por cima dele.
       // Quando responde, é pela Cloud API, e só fica gravado como enviado o que a Meta aceitou.
       // O robô de dúvidas usa as mesmas travas (humano, uma por espera, janela de 24 horas, idempotência).

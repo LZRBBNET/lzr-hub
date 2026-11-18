@@ -50,6 +50,12 @@ export interface IxcServiceDiagnosisData {
   /** Sinal recebido/enviado pela ONU, em dBm; `null` = o IXC não tem leitura (ONU desligada ou sem fibra). */
   fiber?: Array<{ loginId:string; rxDbm:number|null; txDbm:number|null; readAt?:string }>;
 }
+/** Fatura em aberto da base inteira, para a cobrança proativa: só o que o aviso precisa. */
+export interface IxcDueInvoiceDto { id:string; customerId:string; dueAt:string; value:number }
+/** Contato do cliente para aviso: nome (para o "Olá, Fulano"), celular, WhatsApp, bairro e cidade. Nada além. */
+export interface IxcCustomerContactDto { id:string; name:string; mobile:string; whatsapp:string; active:boolean; neighborhood:string; city:string }
+/** O que a regra do desbloqueio de confiança precisa do contrato e das faturas pagas depois do último uso. */
+export interface IxcTrustUnlockFacts { contractId:string; internetStatus:string; trustUnlockActive:boolean; lastUnlockAt:string|null; overdueCount:number; paidAfterUnlock:Array<{ dueAt:string; paidAt:string }> }
 export interface IxcConnectionDto { id:string; customerId:string; login:string; status:string; lastAccessAt?:string; address?:string; equipmentDescriptor?:string; connectionType?:string }
 /** Página da listagem de clientes. `total` é o tamanho do resultado no IXC, não o da página. */
 export interface IxcCustomerPage { items:IxcCustomerDto[]; total:number; page:number; pageSize:number }

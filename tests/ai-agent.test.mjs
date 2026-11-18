@@ -51,7 +51,7 @@ const n8nPadrao = async (body) => {
   return "NAO_SEI";
 };
 
-async function montar({ n8n = n8nPadrao, lookup = async () => undefined, diagnose, serviceOrder } = {}) {
+async function montar({ n8n = n8nPadrao, lookup = async () => undefined, diagnose, serviceOrder, trustUnlock } = {}) {
   const docs = new MemoryKnowledgeRepository();
   for (const [title, content] of DOCS) { const doc = await docs.create({ title, category: "geral", content }); await docs.publish(doc.id); }
   const channel = new MemoryChannelRepository();
@@ -66,7 +66,7 @@ async function montar({ n8n = n8nPadrao, lookup = async () => undefined, diagnos
   // Reproduz a rota da Meta com FEATURE_AI_AGENT: a IA fala sempre, em modo conversa.
   const receber = async (text) => {
     const wamid = `wamid.A${++n}`;
-    const triage = await startTriage(tickets, { channel: CHANNEL_NAME, conversationId: CLIENTE, lookup, diagnose, serviceOrder, offHours: false, agent: true });
+    const triage = await startTriage(tickets, { channel: CHANNEL_NAME, conversationId: CLIENTE, lookup, diagnose, serviceOrder, trustUnlock, offHours: false, agent: true });
     const auto = await metaAutoReplyOptions({
       enabled: true, states, messages: channel, claims, config: metaConfig, channel: CHANNEL_NAME,
       delivery: { begin: async () => "t", finish: async () => {}, settleUncertain: async () => {} },
@@ -257,4 +257,39 @@ test("OS não abriu (IXC fora, bloqueio): a IA não fala em OS e o pedido fica r
   assert.doesNotMatch(textos()[2], /ordem de serviço/);
   assert.match(textos()[2], /Seu pedido ficou registrado no protocolo/);
   assert.equal(ticket().intake.serviceOrderStatus, "failed");
+});
+
+test("desbloqueio de confiança: o modelo pede, o sistema decide e a mensagem diz o desfecho real", async () => {
+  const pedidos = [];
+  const trustUnlock = async (input) => { pedidos.push(input); return { status: "done", text: "Pronto: liberei sua internet em confiança enquanto o pagamento compensa." }; };
+  const n8n = async (body) => /libera/i.test(body.question) ? { answer: "Vou verificar a liberação para você.", state: "ongoing", action: "trust_unlock", promised_date: "sexta" } : n8nPadrao(body);
+  const { receber, textos } = await montar({ n8n, lookup: async () => ({ id: "21857" }), trustUnlock });
+  await receber("oi");
+  await receber("nao consigo pagar agora, libera minha internet que eu pago sexta");
+  assert.equal(pedidos.length, 1);
+  assert.equal(pedidos[0].promisedDate, "sexta");
+  assert.equal(pedidos[0].holderVerified, false, "o CPF ainda não foi conferido neste atendimento");
+  assert.match(textos()[1], /Vou verificar a liberação/);
+  assert.match(textos()[1], /liberei sua internet em confiança/);
+});
+
+test("desbloqueio sem CPF conferido: a IA pede o CPF e a próxima fala é tratada como o documento", async () => {
+  const trustUnlock = async () => ({ status: "needs_cpf", text: "Para liberar, preciso confirmar o titular do contrato: me diga o CPF, só os números." });
+  const n8n = async (body) => /libera/i.test(body.question) ? { answer: "Vou verificar.", state: "ongoing", action: "trust_unlock" } : n8nPadrao(body);
+  const { receber, textos, ticket } = await montar({ n8n, lookup: async () => ({ id: "21857" }), trustUnlock });
+  await receber("oi");
+  await receber("libera minha internet por favor");
+  assert.match(textos()[1], /me diga o CPF/);
+  assert.equal(ticket().selfService.step, "awaiting_cpf");
+});
+
+test("número sem cadastro pede desbloqueio: a IA explica e o IXC nem é consultado", async () => {
+  let chamadas = 0;
+  const trustUnlock = async () => { chamadas++; return { status: "done", text: "x" }; };
+  const n8n = async (body) => /libera/i.test(body.question) ? { answer: "Vou verificar.", state: "ongoing", action: "trust_unlock" } : n8nPadrao(body);
+  const { receber, textos } = await montar({ n8n, trustUnlock });
+  await receber("oi");
+  await receber("libera minha internet por favor");
+  assert.equal(chamadas, 0);
+  assert.match(textos()[1], /não está no cadastro/);
 });

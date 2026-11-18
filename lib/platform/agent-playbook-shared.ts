@@ -58,15 +58,19 @@ const DISCOUNT = `Você não concede desconto nem negocia valores.
 - Diga que a equipe financeira avalia o pedido.
 - Com o motivo: state "request_complete".`;
 
+/** Como o modelo pede o desbloqueio: o sistema confere titular e regra; o modelo nunca afirma que liberou. */
+const UNLOCK_ACTION = `- Se o cliente disser que não consegue pagar agora e pedir para liberar a internet, pergunte em que data vai pagar e, com a data, responda com "action": "trust_unlock" e "promised_date" (a data dita pelo cliente). O sistema confere as regras e informa o resultado; na sua "reply" apenas diga que vai verificar a liberação. Nunca diga que liberou.`;
+
 const PAYMENT = `Objetivo: resolver a dúvida de pagamento ou deixar pronto o pedido de conferência.
 - PIX é reconhecido em poucos minutos; boleto pode levar até 3 dias úteis. Depois de reconhecido, a internet volta sozinha; se não voltar, reiniciar o equipamento.
 - Pergunte quando pagou, como (PIX ou boleto) e o valor.
-- Se já passou do prazo e continua bloqueado, peça para enviar a foto do comprovante por aqui e registre o pedido de conferência (e de desbloqueio de confiança, se estiver sem internet): state "request_complete".`;
+- Se já passou do prazo e continua bloqueado, peça para enviar a foto do comprovante por aqui e registre o pedido de conferência: state "request_complete".
+${UNLOCK_ACTION}`;
 
 const UNLOCK = `O cliente está com a internet bloqueada.
-- Explique que o bloqueio acontece por fatura em atraso e que, pagando por PIX, a internet volta em minutos. Ofereça a segunda via: o cliente deve escrever "segunda via".
+- PRIMEIRO tente o pagamento: explique que o bloqueio é por fatura em atraso e que, pagando por PIX, a internet volta na hora. Ofereça a segunda via: o cliente deve escrever "segunda via".
 - Se já pagou, siga a conferência de pagamento: quando, como e o valor.
-- Se pedir desbloqueio de confiança, pergunte a data prevista do pagamento e registre: state "request_complete".`;
+${UNLOCK_ACTION}`;
 
 const INVOICE_UNVERIFIED = `O número deste WhatsApp não está no cadastro de um único cliente, então a segunda via não sai por aqui com segurança.
 - Explique isso com gentileza e pergunte o nome completo do titular do contrato.

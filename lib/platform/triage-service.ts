@@ -9,6 +9,11 @@ import type { Intent } from "../agent/types.ts";
 import { sanitizeHandoffText } from "../agent/handoff.ts";
 import type { TicketIntake } from "./agent-playbook-shared.ts";
 import type { AiServiceOrderInput, AiServiceOrderResult } from "./ai-service-order.ts";
+import type { AiTrustUnlockInput, TrustUnlockOutcome } from "./ai-trust-unlock.ts";
+import { TRUST_UNLOCK_TEXT } from "./trust-unlock-shared.ts";
+
+/** Libera a internet em confiança no IXC pela regra da BBNET. Injetado: a triagem não conhece o IXC. */
+export type TrustUnlocker = (input: AiTrustUnlockInput) => Promise<TrustUnlockOutcome>;
 
 /** Abre a OS no IXC pelo pedido que a IA montou. Injetado: a triagem não conhece o IXC. */
 export type ServiceOrderOpener = (input: AiServiceOrderInput) => Promise<AiServiceOrderResult | undefined>;
@@ -402,6 +407,8 @@ export interface TriageMode {
   agent?: boolean;
   /** Modo autônomo: abre a OS no IXC quando o pedido técnico fica pronto (`FEATURE_AI_SERVICE_ORDER`). */
   serviceOrder?: ServiceOrderOpener;
+  /** Modo autônomo: desbloqueio de confiança pedido na conversa (`FEATURE_AI_TRUST_UNLOCK`). */
+  trustUnlock?: TrustUnlocker;
   now?: () => number;
 }
 
@@ -473,6 +480,15 @@ export function triageHooks(repository: TicketRepository, ticket: TicketRow, dia
       intakeNow = { intent, summary: sanitizeHandoffText(summary).slice(0, 1500), at: at().toISOString() };
       await repository.update(ticket.id, { intake: intakeNow, queue: queueForIntent(intent) });
     },
+    trustUnlock: async (promisedDate) => {
+      if (!mode.trustUnlock) return undefined;
+      if (ticket.identification !== "identified" || !ticket.ixcCustomerId) return { status: "denied", text: TRUST_UNLOCK_TEXT.unidentified };
+      const outcome = await mode.trustUnlock({ customerId: ticket.ixcCustomerId, ticketId: ticket.id, holderVerified: ticket.selfService?.step === "verified", promisedDate })
+        .catch((): TrustUnlockOutcome => ({ status: "failed", text: TRUST_UNLOCK_TEXT.failed }));
+      // Falta o CPF: a próxima fala do cliente é o documento, e a conferência da segunda via cuida dela.
+      if (outcome.status === "needs_cpf") await repository.update(ticket.id, { selfService: { step: "awaiting_cpf", at: at().toISOString(), attempts: 0 } }).catch(() => undefined);
+      return outcome;
+    },
     openServiceOrder: async (intent) => {
       if (!mode.serviceOrder || !intakeNow || ticket.identification !== "identified" || !ticket.ixcCustomerId) return undefined;
       let result: AiServiceOrderResult | undefined;
@@ -513,13 +529,13 @@ export function triageHooks(repository: TicketRepository, ticket: TicketRow, dia
  */
 export async function startTriage(
   repository: TicketRepository,
-  input: { channel: string; conversationId: string; lookup: CustomerLookup; diagnose?: Diagnose; invoice?: InvoiceOptions; offHours?: boolean; agent?: boolean; serviceOrder?: ServiceOrderOpener; now?: number },
+  input: { channel: string; conversationId: string; lookup: CustomerLookup; diagnose?: Diagnose; invoice?: InvoiceOptions; offHours?: boolean; agent?: boolean; serviceOrder?: ServiceOrderOpener; trustUnlock?: TrustUnlocker; now?: number },
 ): Promise<{ ticket: TicketRow; hooks: TriageHooks; knownCustomer: CustomerLookup; awaitingAnswer: boolean; handedOff: boolean } | undefined> {
   try {
     const { ticket: opened } = await openOrContinueTicket(repository, input);
     const ticket = await identifyTicketCustomer(repository, opened, input.lookup);
     return {
-      ticket, hooks: triageHooks(repository, ticket, input.diagnose, input.invoice, { offHours: input.offHours, agent: input.agent, serviceOrder: input.serviceOrder, now: input.now === undefined ? undefined : () => input.now as number }), knownCustomer: knownCustomer(ticket),
+      ticket, hooks: triageHooks(repository, ticket, input.diagnose, input.invoice, { offHours: input.offHours, agent: input.agent, serviceOrder: input.serviceOrder, trustUnlock: input.trustUnlock, now: input.now === undefined ? undefined : () => input.now as number }), knownCustomer: knownCustomer(ticket),
       // A IA perguntou algo (assunto ou CPF): a resposta do cliente merece resposta.
       awaitingAnswer: ticket.stage === "clarifying" || awaitingCpf(ticket),
       // A IA passou para o atendente neste atendimento: no modo autônomo, ela não volta a falar sozinha.

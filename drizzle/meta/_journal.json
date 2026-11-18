@@ -169,6 +169,13 @@
       "when": 1795003259989,
       "tag": "0023_ticket_intake",
       "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "7",
+      "when": 1795008528846,
+      "tag": "0024_outbound_notices",
+      "breakpoints": true
     }
   ]
 }

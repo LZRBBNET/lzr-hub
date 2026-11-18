@@ -92,7 +92,7 @@ export interface DoubtBotInput {
 }
 
 export type DoubtBotResult =
-  | { kind: "answer"; text: string; sources: string[]; state?: AgentState; summary?: string }
+  | { kind: "answer"; text: string; sources: string[]; state?: AgentState; summary?: string; action?: "trust_unlock"; promisedDate?: string }
   | { kind: "none" }
   | { kind: "failed"; reason: string };
 
@@ -118,7 +118,7 @@ export async function askDoubtBot(config: DoubtBotConfig, input: DoubtBotInput, 
       signal: controller.signal,
     });
     if (!response.ok) return { kind: "failed", reason: `O n8n respondeu HTTP ${response.status}.` };
-    const body = await response.json().catch(() => undefined) as { answer?: unknown; text?: unknown; state?: unknown; summary?: unknown } | undefined;
+    const body = await response.json().catch(() => undefined) as { answer?: unknown; text?: unknown; state?: unknown; summary?: unknown; action?: unknown; promised_date?: unknown } | undefined;
     const checked = checkBotAnswer(body?.answer ?? body?.text);
     // Recusa do modelo não é falha: é o robô dizendo que não sabe, e o atendente assume.
     if (!checked.ok) return checked.reason.startsWith("O n8n disse que a base") ? { kind: "none" } : { kind: "failed", reason: checked.reason };
@@ -126,7 +126,10 @@ export async function askDoubtBot(config: DoubtBotConfig, input: DoubtBotInput, 
     // Modo autônomo: estado fora da lista vira "ongoing" — na dúvida, a conversa continua com a IA.
     const state = typeof body?.state === "string" && AGENT_STATES.has(body.state) ? body.state as AgentState : "ongoing";
     const summary = typeof body?.summary === "string" && body.summary.trim() ? body.summary.trim().slice(0, 1500) : undefined;
-    return { kind: "answer", text: checked.text, sources: sources.map((source) => source.title), state, summary };
+    // Única ação que o modelo pode pedir; o sistema decide se ela acontece (`ai-trust-unlock.ts`).
+    const action = body?.action === "trust_unlock" ? "trust_unlock" as const : undefined;
+    const promisedDate = typeof body?.promised_date === "string" && body.promised_date.trim() ? body.promised_date.trim().slice(0, 40) : undefined;
+    return { kind: "answer", text: checked.text, sources: sources.map((source) => source.title), state, summary, ...(action ? { action, promisedDate } : {}) };
   } catch (error) {
     return { kind: "failed", reason: (error as Error)?.name === "AbortError" ? "O n8n demorou demais para responder." : "Não consegui falar com o n8n." };
   } finally {

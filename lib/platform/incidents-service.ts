@@ -9,8 +9,9 @@ import { networkIncidents } from "../../db/schema.ts";
  * pessoa, aqui. Por isso a lista começa vazia e a tela diz que está vazia, em
  * vez de exibir incidente de exemplo como já fez.
  *
- * Registrar uma massiva não comunica ninguém — nenhuma mensagem sai daqui. É
- * só o registro operacional, auditado, para acompanhar e encerrar.
+ * Registrar não manda mensagem daqui: com `FEATURE_NETWORK_NOTICES`, o agendamento de avisos
+ * (`outbound-service.ts`) lê as massivas e avisa os clientes do bairro — começo, normalização e
+ * manutenção programada (`kind = maintenance`, com a janela em `scheduledStart`/`scheduledEnd`).
  */
 export const INCIDENT_SEVERITIES = ["low", "medium", "high", "critical"] as const;
 export const INCIDENT_STATUSES = ["investigating", "monitoring", "resolved"] as const;
@@ -28,7 +29,14 @@ export interface NetworkIncidentRow {
   affectedCustomers: number;
   startedAt: string;
   endedAt: string | null;
+  /** `outage` (massiva) ou `maintenance` (manutenção programada). */
+  kind: IncidentKind;
+  scheduledStart: string | null;
+  scheduledEnd: string | null;
 }
+
+export const INCIDENT_KINDS = ["outage", "maintenance"] as const;
+export type IncidentKind = typeof INCIDENT_KINDS[number];
 
 export interface IncidentInput {
   title: string;
@@ -37,6 +45,9 @@ export interface IncidentInput {
   neighborhood: string;
   equipment?: string;
   affectedCustomers: number;
+  kind?: IncidentKind;
+  scheduledStart?: string;
+  scheduledEnd?: string;
 }
 
 export interface IncidentsRepository {
@@ -64,7 +75,19 @@ export function parseIncidentInput(body: Record<string, unknown>): IncidentInput
   if (!INCIDENT_SEVERITIES.includes(severity)) throw new IncidentValidationError("Severidade inválida");
   if (!Number.isInteger(affected) || affected < 0) throw new IncidentValidationError("Quantidade de clientes afetados inválida");
 
-  return { title, severity, city, neighborhood, equipment: text(body.equipment) || undefined, affectedCustomers: affected };
+  const kind = (text(body.kind) || "outage") as IncidentKind;
+  if (!INCIDENT_KINDS.includes(kind)) throw new IncidentValidationError("Tipo inválido: massiva ou manutenção programada");
+  let scheduledStart: string | undefined;
+  let scheduledEnd: string | undefined;
+  if (kind === "maintenance") {
+    // A janela vai no aviso ao cliente: sem ela, "manutenção programada" não diz quando.
+    const start = Date.parse(text(body.scheduledStart));
+    const end = Date.parse(text(body.scheduledEnd));
+    if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) throw new IncidentValidationError("Informe início e fim da manutenção (o fim depois do início)");
+    scheduledStart = new Date(start).toISOString();
+    scheduledEnd = new Date(end).toISOString();
+  }
+  return { title, severity, city, neighborhood, equipment: text(body.equipment) || undefined, affectedCustomers: affected, kind, scheduledStart, scheduledEnd };
 }
 
 export class DbIncidentsRepository implements IncidentsRepository {
@@ -78,6 +101,7 @@ export class DbIncidentsRepository implements IncidentsRepository {
       status: networkIncidents.status, city: networkIncidents.city, neighborhood: networkIncidents.neighborhood,
       equipment: networkIncidents.equipment, affectedCustomers: networkIncidents.affectedCustomers,
       startedAt: networkIncidents.startedAt, endedAt: networkIncidents.endedAt,
+      kind: networkIncidents.kind, scheduledStart: networkIncidents.scheduledStart, scheduledEnd: networkIncidents.scheduledEnd,
     }).from(networkIncidents).orderBy(desc(networkIncidents.startedAt)).limit(limit);
   }
 
@@ -87,6 +111,7 @@ export class DbIncidentsRepository implements IncidentsRepository {
       id: randomUUID(), title: input.title, severity: input.severity, status: "investigating" as const,
       city: input.city, neighborhood: input.neighborhood, equipment: input.equipment ?? null,
       affectedCustomers: input.affectedCustomers, startedAt: now, endedAt: null,
+      kind: input.kind ?? "outage", scheduledStart: input.scheduledStart ?? null, scheduledEnd: input.scheduledEnd ?? null,
     };
     await this.db.insert(networkIncidents).values({ ...row, createdAt: now, updatedAt: now });
     return row;
@@ -110,6 +135,7 @@ export class MemoryIncidentsRepository implements IncidentsRepository {
       id: randomUUID(), title: input.title, severity: input.severity, status: "investigating",
       city: input.city, neighborhood: input.neighborhood, equipment: input.equipment ?? null,
       affectedCustomers: input.affectedCustomers, startedAt: new Date().toISOString(), endedAt: null,
+      kind: input.kind ?? "outage", scheduledStart: input.scheduledStart ?? null, scheduledEnd: input.scheduledEnd ?? null,
     };
     this.rows.push(row);
     return row;

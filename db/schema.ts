@@ -3,7 +3,9 @@ import { boolean, index, integer, jsonb, pgTable, primaryKey, serial, text, uniq
 
 const auditColumns = { createdAt: text("created_at").notNull(), updatedAt: text("updated_at").notNull() };
 export const customers = pgTable("customers", { id:text("id").primaryKey(), externalId:text("external_id").notNull().unique(), maskedDocument:text("masked_document").notNull(), name:text("name").notNull(), city:text("city").notNull(), neighborhood:text("neighborhood").notNull(), ...auditColumns });
-export const networkIncidents = pgTable("network_incidents", { id:text("id").primaryKey(), title:text("title").notNull(), severity:text("severity").notNull(), status:text("status").notNull(), city:text("city").notNull(), neighborhood:text("neighborhood").notNull(), equipment:text("equipment"), affectedCustomers:integer("affected_customers").notNull().default(0), startedAt:text("started_at").notNull(), endedAt:text("ended_at"), ...auditColumns });
+export const networkIncidents = pgTable("network_incidents", { id:text("id").primaryKey(), title:text("title").notNull(), severity:text("severity").notNull(), status:text("status").notNull(), city:text("city").notNull(), neighborhood:text("neighborhood").notNull(), equipment:text("equipment"), affectedCustomers:integer("affected_customers").notNull().default(0), startedAt:text("started_at").notNull(), endedAt:text("ended_at"),
+  /** `outage` (massiva) ou `maintenance` (manutenção programada, com janela). Define o aviso que sai aos clientes do bairro. */
+  kind:text("kind").notNull().default("outage"), scheduledStart:text("scheduled_start"), scheduledEnd:text("scheduled_end"), ...auditColumns });
 /**
  * Alerta de rede real, ingerido do grupo do Telegram onde o monitoramento
  * (fonte exata ainda não confirmada) posta queda e normalização. `equipment`
@@ -630,3 +632,31 @@ export const pilotEvents = pgTable("pilot_events", {
   createdAt: text("created_at").notNull(),
   updatedAt: text("updated_at").notNull(),
 }, (table) => [index("pilot_events_type_idx").on(table.eventType, table.createdAt), index("pilot_events_status_idx").on(table.status, table.severity)]);
+
+/**
+ * Mensagens que a BBNET manda primeiro (cobrança, avisos de rede). Uma linha por aviso, cliente e
+ * referência (fatura ou massiva): o índice único é o que impede mandar a mesma cobrança duas
+ * vezes quando o agendamento roda de novo. A reserva vem antes do envio.
+ */
+export const outboundMessages = pgTable("outbound_messages", {
+  id: text("id").primaryKey(),
+  kind: text("kind").notNull(),
+  refId: text("ref_id").notNull(),
+  customerId: text("customer_id").notNull(),
+  phone: text("phone").notNull(),
+  template: text("template").notNull(),
+  status: text("status").notNull(),
+  externalMessageId: text("external_message_id"),
+  detail: text("detail"),
+  ...auditColumns,
+}, (table) => [
+  uniqueIndex("outbound_messages_once_idx").on(table.kind, table.refId, table.customerId),
+  index("outbound_messages_created_idx").on(table.createdAt),
+]);
+
+/** Quem respondeu SAIR: não recebe aviso automático. O atendimento continua normal. */
+export const whatsappOptOuts = pgTable("whatsapp_opt_outs", {
+  phone: text("phone").primaryKey(),
+  source: text("source").notNull(),
+  ...auditColumns,
+});

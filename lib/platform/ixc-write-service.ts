@@ -100,7 +100,8 @@ export interface IxcWriteOperationsRepository {
   findByIdempotencyKey(operation: string, idempotencyKey: string): Promise<IxcWriteLedgerRow | undefined>;
   record(entry: Omit<IxcWriteLedgerRow, "id" | "createdAt">): Promise<IxcWriteLedgerRow>;
   claim(entry: Omit<IxcWriteLedgerRow, "id" | "createdAt">): Promise<boolean>;
-  finishClaim(key: string, status: IxcWriteStatus, detail: string): Promise<void>;
+  /** Fecha a reserva pendente. `operation` existe para o desbloqueio de confiança; o padrão é a OS. */
+  finishClaim(key: string, status: IxcWriteStatus, detail: string, operation?: string): Promise<void>;
   lastSuccessAt(operation: string, invoiceId: string): Promise<string | null>;
   listSince(sinceIso: string): Promise<IxcWriteLedgerRow[]>;
 }
@@ -131,9 +132,9 @@ export class DbIxcWriteOperationsRepository implements IxcWriteOperationsReposit
       .returning({ id: ixcWriteOperations.id });
     return rows.length === 1;
   }
-  async finishClaim(key: string, status: IxcWriteStatus, detail: string): Promise<void> {
+  async finishClaim(key: string, status: IxcWriteStatus, detail: string, operation = "service_order.open"): Promise<void> {
     await this.db.update(ixcWriteOperations).set({ status, detail, updatedAt: new Date().toISOString() })
-      .where(and(eq(ixcWriteOperations.operation, "service_order.open"), eq(ixcWriteOperations.idempotencyKey, key), eq(ixcWriteOperations.status, "pending")));
+      .where(and(eq(ixcWriteOperations.operation, operation), eq(ixcWriteOperations.idempotencyKey, key), eq(ixcWriteOperations.status, "pending")));
   }
 
   async lastSuccessAt(operation: string, invoiceId: string): Promise<string | null> {
@@ -163,8 +164,8 @@ export class MemoryIxcWriteOperationsRepository implements IxcWriteOperationsRep
     this.rows.push({ ...entry, id: randomUUID(), createdAt: new Date().toISOString() });
     return true;
   }
-  async finishClaim(key: string, status: IxcWriteStatus, detail: string): Promise<void> {
-    const row = this.rows.find(row => row.operation === "service_order.open" && row.idempotencyKey === key && row.status === "pending");
+  async finishClaim(key: string, status: IxcWriteStatus, detail: string, operation = "service_order.open"): Promise<void> {
+    const row = this.rows.find(row => row.operation === operation && row.idempotencyKey === key && row.status === "pending");
     if (row) { row.status = status; row.detail = detail; }
   }
 

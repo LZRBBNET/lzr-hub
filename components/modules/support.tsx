@@ -9,7 +9,9 @@ export function SupportModule({view,onNavigate}:{view:"monitoramento"|"mapa-aler
   if(view==="mapa-alertas")return <AlertMap/>; if(view==="massivas")return <MassIncidents/>; if(view==="chamados")return <Tickets/>; return <MonitoringCenter onNavigate={onNavigate}/>;
 }
 
-type Incident={id:string;title:string;severity:"low"|"medium"|"high"|"critical";status:"investigating"|"monitoring"|"resolved";city:string;neighborhood:string;equipment:string|null;affectedCustomers:number;startedAt:string;endedAt:string|null};
+type Incident={id:string;title:string;severity:"low"|"medium"|"high"|"critical";status:"investigating"|"monitoring"|"resolved";city:string;neighborhood:string;equipment:string|null;affectedCustomers:number;startedAt:string;endedAt:string|null;kind?:"outage"|"maintenance";scheduledStart?:string|null;scheduledEnd?:string|null};
+/** A janela da manutenção em Brasília: "25/11 01h00–05h00". */
+const maintenanceWindow=(i:Incident)=>{if(!i.scheduledStart||!i.scheduledEnd)return "";const f=(iso:string,date:boolean)=>new Intl.DateTimeFormat("pt-BR",{timeZone:"America/Sao_Paulo",...(date?{day:"2-digit",month:"2-digit"}:{}),hour:"2-digit",minute:"2-digit"}).format(new Date(iso));return `${f(i.scheduledStart,true)}–${f(i.scheduledEnd,false)}`};
 type Ticket={id:string;customerId:string;customerName:string|null;city:string|null;address?:string|null;subject:string;status:string;openedAt:string|null;closedAt:string|null};
 type TicketPayload={available:boolean;detail?:string;scope:string;allowlistSize?:number;unavailableCustomers?:number;total?:number;page?:number;pageSize?:number;items:Ticket[]};
 
@@ -114,7 +116,7 @@ function NetworkAlertRow({alert:a}:{alert:NetworkAlert}){
 function IncidentRow({incident:i,children}:{incident:Incident;children?:React.ReactNode}){
   return <div className="incident">
     <i className={`severity-dot ${i.severity}`}/>
-    <div><strong>{i.title}</strong><span>{i.city} · {i.neighborhood}{i.equipment?` · ${i.equipment}`:""}</span><small>{STATUS_LABELS[i.status]??i.status} · aberta em {dateOnly(i.startedAt)}{i.endedAt?` · encerrada em ${dateOnly(i.endedAt)}`:""}</small></div>
+    <div><strong>{i.kind==="maintenance"?"Manutenção programada: ":""}{i.title}</strong><span>{i.city} · {i.neighborhood}{i.equipment?` · ${i.equipment}`:""}{i.kind==="maintenance"&&maintenanceWindow(i)?` · ${maintenanceWindow(i)}`:""}</span><small>{STATUS_LABELS[i.status]??i.status} · aberta em {dateOnly(i.startedAt)}{i.endedAt?` · encerrada em ${dateOnly(i.endedAt)}`:""}</small></div>
     <div className="incident-side"><b>{count(i.affectedCustomers)}</b><small>clientes</small><i className={`severity ${i.severity}`}>{SEVERITY_LABELS[i.severity]??i.severity}</i></div>
     {children&&<div className="incident-actions">{children}</div>}
   </div>;
@@ -145,7 +147,7 @@ function AlertMap(){
   </>;
 }
 
-const EMPTY_FORM={title:"",severity:"high",city:"",neighborhood:"",equipment:"",affectedCustomers:""};
+const EMPTY_FORM={title:"",severity:"high",city:"",neighborhood:"",equipment:"",affectedCustomers:"",kind:"outage",scheduledStart:"",scheduledEnd:""};
 
 function MassIncidents(){
   const {items,available,state,reload}=useIncidents();
@@ -158,7 +160,9 @@ function MassIncidents(){
 
   async function submit(){
     setBusy(true);setError("");
-    const response=await fetch("/api/support/incidents",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({...form,affectedCustomers:Number(form.affectedCustomers||0)})});
+    // A janela vai em ISO a partir do relógio do navegador (Brasília): o servidor roda em UTC.
+    const iso=(value:string)=>value?new Date(value).toISOString():undefined;
+    const response=await fetch("/api/support/incidents",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({...form,affectedCustomers:Number(form.affectedCustomers||0),scheduledStart:iso(form.scheduledStart),scheduledEnd:iso(form.scheduledEnd)})});
     if(response.ok){setForm(EMPTY_FORM);setCreating(false);toast("Massiva registrada.");reload()}
     else{const payload=await response.json().catch(()=>({}));setError(payload.error??"Não foi possível registrar a massiva")}
     setBusy(false);
@@ -192,14 +196,19 @@ function MassIncidents(){
     <Modal open={creating} title="Registrar massiva" onClose={()=>setCreating(false)}
       footer={<><button className="button secondary" onClick={()=>setCreating(false)}>Cancelar</button><button className="button" disabled={busy||!form.title.trim()} onClick={()=>void submit()}>{busy?"Registrando…":"Registrar"}</button></>}>
       <div className="form-grid">
-        <label className="field span-2"><span>O que está acontecendo</span><input data-autofocus placeholder="ex.: rompimento de fibra no anel norte" value={form.title} onChange={set("title")}/></label>
+        <label className="field span-2"><span>Tipo</span><select value={form.kind} onChange={set("kind")}><option value="outage">Massiva (está acontecendo agora)</option><option value="maintenance">Manutenção programada</option></select></label>
+        <label className="field span-2"><span>{form.kind==="maintenance"?"O que será feito":"O que está acontecendo"}</span><input data-autofocus placeholder={form.kind==="maintenance"?"ex.: troca de equipamento na OLT do centro":"ex.: rompimento de fibra no anel norte"} value={form.title} onChange={set("title")}/></label>
+        {form.kind==="maintenance"&&<>
+          <label className="field"><span>Início</span><input type="datetime-local" value={form.scheduledStart} onChange={set("scheduledStart")}/></label>
+          <label className="field"><span>Fim</span><input type="datetime-local" value={form.scheduledEnd} onChange={set("scheduledEnd")}/></label>
+        </>}
         <label className="field"><span>Cidade</span><input placeholder="ex.: Itabaiana" value={form.city} onChange={set("city")}/></label>
         <label className="field"><span>Bairro ou região</span><input placeholder="ex.: Centro" value={form.neighborhood} onChange={set("neighborhood")}/></label>
         <label className="field"><span>Equipamento (opcional)</span><input placeholder="ex.: OLT-ITA-02 / PON 4" value={form.equipment} onChange={set("equipment")}/></label>
         <label className="field"><span>Clientes afetados (estimativa)</span><input placeholder="ex.: 340" inputMode="numeric" value={form.affectedCustomers} onChange={set("affectedCustomers")}/></label>
         <label className="field span-2"><span>Severidade</span><select value={form.severity} onChange={set("severity")}><option value="low">Baixa</option><option value="medium">Média</option><option value="high">Alta</option><option value="critical">Crítica</option></select></label>
         {error&&<p className="form-error span-2">{error}</p>}
-        <p className="field-hint span-2">A estimativa é sua: o sistema não calcula isso sozinho. “Avisar clientes da área” casa cidade e bairro com o cadastro real — não com esta estimativa.</p>
+        <p className="field-hint span-2">A estimativa é sua: o sistema não calcula isso sozinho. Com os avisos automáticos ligados, os clientes do bairro recebem pelo WhatsApp o começo e a normalização (ou, na manutenção, o aviso até 48 horas antes) — casando cidade e bairro com o cadastro real do IXC, não com esta estimativa.</p>
       </div>
     </Modal>
   </>;

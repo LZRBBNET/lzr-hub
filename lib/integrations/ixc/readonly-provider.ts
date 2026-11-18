@@ -2,7 +2,7 @@ import { IxcConnectionMapper, IxcContractMapper, IxcCustomerMapper, IxcInvoiceMa
 import { sanitizeTelemetry } from "./masking.ts";
 import { ReadonlyIxcGuard } from "./guard.ts";
 import { CircuitBreaker, SlidingWindowRateLimiter, TtlCache } from "./resilience.ts";
-import type { IxcCityDto, IxcCollectionWalletDto, IxcCustomerDto, IxcCustomerPage, IxcCustomerSnapshot, IxcInvoiceDto, IxcSnapshotCoverage, IxcListResponse, IxcOsSubjectDto, IxcPaymentTermDto, IxcReadOperation, IxcSectorDto, IxcServiceDiagnosisData, IxcUfDto } from "./types.ts";
+import type { IxcCityDto, IxcCollectionWalletDto, IxcCustomerDto, IxcCustomerPage, IxcCustomerSnapshot, IxcInvoiceDto, IxcSnapshotCoverage, IxcListResponse, IxcOsSubjectDto, IxcPaymentTermDto, IxcReadOperation, IxcSectorDto, IxcServiceDiagnosisData, IxcUfDto, IxcDueInvoiceDto, IxcCustomerContactDto, IxcTrustUnlockFacts } from "./types.ts";
 
 // `listOsCatalog` fica de fora porque não tem um endpoint só: a mesma operação
 // lê `su_oss_assunto` e `empresa_setor`, e o recurso vai explícito na chamada.
@@ -493,6 +493,58 @@ export class IxcReadonlyProvider {
     const filters:GridFilter[]=[{TB:"fn_areceber.liberado",OP:"=",P:"S"},{TB:"fn_areceber.status",OP:"=",P:"A"}];
     const {records}=await this.readPage("listInvoices",endpoints.listInvoices,"fn_areceber.id_cliente",customerId,correlationId,limit,customerId,{oper:"=",sortname:"fn_areceber.data_vencimento",sortorder:"asc",gridParam:filters});
     return records.map(IxcInvoiceMapper.map);
+  }
+  /**
+   * Faturas abertas e liberadas que vencem numa data, na base inteira — a cobrança proativa
+   * (lembrete, vence hoje, atraso, véspera do bloqueio). Uma consulta por página de até 500.
+   * Sem base inteira a trava recusa: lembrete a cliente fora da allowlist não sai por engano.
+   */
+  async listOpenInvoicesDue(date:string,page:number,pageSize:number,correlationId:string):Promise<{items:IxcDueInvoiceDto[];total:number}>{
+    if(!/^\d{4}-\d{2}-\d{2}$/.test(date))throw new IxcReadonlyError("IXC_INVALID_DATE");
+    const {records,total}=await this.readPage("listInvoices",endpoints.listInvoices,"fn_areceber.data_vencimento",date,correlationId,Math.min(Math.max(pageSize,1),500),"",
+      {oper:"=",page:Math.max(page,1),sortname:"fn_areceber.id",sortorder:"asc",gridParam:[{TB:"fn_areceber.status",OP:"=",P:"A"},{TB:"fn_areceber.liberado",OP:"=",P:"S"}]});
+    return {total,items:records.map((raw)=>({id:String(raw.id),customerId:String(raw.id_cliente??""),dueAt:String(raw.data_vencimento??""),value:Number(String(raw.valor_aberto??raw.valor??"0").replace(",","."))||0}))};
+  }
+  /** Contato de vários clientes numa consulta só (`IN`, até 200): o aviso não lê cliente por cliente. */
+  async listCustomerContacts(ids:string[],correlationId:string):Promise<IxcCustomerContactDto[]>{
+    const clean=[...new Set(ids.filter((id)=>/^[1-9]\d{0,31}$/.test(id)))].slice(0,200);
+    if(!clean.length)return [];
+    const {records}=await this.readPage("listCustomers","cliente","cliente.id",clean.join(","),correlationId,clean.length,"",{oper:"IN",sortname:"cliente.id"});
+    return this.toContacts(records,correlationId);
+  }
+  /** Clientes ativos de um bairro (aviso de massiva e manutenção), paginado. A cidade é conferida por quem chama. */
+  async listCustomersInNeighborhood(neighborhood:string,page:number,pageSize:number,correlationId:string):Promise<{items:IxcCustomerContactDto[];total:number}>{
+    const value=neighborhood.trim();
+    if(!value)return {items:[],total:0};
+    const {records,total}=await this.readPage("listCustomers","cliente","cliente.bairro",value,correlationId,Math.min(Math.max(pageSize,1),500),"",
+      {oper:"=",page:Math.max(page,1),sortname:"cliente.id",gridParam:[{TB:"cliente.ativo",OP:"=",P:"S"}]});
+    return {total,items:await this.toContacts(records,correlationId)};
+  }
+  private async toContacts(records:Record<string,unknown>[],correlationId:string):Promise<IxcCustomerContactDto[]>{
+    const codes=[...new Set(records.map((raw)=>String(raw.cidade??"").trim()).filter(Boolean))];
+    const names=new Map<string,string>();
+    for(const code of codes){const name=await this.resolveCityName(code,correlationId,"").catch(()=>undefined);if(name)names.set(code,name);}
+    const text=(raw:Record<string,unknown>,key:string)=>String(raw[key]??"").trim();
+    return records.map((raw)=>({id:String(raw.id),name:text(raw,"nome_social")||text(raw,"razao"),mobile:text(raw,"telefone_celular"),whatsapp:text(raw,"whatsapp"),
+      active:text(raw,"ativo")!=="N",neighborhood:text(raw,"bairro"),city:names.get(text(raw,"cidade"))??""}));
+  }
+  /**
+   * O que a regra do desbloqueio de confiança precisa: situação da internet no contrato, se o
+   * desbloqueio está valendo, a data do último uso (`dt_ult_des_bloq_conf`) e as faturas pagas
+   * depois dele — para saber se aquela vez foi paga em dia.
+   */
+  async getTrustUnlockFacts(customerId:string,contractId:string,correlationId:string):Promise<IxcTrustUnlockFacts>{
+    const contract=(await this.read("listContracts",endpoints.listContracts,"cliente_contrato.id",contractId,correlationId,1,customerId))[0];
+    if(!contract||String(contract.id)!==contractId||String(contract.id_cliente)!==customerId)throw new IxcReadonlyError("IXC_CONTRACT_UNCONFIRMED");
+    const date=(value:unknown)=>{const v=String(value??"").trim();return v&&!v.startsWith("0000-00-00")?v:null;};
+    const lastUnlockAt=date(contract.dt_ult_des_bloq_conf);
+    const paid=lastUnlockAt?await this.read("listInvoices",endpoints.listInvoices,"fn_areceber.id_cliente",customerId,correlationId,12,customerId,
+      {oper:"=",sortname:"fn_areceber.pagamento_data",sortorder:"desc",gridParam:[{TB:"fn_areceber.status",OP:"=",P:"R"}]}):[];
+    return {
+      contractId,internetStatus:String(contract.status_internet??""),trustUnlockActive:contract.desbloqueio_confianca_ativo==="S",lastUnlockAt,
+      overdueCount:Number(contract.num_parcelas_atraso??0)||0,
+      paidAfterUnlock:paid.map((raw)=>({dueAt:date(raw.data_vencimento)??"",paidAt:date(raw.pagamento_data)??""})).filter((item)=>item.paidAt&&lastUnlockAt&&item.paidAt.slice(0,10)>=lastUnlockAt.slice(0,10)),
+    };
   }
   /** Contagem de faturas em aberto na base inteira: uma consulta, sem varrer registro. */
   async countOpenInvoices(correlationId:string){

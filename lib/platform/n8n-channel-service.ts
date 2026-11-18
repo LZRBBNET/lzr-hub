@@ -201,6 +201,8 @@ export interface TriageHooks {
    * IXC criou (ou já havia uma aberta); qualquer outro desfecho deixa a ficha para a equipe.
    */
   openServiceOrder?(intent: string): Promise<{ id: string; existing?: boolean } | undefined>;
+  /** Modo autônomo: o modelo pediu o desbloqueio de confiança; a triagem confere tudo e devolve o texto do desfecho. */
+  trustUnlock?(promisedDate?: string): Promise<{ status: string; text: string } | undefined>;
   record(entry: { intent: string; source: string; confidence: number; clarifying: boolean; delivered: boolean; protocolIncluded: boolean; handoff?: boolean }): Promise<void>;
 }
 
@@ -526,6 +528,9 @@ async function doubtBotTurn(
   const serviceOrder = request ? await options.triage?.openServiceOrder?.(classified.intent).catch(() => undefined) : undefined;
   // A resposta pode prometer um atendente mesmo sem pedido completo: isso também deixa a conversa na fila.
   const handoff = !!bot.agent && (request || promisesHuman(result.text));
+  // Pedido de desbloqueio: o desfecho real (liberou, negou pela regra, falta o CPF) vem do sistema, não do modelo.
+  const unlock = bot.agent && result.action === "trust_unlock" ? await options.triage?.trustUnlock?.(result.promisedDate).catch(() => undefined) : undefined;
+  if (unlock) result = { ...result, text: `${result.text}\n\n${unlock.text}` };
   const footer = options.triage?.footer(request ? { request: classified.intent, serviceOrder } : bot.agent ? { handoff } : undefined);
   const text = footer ? `${result.text}
 

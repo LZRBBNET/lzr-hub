@@ -218,6 +218,37 @@ export async function openServiceOrder(
 }
 
 /**
+ * Desbloqueio de confiança: `POST /webservice/v1/desbloqueio_confianca` com `{ id: <contrato> }`
+ * (coleção Postman oficial). O próprio IXC aplica as regras dele — com o contrato ativo recusa com
+ * HTTP 200 e `type: "error"` ("Não é possível utilizar o botão 'Desbloqueio de confiança' quando o
+ * contrato estiver ativo"). A regra da BBNET (uso no mês passado, pagamento em dia, fim de semana)
+ * é conferida antes, em `trust-unlock-shared.ts`.
+ */
+export async function trustUnlock(options: IxcWriteClientOptions, contractId: string, correlationId: string): Promise<{ raw: Record<string, unknown> }> {
+  if (!/^[1-9]\d{0,31}$/.test(contractId)) throw new IxcWriteClientError("IXC_CONTRACT_REQUIRED");
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), options.timeoutMs ?? 8000);
+  let response: Response;
+  try {
+    response = await (options.fetcher ?? fetch)(`${options.baseUrl}/webservice/v1/desbloqueio_confianca`, {
+      method: "POST",
+      headers: { Authorization: `Basic ${basicCredential(options.token)}`, "content-type": "application/json", "x-correlation-id": correlationId },
+      body: JSON.stringify({ id: contractId }),
+      signal: controller.signal,
+    });
+  } catch (error) {
+    throw new IxcWriteClientError(error instanceof Error && error.name === "AbortError" ? "IXC_TIMEOUT" : "IXC_NETWORK_ERROR");
+  } finally {
+    clearTimeout(timer);
+  }
+  if (!response.ok) throw new IxcWriteClientError(`IXC_HTTP_${response.status}`);
+  const body = await response.json().catch(() => undefined) as { type?: unknown; message?: unknown } | undefined;
+  if (!body || typeof body !== "object") throw new IxcWriteClientError("IXC_RESPOSTA_INESPERADA");
+  if (body.type === "error") throw new IxcWriteClientError(`IXC_RECUSOU: ${String(body.message ?? "").slice(0, 200)}`);
+  return { raw: body as Record<string, unknown> };
+}
+
+/**
  * Renegociação de dívida — o wizard de 5 passos do IXC.
  *
  * ⚠️ **Isto não é atômico, e essa é a característica mais importante daqui.**

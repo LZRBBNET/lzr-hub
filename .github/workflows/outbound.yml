@@ -1,0 +1,60 @@
+# Dispara as mensagens que a BBNET manda primeiro pelo WhatsApp: cobrança (lembrete 3 dias antes,
+# vence hoje, 1 dia de atraso, véspera do bloqueio) e avisos de rede (massiva, normalização,
+# manutenção programada). O app não tem relógio interno: o Railway roda um processo web.
+#
+# Toda a lógica fica no app (`/api/jobs/outbound`): limite por rodada e por dia, horário de envio
+# (8h–20h de Brasília), quem pediu para sair, e o ledger que impede mandar a mesma mensagem duas
+# vezes. Se uma execução falhar, a próxima continua de onde parou.
+#
+# Precisa do segredo OUTBOUND_JOB_SECRET em Settings → Secrets and variables → Actions, com o MESMO
+# valor da variável de mesmo nome no Railway. Sem as flags FEATURE_BILLING_REMINDERS e
+# FEATURE_NETWORK_NOTICES no Railway, a rota responde "desligada" e nada sai.
+name: Avisos e cobrança pelo WhatsApp
+
+on:
+  schedule:
+    # Cobrança: de hora em hora das 09h às 17h de Brasília (UTC-3), de segunda a sábado.
+    - cron: "0 12-20 * * 1-6"
+    # Avisos de rede: a cada 15 minutos, das 08h às 20h de Brasília, todos os dias.
+    - cron: "*/15 11-23 * * *"
+  workflow_dispatch:
+    inputs:
+      job:
+        description: "billing ou network"
+        required: true
+        default: "billing"
+
+concurrency:
+  group: outbound
+  cancel-in-progress: false
+
+permissions: {}
+
+jobs:
+  disparar:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Dispara a rodada
+        env:
+          JOB_SECRET: ${{ secrets.OUTBOUND_JOB_SECRET }}
+          LZR_HUB_URL: ${{ vars.LZR_HUB_URL || 'https://lzr-hub-production.up.railway.app' }}
+          SCHEDULE: ${{ github.event.schedule }}
+          MANUAL_JOB: ${{ github.event.inputs.job }}
+        run: |
+          if [ -z "$JOB_SECRET" ]; then
+            echo "::error::Segredo OUTBOUND_JOB_SECRET não cadastrado neste repositório."
+            exit 1
+          fi
+          job="${MANUAL_JOB:-billing}"
+          if [ "$SCHEDULE" = "*/15 11-23 * * *" ]; then job="network"; fi
+          status=$(curl -sS -o resposta.json -w "%{http_code}" --max-time 300 \
+            -X POST "$LZR_HUB_URL/api/jobs/outbound" \
+            -H "content-type: application/json" \
+            -H "x-job-secret: $JOB_SECRET" \
+            -d "{\"job\":\"$job\"}")
+          cat resposta.json; echo
+          if [ "$status" != "200" ]; then
+            echo "::error::A rodada ($job) respondeu HTTP $status."
+            exit 1
+          fi

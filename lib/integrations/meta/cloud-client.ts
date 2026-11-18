@@ -112,6 +112,35 @@ export async function sendTextMessage(config: MetaSendConfig, input: { to: strin
 }
 
 /**
+ * Modelo aprovado (template): o único jeito de a BBNET falar primeiro, fora da janela de 24
+ * horas. Os parâmetros são o texto de cada variável do corpo, na ordem. Botão de resposta rápida
+ * não precisa de parâmetro: o toque chega ao webhook como a fala do cliente.
+ */
+export async function sendTemplateMessage(
+  config: MetaSendConfig,
+  input: { to: string; name: string; language: string; bodyParams: string[] },
+): Promise<SendResult> {
+  const result = await post(config, {
+    messaging_product: "whatsapp",
+    recipient_type: "individual",
+    to: input.to,
+    type: "template",
+    template: {
+      name: input.name,
+      language: { code: input.language },
+      components: input.bodyParams.length ? [{ type: "body", parameters: input.bodyParams.map((text) => ({ type: "text", text: text.slice(0, 1024) })) }] : [],
+    },
+  });
+  if ("failure" in result) return result.failure;
+  const body = result.body as GraphError & { messages?: Array<{ id?: string }> };
+  if (result.status >= 200 && result.status < 300) {
+    const messageId = body.messages?.[0]?.id;
+    return messageId ? { ok: true, messageId } : { ok: false, kind: "rejected", reason: "A Meta respondeu sem identificar a mensagem enviada." };
+  }
+  return failureFrom(result.status, body);
+}
+
+/**
  * Lista clicável (mensagem interativa `list`). Limites da Meta: corpo até 1024
  * caracteres, botão até 20, título de opção até 24, descrição até 72, no máximo
  * 10 opções — acima disso a Meta recusa a mensagem inteira, então cortamos aqui.
