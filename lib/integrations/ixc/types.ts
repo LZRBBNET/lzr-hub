@@ -15,7 +15,9 @@ export type IxcReadOperation =
   /** Carteiras de cobrança e condições de pagamento: definem juro, multa e parcelamento. */
   | "listFinanceCatalog"
   /** Log de alterações do IXC (`ixc_logs`): quem inseriu ou editou cada registro, e quando. */
-  | "getRecordHistory";
+  | "getRecordHistory"
+  /** Sinal óptico da ONU (`radpop_radio_cliente_fibra`): o que o suporte de fibra olha primeiro. */
+  | "getFiberSignal";
 
 /** Assunto de ordem de serviço (`su_oss_assunto`) — é o `id_assunto` que a OS exige. */
 export interface IxcOsSubjectDto { id:string; name:string }
@@ -45,6 +47,8 @@ export interface IxcServiceDiagnosisData {
   logins: Array<{ id:string; contractId?:string; online:boolean|null; lastConnectedAt?:string; lastDisconnectedAt?:string; disconnectReason?:string; neighborhood?:string }>;
   contracts: Array<{ id:string; status:string; internetStatus:string; trustUnlockActive:boolean }>;
   openServiceOrders: Array<{ id:string; status:string; subjectId?:string; openedAt?:string }>;
+  /** Sinal recebido/enviado pela ONU, em dBm; `null` = o IXC não tem leitura (ONU desligada ou sem fibra). */
+  fiber?: Array<{ loginId:string; rxDbm:number|null; txDbm:number|null; readAt?:string }>;
 }
 export interface IxcConnectionDto { id:string; customerId:string; login:string; status:string; lastAccessAt?:string; address?:string; equipmentDescriptor?:string; connectionType?:string }
 /** Página da listagem de clientes. `total` é o tamanho do resultado no IXC, não o da página. */

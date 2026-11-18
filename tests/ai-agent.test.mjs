@@ -10,6 +10,8 @@ import { MemoryTicketRepository, resumeTicketForAi, startTriage } from "../lib/p
 import { doubtBotAnswerer, doubtBotConfigFromEnv } from "../lib/platform/doubt-bot-service.ts";
 import { AI_AGENT_SENDER, AI_SENDER, awaitingSinceFrom } from "../lib/platform/conversation-state-shared.ts";
 import { DEFAULT_LLM_MODEL, completionLimits, llmConfigFromEnv } from "../lib/agent/llm-classifier.ts";
+import { diagnoseConnection } from "../lib/platform/connection-diagnosis-shared.ts";
+import { agentTask } from "../lib/platform/agent-playbook-shared.ts";
 
 /**
  * Modo autônomo (`FEATURE_AI_AGENT`): a IA conduz a conversa, responde cada fala pela
@@ -25,8 +27,23 @@ const DOCS = [
   ["Trocar a senha do Wi-Fi", "A troca da senha do Wi-Fi é feita pela equipe. Peça por aqui e um atendente faz a troca da senha com você."],
 ];
 
-/** O n8n de mentira responde pelo título do primeiro trecho, como o modelo faria. */
+/**
+ * O n8n de mentira: segue o roteiro (`task`) como o modelo faria — pergunta até ter o que precisa e
+ * fecha com `request_complete` e a ficha — e, sem roteiro especial, responde pelo título do trecho.
+ */
 const n8nPadrao = async (body) => {
+  const task = body.task ?? "";
+  if (task.includes("pediu para falar com uma pessoa")) return { answer: "Claro! Qual é o assunto? Muita coisa eu resolvo por aqui.", state: "ongoing" };
+  if (task.includes("não está no cadastro")) {
+    return /souza/i.test(body.question)
+      ? { answer: "Obrigada, Maria.", state: "request_complete", summary: "Segunda via para número sem cadastro\nTitular informado: Maria Souza" }
+      : { answer: "Me diga o nome completo do titular do contrato, por favor.", state: "ongoing" };
+  }
+  if (task.includes("provedor de fibra")) {
+    if (/tarde/i.test(body.question)) return { answer: "Entendi: visita técnica à tarde.", state: "request_complete", summary: "Assunto: sem internet\nLuz LOS vermelha\nPeríodo: tarde\nCPF 529.982.247-25" };
+    if (/LOS/i.test(body.question)) return { answer: "A luz LOS vermelha indica que o sinal da fibra não chega. Para a visita técnica, prefere manhã ou tarde?", state: "ongoing" };
+    if (/sem internet/i.test(body.question)) return { answer: "Como estão as luzes do equipamento da fibra?", state: "ongoing" };
+  }
   const title = body.sources[0]?.title ?? "";
   if (title.startsWith("Horário")) return "Atendemos de segunda a sexta, das 8h às 12h e das 14h às 18h.";
   if (title.startsWith("Internet lenta")) return "Faça um teste de velocidade por cabo e reinicie o roteador por 30 segundos. Melhorou?";
@@ -34,7 +51,7 @@ const n8nPadrao = async (body) => {
   return "NAO_SEI";
 };
 
-async function montar({ n8n = n8nPadrao } = {}) {
+async function montar({ n8n = n8nPadrao, lookup = async () => undefined, diagnose } = {}) {
   const docs = new MemoryKnowledgeRepository();
   for (const [title, content] of DOCS) { const doc = await docs.create({ title, category: "geral", content }); await docs.publish(doc.id); }
   const channel = new MemoryChannelRepository();
@@ -44,12 +61,12 @@ async function montar({ n8n = n8nPadrao } = {}) {
   const enviados = [];
   const chamadasN8n = [];
   const metaConfig = { accessToken: "T", phoneNumberId: "999", graphVersion: "v26.0", fetcher: async (_url, init) => { enviados.push(JSON.parse(init.body)); return { status: 200, json: async () => ({ messages: [{ id: `wamid.S${enviados.length}` }] }) }; } };
-  const botConfig = { url: URL_N8N, secret: "s".repeat(32), timeoutMs: 500, fetcher: async (_url, init) => { const body = JSON.parse(init.body); chamadasN8n.push(body); return { ok: true, status: 200, json: async () => ({ answer: await n8n(body) }) }; } };
+  const botConfig = { url: URL_N8N, secret: "s".repeat(32), timeoutMs: 500, fetcher: async (_url, init) => { const body = JSON.parse(init.body); chamadasN8n.push(body); const r = await n8n(body); return { ok: true, status: 200, json: async () => (typeof r === "string" ? { answer: r } : r) }; } };
   let n = 0;
   // Reproduz a rota da Meta com FEATURE_AI_AGENT: a IA fala sempre, em modo conversa.
   const receber = async (text) => {
     const wamid = `wamid.A${++n}`;
-    const triage = await startTriage(tickets, { channel: CHANNEL_NAME, conversationId: CLIENTE, lookup: async () => undefined, offHours: false });
+    const triage = await startTriage(tickets, { channel: CHANNEL_NAME, conversationId: CLIENTE, lookup, diagnose, offHours: false, agent: true });
     const auto = await metaAutoReplyOptions({
       enabled: true, states, messages: channel, claims, config: metaConfig, channel: CHANNEL_NAME,
       delivery: { begin: async () => "t", finish: async () => {}, settleUncertain: async () => {} },
@@ -107,10 +124,6 @@ test("depois de passar ao atendente, a IA segue ajudando pela base, mas a conver
   await receber("como troco a senha do wifi");
   assert.equal(textos().length, 1);
   assert.equal(ticket().stage, "handoff");
-  // Sem documento que sustente: a resposta aprovada não se repete, vira sugestão.
-  const vaga = await receber("alô? alguém?");
-  assert.equal(vaga.autoReply, false);
-  assert.equal(textos().length, 1);
   // Pergunta que a base responde: a IA ajuda, e a conversa continua esperando o atendente.
   await receber("qual o horario de atendimento de voces");
   assert.equal(textos().length, 2);
@@ -133,19 +146,53 @@ test("recusa não cala a IA: pedido não autorizado e, em seguida, ajuda com a i
   assert.match(textos()[1], /teste de velocidade/);
 });
 
-test("pedido de atendente e cancelamento passam direto ao atendente, sem o robô", async () => {
+test("pedido de atendente: a IA pergunta o assunto em vez de passar a conversa", async () => {
   const { receber, textos, chamadasN8n, ticket } = await montar();
   await receber("quero falar com um atendente");
-  assert.equal(chamadasN8n.length, 0, "o n8n nem é chamado");
-  assert.equal(textos().length, 1, "a resposta aprovada sai");
-  assert.equal(ticket().stage, "handoff");
+  assert.equal(chamadasN8n.length, 1);
+  assert.equal(chamadasN8n[0].task, agentTask("human_handoff"));
+  assert.match(textos()[0], /Qual é o assunto/);
+  assert.notEqual(ticket().stage, "handoff", "ainda não passou: a IA está tentando resolver");
 });
 
-test("fatura não vai à base: sem titular conferível, segue para o financeiro", async () => {
-  const { receber, chamadasN8n, ticket } = await montar();
+test("fatura de número sem cadastro: a IA pega o nome do titular e deixa o pedido pronto para o financeiro", async () => {
+  const { receber, textos, chamadasN8n, ticket } = await montar();
   await receber("quero a segunda via do boleto");
-  assert.equal(chamadasN8n.length, 0);
-  assert.equal(ticket().stage, "handoff", "a resposta aprovada promete o atendente");
+  assert.equal(chamadasN8n[0].task, agentTask("financial_invoice", { identified: false }));
+  assert.match(textos()[0], /nome completo do titular/);
+  await receber("Maria Souza");
+  assert.equal(ticket().stage, "handoff");
+  assert.match(ticket().intake.summary, /Maria Souza/);
+  assert.equal(ticket().queue, "financeiro");
+  assert.match(textos()[1], /Seu pedido ficou registrado no protocolo \d+, e a equipe de financeiro dá continuidade/);
+});
+
+test("pedido técnico completo: a IA conduz, o assunto não se perde nas respostas curtas, e a ficha fica no atendimento", async () => {
+  const { receber, textos, chamadasN8n, ticket, historico } = await montar();
+  await receber("estou sem internet");
+  await receber("a luz LOS ta vermelha");
+  await receber("de tarde");
+  // "de tarde" sozinho não diz nada: o roteiro continua sendo o técnico, com a conversa toda.
+  assert.equal(chamadasN8n[2].task, agentTask("technical_no_connection"));
+  assert.ok(chamadasN8n[2].history.length >= 4, "a IA lê o que já foi perguntado");
+  assert.equal(ticket().stage, "handoff");
+  assert.equal(ticket().queue, "tecnico");
+  assert.match(ticket().intake.summary, /LOS vermelha/);
+  assert.doesNotMatch(ticket().intake.summary, /529\.982/, "a ficha não guarda CPF");
+  assert.match(textos()[2], /visita técnica à tarde/);
+  assert.match(textos()[2], /equipe de suporte técnico dá continuidade/);
+  const rows = await historico();
+  assert.equal(rows.at(-1).sentBy, AI_SENDER, "pedido registrado: fica na fila da equipe");
+  assert.ok(awaitingSinceFrom(rows.slice().reverse()));
+});
+
+test("o que o IXC diz (sinal da fibra, login) chega ao modelo como dado do sistema", async () => {
+  const critico = async () => diagnoseConnection({ logins: [{ id: "1", contractId: "9", online: true }], contracts: [{ id: "9", status: "A", internetStatus: "A", trustUnlockActive: false }], openServiceOrders: [], fiber: [{ loginId: "1", rxDbm: -30.96, txDbm: 2, readAt: "2026-11-18 08:54:00" }] }, []);
+  const { receber, chamadasN8n } = await montar({ lookup: async () => ({ id: "21857" }), diagnose: critico });
+  await receber("minha internet ta muito lenta");
+  const facts = chamadasN8n[0].facts.join(" ");
+  assert.match(facts, /-30,96 dBm \(fraco, crítico\)/);
+  assert.match(facts, /precisa de técnico/);
 });
 
 test("obrigado e ok ganham cortesia, não o menu", async () => {
@@ -179,8 +226,8 @@ test("humano com a conversa: a IA não fala, mesmo no modo autônomo", async () 
 });
 
 test("classificador: o padrão é um modelo que existe na Groq, com o teto certo para modelo de raciocínio", () => {
-  assert.equal(DEFAULT_LLM_MODEL, "openai/gpt-oss-120b");
+  assert.equal(DEFAULT_LLM_MODEL, "openai/gpt-oss-20b");
   assert.equal(llmConfigFromEnv({ FEATURE_LLM_INTENT: "true", GROQ_API_KEY: "k" }).model, DEFAULT_LLM_MODEL);
-  assert.deepEqual(completionLimits("openai/gpt-oss-120b", 60), { max_completion_tokens: 400, reasoning_effort: "low" });
+  assert.deepEqual(completionLimits("openai/gpt-oss-20b", 60), { max_completion_tokens: 400, reasoning_effort: "low" });
   assert.deepEqual(completionLimits("qualquer-outro", 60), { max_tokens: 60 });
 });

@@ -126,6 +126,8 @@ export async function POST(request: Request) {
     const doubtBotConfig = agentConfig ?? (!botSpeaks && !offHours ? doubtBotConfigFromEnv() : undefined);
     const triage = await startTriage(tickets, {
       offHours: offHours && botSpeaks,
+      // Modo autônomo: o diagnóstico vira dado para a IA conduzir o suporte, antes da resposta.
+      agent: !!agentConfig,
       channel: CHANNEL_NAME, conversationId: message.phone, lookup: lookupCustomer,
       // Atendimento técnico de cliente identificado ganha diagnóstico (contrato, login, massiva, OS aberta).
       diagnose: provider ? ixcDiagnose(provider, new DbIncidentsRepository(db), correlationId) : undefined,

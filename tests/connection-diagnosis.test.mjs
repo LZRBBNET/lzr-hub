@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { diagnoseConnection } from "../lib/platform/connection-diagnosis-shared.ts";
+import { diagnoseConnection, signalLevel } from "../lib/platform/connection-diagnosis-shared.ts";
 import { MemoryTicketRepository, diagnoseTicket, ixcDiagnose, openOrContinueTicket } from "../lib/platform/triage-service.ts";
 import { IxcReadonlyProvider } from "../lib/integrations/ixc/readonly-provider.ts";
 
@@ -101,24 +101,47 @@ test("IXC lento ou fora do ar deixa o atendimento sem diagnóstico, sem prender 
   assert.equal(tickets.tickets[0].diagnosis, null);
 });
 
-test("a leitura do IXC usa três consultas e não expõe senha, IP nem MAC", async () => {
+test("a leitura do IXC usa quatro consultas (com o sinal da fibra) e não expõe senha, IP nem MAC", async () => {
   const pedidos = [];
   const registros = {
     radusuarios: [{ id: "32844", id_cliente: "21857", id_contrato: "48882", online: "N", ultima_conexao_inicial: "2026-10-12 11:45:21", ultima_conexao_final: "2026-10-13 10:48:39", bairro: "Centro", senha: "segredo", ip: "10.0.0.1", mac: "AA:BB" }],
     cliente_contrato: [{ id: "48882", id_cliente: "21857", status: "A", status_internet: "A", desbloqueio_confianca_ativo: "N" }],
     su_oss_chamado: [{ id: "1", id_cliente: "21857", status: "F", data_abertura: "2026-01-01 08:00:00" }, { id: "2", id_cliente: "21857", status: "A", id_assunto: "15", data_abertura: "0000-00-00 00:00:00" }],
+    radpop_radio_cliente_fibra: [{ id: "77", id_login: "32844", sinal_rx: "-30.96", sinal_tx: "2.10", data_sinal: "2026-11-18 08:54:03", mac: "CC:DD", ip_gerencia: "10.9.9.9", senha_onu_cliente: "outra" }],
   };
   const fetcher = async (url) => { const resource = String(url).split("/").at(-1); pedidos.push(resource); return Response.json({ registros: registros[resource] ?? [] }); };
   const provider = new IxcReadonlyProvider({ baseUrl: "https://ixc.invalid", token: "secret", allowedCustomerIds: ["21857"], fetcher });
   const dados = await provider.getServiceDiagnosis("21857", "corr-1");
-  assert.deepEqual(pedidos.sort(), ["cliente_contrato", "radusuarios", "su_oss_chamado"]);
+  assert.deepEqual(pedidos.sort(), ["cliente_contrato", "radpop_radio_cliente_fibra", "radusuarios", "su_oss_chamado"]);
+  assert.deepEqual(dados.fiber, [{ loginId: "32844", rxDbm: -30.96, txDbm: 2.1, readAt: "2026-11-18 08:54:03" }]);
   assert.equal(dados.logins[0].online, false);
   assert.equal(dados.logins[0].neighborhood, "Centro");
-  assert.doesNotMatch(JSON.stringify(dados), /segredo|10\.0\.0\.1|AA:BB/);
+  assert.doesNotMatch(JSON.stringify(dados), /segredo|10\.0\.0\.1|AA:BB|CC:DD|10\.9\.9\.9|outra/);
   assert.deepEqual(dados.openServiceOrders.map((o) => o.id), ["2"], "OS finalizada não é OS aberta");
   assert.equal(dados.openServiceOrders[0].openedAt, undefined, "data zerada do IXC é ausência de data");
 
   const massivas = { list: async () => [{ title: "Queda", city: "Itabaiana", neighborhood: "Centro", startedAt: "2026-10-13T09:00:00Z", status: "investigating" }, { title: "Antiga", city: "X", neighborhood: "Centro", startedAt: "2026-01-01T00:00:00Z", status: "resolved" }] };
   const diagnostico = await ixcDiagnose(provider, massivas, "corr-1")("21857");
   assert.equal(diagnostico.incident.title, "Queda", "massiva encerrada não conta");
+});
+
+test("sinal da fibra: bom, no limite, crítico e sem leitura mudam o próximo passo", () => {
+  const base = (online, rxDbm) => diagnoseConnection({ logins: [{ id: "1", contractId: "9", online }], contracts: [{ id: "9", status: "A", internetStatus: "A", trustUnlockActive: false }], openServiceOrders: [], fiber: [{ loginId: "1", rxDbm, txDbm: null, readAt: "2026-11-18 08:54:03" }] }, []);
+  assert.equal(signalLevel(-21.4), "good");
+  assert.equal(signalLevel(-25.5), "borderline");
+  assert.equal(signalLevel(-30.96), "critical");
+  assert.equal(signalLevel(null), "none");
+  assert.match(base(true, -21.4).next, /Wi-Fi ou nos aparelhos/);
+  assert.match(base(true, -30.96).next, /precisa de técnico/);
+  assert.match(base(true, -30.96).facts.join(" "), /-30,96 dBm \(fraco, crítico\), lido em 18\/11\/2026 08:54/);
+  assert.match(base(false, -30.96).next, /reinício não resolve/);
+  assert.match(base(false, null).next, /luz LOS/);
+  assert.match(base(false, null).facts.join(" "), /sem leitura/);
+  assert.equal(base(true, -21.4).signal.level, "good");
+});
+
+test("sem a leitura da fibra (outro tipo de conexão, falha), o diagnóstico segue como antes", () => {
+  const sem = diagnoseConnection({ logins: [{ id: "1", contractId: "9", online: false }], contracts: [{ id: "9", status: "A", internetStatus: "A", trustUnlockActive: false }], openServiceOrders: [] }, []);
+  assert.equal(sem.signal, null);
+  assert.match(sem.next, /reinício do equipamento/);
 });

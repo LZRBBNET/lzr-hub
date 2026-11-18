@@ -6,12 +6,15 @@ import { diagnoseConnection, type ConnectionDiagnosis, type DiagnosisInput } fro
 import type { IncidentsRepository } from "./incidents-service.ts";
 import type { TriageHooks, TriageTurn } from "./n8n-channel-service.ts";
 import type { Intent } from "../agent/types.ts";
+import { sanitizeHandoffText } from "../agent/handoff.ts";
+import type { TicketIntake } from "./agent-playbook-shared.ts";
 import {
   ASK_CPF_TEXT, INVALID_CPF_TEXT, INVOICE_INTENTS, MAX_CPF_ATTEMPTS, MISMATCH_TEXT, UNAVAILABLE_TEXT, VERIFIED_HANDOFF_TEXT,
   extractDocument, invoiceDraft, type InvoiceSelfService,
 } from "./invoice-self-service-shared.ts";
 import {
-  CLARIFY_BELOW, CLARIFY_TEXT, DIAGNOSABLE_INTENTS, TRIAGE_LIST, offHoursMenuText, offHoursNote, formatProtocol, menuChoice, protocolFooter, queueForIntent,
+  CLARIFY_BELOW, CLARIFY_TEXT, DIAGNOSABLE_INTENTS, QUEUE_LABELS, TRIAGE_LIST, isBusinessHours, nextOpeningText, offHoursMenuText, offHoursNote, formatProtocol, menuChoice, protocolFooter, queueForIntent,
+  type TriageQueue,
   type TicketIdentification, type TicketStage, type TicketSummary,
 } from "./triage-shared.ts";
 
@@ -65,7 +68,7 @@ export async function openOrContinueTicket(
     id: randomUUID(), channel: input.channel, conversationId: input.conversationId, status: "open",
     openedAt: iso(at), lastCustomerAt: iso(at), closedAt: null, closedReason: null,
     identification: "pending", ixcCustomerId: null, intent: null, intentSource: null, intentConfidence: null,
-    queue: null, stage: "new", protocolSentAt: null, diagnosis: null, selfService: null,
+    queue: null, stage: "new", protocolSentAt: null, diagnosis: null, selfService: null, intake: null,
   };
   const created = await repository.create(row);
   if (!created) {
@@ -387,7 +390,20 @@ export function diagnosisReply(diagnosis: ConnectionDiagnosis, canAskCpf: boolea
 export interface TriageMode {
   /** Fora do horário comercial: lista clicável e aviso de quando o atendimento com pessoas volta. */
   offHours?: boolean;
+  /**
+   * Modo autônomo: o diagnóstico roda **antes** da resposta e vira dado para a IA conduzir
+   * o suporte; a resposta fixa pelo diagnóstico fica só para o que encerra a conversa
+   * técnica (bloqueio, massiva, OS já aberta).
+   */
+  agent?: boolean;
   now?: () => number;
+}
+
+/** Quando a equipe dá continuidade a um pedido registrado: no horário, ainda hoje; fora, a próxima abertura. */
+export function requestFooter(protocol: string | null, queue: string | null, at: Date): string {
+  const team = queue && queue in QUEUE_LABELS ? `a equipe de ${QUEUE_LABELS[queue as TriageQueue].toLowerCase()}` : "a equipe";
+  const when = isBusinessHours(at) ? "ainda hoje, por aqui" : `${nextOpeningText(at)}, por aqui`;
+  return `${protocol ? `Seu pedido ficou registrado no protocolo ${protocol}` : "Seu pedido ficou registrado"}, e ${team} dá continuidade ${when}.`;
 }
 
 /**
@@ -402,6 +418,9 @@ export function triageHooks(repository: TicketRepository, ticket: TicketRow, dia
   let diagnosedNow = false;
   // O protocolo só conta como informado se esteve no texto — o rodapé pode ter só o aviso de horário.
   let protocolInFooter = false;
+  // O diagnóstico desta fala (a linha do atendimento em memória não é atualizada pelo `update`).
+  let diagnosisNow: ConnectionDiagnosis | null = ticket.diagnosis;
+  let intakeNow: TicketIntake | null = ticket.intake ?? null;
   return {
     intercept: invoiceHooks.intercept,
     afterClassify: async (classified, context) => {
@@ -411,6 +430,10 @@ export function triageHooks(repository: TicketRepository, ticket: TicketRow, dia
       const diagnosis = await diagnoseTicket(repository, ticket, classified.intent, diagnose);
       if (!diagnosis) return undefined;
       diagnosedNow = true;
+      diagnosisNow = diagnosis;
+      // Modo autônomo: conexão ativa ou fora sem causa conhecida não encerra a conversa — a IA usa
+      // o diagnóstico (sinal da fibra, login, luzes) para conduzir o suporte.
+      if (mode.agent && !(diagnosis.verdict === "blocked" || diagnosis.incident || diagnosis.openServiceOrderId)) return undefined;
       const canAskCpf = !!invoice && ticket.identification === "identified" && !!ticket.ixcCustomerId;
       const reply = diagnosisReply(diagnosis, canAskCpf);
       if (!reply) return undefined;
@@ -428,8 +451,24 @@ export function triageHooks(repository: TicketRepository, ticket: TicketRow, dia
       if (!(ticket.stage === "new" && (classified.confidence < CLARIFY_BELOW || classified.intent === "general_information"))) return undefined;
       return mode.offHours ? { text: offHoursMenuText(at()), interactive: TRIAGE_LIST } : { text: CLARIFY_TEXT };
     },
+    context: () => {
+      const facts = diagnosisNow ? [...diagnosisNow.facts, `Leitura do sistema: ${diagnosisNow.next}`] : [];
+      if (intakeNow) facts.push(`Pedido já registrado neste atendimento (${intakeNow.intent}): ${intakeNow.summary}`);
+      return { topic: ticket.intent, identified: ticket.identification === "identified" && !!ticket.ixcCustomerId, facts };
+    },
+    registerRequest: async (summary, intent) => {
+      // A ficha vai para quem não estava na conversa: sem CPF, e-mail nem telefone.
+      intakeNow = { intent, summary: sanitizeHandoffText(summary).slice(0, 1500), at: at().toISOString() };
+      await repository.update(ticket.id, { intake: intakeNow, queue: queueForIntent(intent) });
+    },
     footer: (context) => {
       const lines: string[] = [];
+      // Pedido completo: uma linha só, com o protocolo e quando a equipe continua.
+      if (context?.request) {
+        lines.push(requestFooter(ticket.protocol, queueForIntent(context.request), at()));
+        if (ticket.protocol) protocolInFooter = true;
+        return lines.join("\n");
+      }
       if (ticket.protocol && !ticket.protocolSentAt) { lines.push(protocolFooter(ticket.protocol)); protocolInFooter = true; }
       // A abertura fora do horário já diz quando há gente; nas respostas, a promessa "um atendente" ganha data.
       // Resposta que resolve (`handoff: false`) não precisa: ninguém foi prometido.
@@ -452,13 +491,13 @@ export function triageHooks(repository: TicketRepository, ticket: TicketRow, dia
  */
 export async function startTriage(
   repository: TicketRepository,
-  input: { channel: string; conversationId: string; lookup: CustomerLookup; diagnose?: Diagnose; invoice?: InvoiceOptions; offHours?: boolean; now?: number },
+  input: { channel: string; conversationId: string; lookup: CustomerLookup; diagnose?: Diagnose; invoice?: InvoiceOptions; offHours?: boolean; agent?: boolean; now?: number },
 ): Promise<{ ticket: TicketRow; hooks: TriageHooks; knownCustomer: CustomerLookup; awaitingAnswer: boolean; handedOff: boolean } | undefined> {
   try {
     const { ticket: opened } = await openOrContinueTicket(repository, input);
     const ticket = await identifyTicketCustomer(repository, opened, input.lookup);
     return {
-      ticket, hooks: triageHooks(repository, ticket, input.diagnose, input.invoice, { offHours: input.offHours, now: input.now === undefined ? undefined : () => input.now as number }), knownCustomer: knownCustomer(ticket),
+      ticket, hooks: triageHooks(repository, ticket, input.diagnose, input.invoice, { offHours: input.offHours, agent: input.agent, now: input.now === undefined ? undefined : () => input.now as number }), knownCustomer: knownCustomer(ticket),
       // A IA perguntou algo (assunto ou CPF): a resposta do cliente merece resposta.
       awaitingAnswer: ticket.stage === "clarifying" || awaitingCpf(ticket),
       // A IA passou para o atendente neste atendimento: no modo autônomo, ela não volta a falar sozinha.
@@ -474,7 +513,7 @@ export function ticketSummary(row: TicketRow): TicketSummary {
     protocol: row.protocol, status: row.status, openedAt: row.openedAt, closedAt: row.closedAt, closedReason: row.closedReason,
     identification: row.identification, ixcCustomerId: row.ixcCustomerId, intent: row.intent, intentSource: row.intentSource,
     intentConfidence: row.intentConfidence, queue: row.queue, stage: row.stage, protocolSentAt: row.protocolSentAt,
-    diagnosis: row.diagnosis, selfService: row.selfService,
+    diagnosis: row.diagnosis, selfService: row.selfService, intake: row.intake ?? null,
   };
 }
 
@@ -488,6 +527,7 @@ const toTicket = (row: Row): TicketRow => ({
   stage: (row.stage as TicketStage) ?? "new", protocolSentAt: row.protocolSentAt,
   diagnosis: (row.diagnosis as ConnectionDiagnosis | null) ?? null,
   selfService: (row.selfService as InvoiceSelfService | null) ?? null,
+  intake: (row.intake as TicketIntake | null) ?? null,
 });
 
 export class DbTicketRepository implements TicketRepository {

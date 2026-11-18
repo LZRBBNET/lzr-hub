@@ -3,6 +3,7 @@ import type { ChatMessage, Intent } from "../agent/types.ts";
 import { MAX_SOURCES, findSources, intentTerms, type CopilotSource } from "./copilot-service.ts";
 import type { KnowledgeDoc } from "./knowledge-service.ts";
 import { containsHomologationText } from "./reply-templates-shared.ts";
+import { AGENT_STATES, type AgentState } from "./agent-playbook-shared.ts";
 
 /**
  * Robô de dúvidas (n8n) — no horário comercial, só dúvida.
@@ -23,10 +24,19 @@ import { containsHomologationText } from "./reply-templates-shared.ts";
  * sair — o n8n é editável por mais gente que o código, então não é confiável.
  */
 
-export const DOUBT_BOT_TIMEOUT_MS = 7000;
+/** O modelo do modo autônomo (gpt-5.4-mini, medido em 18/11) leva 1,7–3,3 s; o nó do n8n corta em 8,5 s. */
+export const DOUBT_BOT_TIMEOUT_MS = 9000;
 export const DOUBT_BOT_MAX_ANSWER = 900;
 /** Teto por documento enviado ao n8n: os da base inicial têm até ~1.500 caracteres. */
 export const BOT_SOURCE_LIMIT = 1800;
+/**
+ * Modo autônomo manda menos: o pedido já leva roteiro, dados do sistema e até 12 falas, e a cota
+ * gratuita da Groq é de 8.000 tokens por minuto na conta inteira — com 3 documentos inteiros cada
+ * fala gastava ~2.500 e o teste de 18/11 estourou a cota em sequência.
+ */
+export const AGENT_SOURCES = 2;
+export const AGENT_SOURCE_LIMIT = 1200;
+export const AGENT_HISTORY_TEXT = 300;
 /** O n8n devolve isto quando os trechos não respondem. Vira "não sei" — o atendente assume. */
 export const DOUBT_BOT_REFUSAL = "NAO_SEI";
 
@@ -75,10 +85,14 @@ export interface DoubtBotInput {
   intent: Intent;
   /** Últimas falas do atendimento, já sem o que o cliente nunca viu (sugestões). */
   history: ChatMessage[];
+  /** Modo autônomo: o roteiro do assunto (`agentTask`). Com ele, o n8n devolve também `state` e `summary`. */
+  task?: string;
+  /** Modo autônomo: o que o sistema sabe (diagnóstico do IXC, pedido já registrado). Dado, não instrução. */
+  facts?: string[];
 }
 
 export type DoubtBotResult =
-  | { kind: "answer"; text: string; sources: string[] }
+  | { kind: "answer"; text: string; sources: string[]; state?: AgentState; summary?: string }
   | { kind: "none" }
   | { kind: "failed"; reason: string };
 
@@ -97,17 +111,22 @@ export async function askDoubtBot(config: DoubtBotConfig, input: DoubtBotInput, 
       body: JSON.stringify({
         intent: input.intent,
         question: sanitizeHandoffText(input.question).slice(0, 600),
-        history: input.history.map((turn) => ({ role: turn.role === "agent" ? "assistant" : "customer", text: sanitizeHandoffText(turn.content).slice(0, 400) })),
-        sources: sources.slice(0, MAX_SOURCES).map((source) => ({ title: source.title, excerpt: source.excerpt })),
+        history: input.history.map((turn) => ({ role: turn.role === "agent" ? "assistant" : "customer", text: sanitizeHandoffText(turn.content).slice(0, input.task ? AGENT_HISTORY_TEXT : 400) })),
+        sources: sources.slice(0, input.task ? AGENT_SOURCES : MAX_SOURCES).map((source) => ({ title: source.title, excerpt: input.task ? source.excerpt.slice(0, AGENT_SOURCE_LIMIT) : source.excerpt })),
+        ...(input.task ? { mode: "agent", task: input.task, facts: (input.facts ?? []).map((fact) => sanitizeHandoffText(fact).slice(0, 300)) } : {}),
       }),
       signal: controller.signal,
     });
     if (!response.ok) return { kind: "failed", reason: `O n8n respondeu HTTP ${response.status}.` };
-    const body = await response.json().catch(() => undefined) as { answer?: unknown; text?: unknown } | undefined;
+    const body = await response.json().catch(() => undefined) as { answer?: unknown; text?: unknown; state?: unknown; summary?: unknown } | undefined;
     const checked = checkBotAnswer(body?.answer ?? body?.text);
     // Recusa do modelo não é falha: é o robô dizendo que não sabe, e o atendente assume.
     if (!checked.ok) return checked.reason.startsWith("O n8n disse que a base") ? { kind: "none" } : { kind: "failed", reason: checked.reason };
-    return { kind: "answer", text: checked.text, sources: sources.map((source) => source.title) };
+    if (!input.task) return { kind: "answer", text: checked.text, sources: sources.map((source) => source.title) };
+    // Modo autônomo: estado fora da lista vira "ongoing" — na dúvida, a conversa continua com a IA.
+    const state = typeof body?.state === "string" && AGENT_STATES.has(body.state) ? body.state as AgentState : "ongoing";
+    const summary = typeof body?.summary === "string" && body.summary.trim() ? body.summary.trim().slice(0, 1500) : undefined;
+    return { kind: "answer", text: checked.text, sources: sources.map((source) => source.title), state, summary };
   } catch (error) {
     return { kind: "failed", reason: (error as Error)?.name === "AbortError" ? "O n8n demorou demais para responder." : "Não consegui falar com o n8n." };
   } finally {
@@ -128,7 +147,9 @@ export function doubtBotAnswerer(config: DoubtBotConfig, loadDocuments: () => Pr
     // padrão da tela) e mandava trechos aleatórios a quem só disse "alô? alguém?".
     const hint = VAGUE_INTENTS.has(input.intent) ? "" : intentTerms(input.intent);
     const sources = findSources(documents, input.question, hint);
-    if (sources.length === 0) return { kind: "none" };
+    // Sem trecho, só o modo autônomo chama o modelo: ele conduz a conversa (pergunta, monta o pedido)
+    // com o roteiro e os dados do sistema — e o prompt proíbe afirmar o que não está em nenhum dos dois.
+    if (sources.length === 0 && !input.task) return { kind: "none" };
     // O robô recebe o documento inteiro, não só o parágrafo que casou: medido em 17/11, com um
     // parágrafo só ele repetia o primeiro passo ("veja se acontece em todos os aparelhos") a quem
     // já tinha reiniciado, porque nunca via o passo seguinte nem o "se não voltar, um atendente".

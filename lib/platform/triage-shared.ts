@@ -1,6 +1,7 @@
 import type { Intent } from "../agent/types.ts";
 import type { ConnectionDiagnosis } from "./connection-diagnosis-shared.ts";
 import type { InvoiceSelfService } from "./invoice-self-service-shared.ts";
+import type { TicketIntake } from "./agent-playbook-shared.ts";
 
 /**
  * Triagem do atendimento: protocolo, setor e o menu que confirma o assunto.
@@ -234,6 +235,8 @@ export interface TicketSummary {
   diagnosis: ConnectionDiagnosis | null;
   /** Segunda via com confirmação do titular. */
   selfService: InvoiceSelfService | null;
+  /** Pedido que a IA deixou pronto para a equipe (modo autônomo). */
+  intake?: TicketIntake | null;
 }
 
 /** Assuntos em que o diagnóstico de conexão ajuda: o problema pode estar no contrato, no login ou na rede. */
@@ -243,7 +246,7 @@ export const STAGE_LABELS: Record<TicketStage, string> = {
   new: "Recebido",
   clarifying: "IA perguntou o assunto",
   routed: "Encaminhado ao setor",
-  handoff: "IA passou ao atendente",
+  handoff: "Com a equipe (pedido registrado pela IA)",
 };
 
 export const IDENTIFICATION_LABELS: Record<TicketIdentification, string> = {

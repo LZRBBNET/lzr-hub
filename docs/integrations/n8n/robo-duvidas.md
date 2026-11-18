@@ -67,4 +67,6 @@ Com `FEATURE_AI_AGENT=true` (mais `N8N_BOT_URL` e `N8N_BOT_SECRET`), o mesmo flu
 - recusa ("qual meu CPF?") não passa a conversa: a IA recusa e segue ajudando;
 - conversa que a IA resolveu **sai da fila** sozinha.
 
-O prompt do nó **Monta o pedido ao modelo** devolve `NAO_SEI` quando o cliente já fez o que a base orienta e o problema continua — é o que leva a conversa ao atendente em vez de repetir o mesmo passo.
+No modo autônomo o LZR manda também `mode: "agent"`, o **roteiro do assunto** (`task`) e os **dados do sistema** (`facts`: diagnóstico do IXC com o sinal da fibra, pedido já registrado). O nó **Monta o pedido ao modelo** pede ao modelo um JSON `{reply, state, summary}` e o **Extrai a resposta** devolve `{answer, state, summary}`. `state = request_complete` faz o LZR gravar a ficha (`summary`) no atendimento e confirmar o protocolo ao cliente.
+
+**Modelo**: OpenAI `gpt-5.4-mini` (credencial **Chatgpt**), no nó **OpenAI (gpt-5.4-mini)**, timeout de 8,5 s. A Groq gratuita (8.000 tokens/min por modelo) não aguenta o modo autônomo. Para trocar de modelo, mude `model` no nó **Monta o pedido ao modelo**; modelos da família gpt-5 não aceitam `temperature`.

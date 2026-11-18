@@ -6,7 +6,7 @@ import type { IxcCityDto, IxcCollectionWalletDto, IxcCustomerDto, IxcCustomerPag
 
 // `listOsCatalog` fica de fora porque não tem um endpoint só: a mesma operação
 // lê `su_oss_assunto` e `empresa_setor`, e o recurso vai explícito na chamada.
-const endpoints:Record<Exclude<IxcReadOperation,"testConnection"|"findCustomer"|"getCustomer"|"listCustomers"|"listOsCatalog"|"listFinanceCatalog">,string>={listContracts:"cliente_contrato",getPlan:"vd_contratos",listInvoices:"fn_areceber",listPayments:"fn_movim_finan",listServiceOrders:"su_oss_chamado",getConnection:"radusuarios",getCity:"cidade",getRecordHistory:"ixc_logs"};
+const endpoints:Record<Exclude<IxcReadOperation,"testConnection"|"findCustomer"|"getCustomer"|"listCustomers"|"listOsCatalog"|"listFinanceCatalog">,string>={listContracts:"cliente_contrato",getPlan:"vd_contratos",listInvoices:"fn_areceber",listPayments:"fn_movim_finan",listServiceOrders:"su_oss_chamado",getConnection:"radusuarios",getCity:"cidade",getRecordHistory:"ixc_logs",getFiberSignal:"radpop_radio_cliente_fibra"};
 export interface IxcTrace { event:string; correlationId:string; durationMs:number; status:"success"|"failed"|"cache-hit"|"blocked"; attributes:Record<string,unknown> }
 export interface IxcReadonlyOptions { baseUrl:string; token:string; allowedCustomerIds:string[]; fullBase?:boolean; timeoutMs?:number; retryLimit?:0|1; cacheTtlMs?:number; cityCacheTtlMs?:number; rateLimitPerMinute?:number; fetcher?:typeof fetch; trace?:(event:IxcTrace)=>void; now?:()=>number }
 interface ReadOptions { oper?:string; page?:number; sortname?:string; sortorder?:"asc"|"desc"; gridParam?:GridFilter[] }
@@ -470,7 +470,14 @@ export class IxcReadonlyProvider {
       this.read("listServiceOrders",endpoints.listServiceOrders,"id_cliente",customerId,correlationId,20,customerId,{sortname:"su_oss_chamado.data_abertura",sortorder:"desc"}),
     ]);
     const text=(raw:Record<string,unknown>,key:string)=>{const value=String(raw[key]??"").trim();return value&&!value.startsWith("0000-00-00")?value:undefined;};
+    // Sinal óptico da ONU do login principal: é o que separa "problema na casa" de "problema na rede".
+    // Quarta consulta, só depois de saber o login. Falhar aqui não derruba o diagnóstico: fica sem sinal.
+    // "0.00" é o IXC sem leitura (ONU desligada ou sem fibra), não um sinal perfeito.
+    const loginId=String(logins[0]?.id??"");
+    const fiber=loginId?await this.read("getFiberSignal",endpoints.getFiberSignal,"radpop_radio_cliente_fibra.id_login",loginId,correlationId,2,customerId).catch(()=>[]):[];
+    const dbm=(raw:Record<string,unknown>,key:string)=>{const value=Number(String(raw[key]??"").replace(",","."));return Number.isFinite(value)&&value!==0?value:null;};
     return {
+      fiber:fiber.map((raw)=>({loginId:String(raw.id_login??loginId),rxDbm:dbm(raw,"sinal_rx"),txDbm:dbm(raw,"sinal_tx"),readAt:text(raw,"data_sinal")})),
       logins:logins.map((raw)=>({id:String(raw.id??""),contractId:text(raw,"id_contrato"),online:raw.online==="S"?true:raw.online==="N"?false:null,lastConnectedAt:text(raw,"ultima_conexao_inicial"),lastDisconnectedAt:text(raw,"ultima_conexao_final"),disconnectReason:text(raw,"motivo_desconexao"),neighborhood:text(raw,"bairro")})),
       contracts:contracts.map((raw)=>({id:String(raw.id??""),status:String(raw.status??""),internetStatus:String(raw.status_internet??""),trustUnlockActive:raw.desbloqueio_confianca_ativo==="S"})),
       // "F" é finalizada; o resto ainda está na fila de alguém.

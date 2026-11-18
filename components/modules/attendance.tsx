@@ -685,6 +685,11 @@ function TicketPanel({ ticket, now, onUse }: { ticket:TicketSummary|null; now:nu
       <ul>{ticket.diagnosis.facts.map((fact) => <li key={fact}>{fact}</li>)}</ul>
       <p><strong>Próximo passo:</strong> {ticket.diagnosis.next}</p>
     </div>}
+    {ticket.intake && <div className="diagnosis-block">
+      <h4>Pedido registrado pela IA <Badge tone="warn">{intentLabel(ticket.intake.intent)}</Badge>
+        <InfoTip>O que a IA perguntou ao cliente antes de passar o pedido à equipe, para ninguém precisar perguntar de novo. Registrado há {relativeTime(ticket.intake.at, now)}.</InfoTip></h4>
+      <p className="intake-summary">{ticket.intake.summary}</p>
+    </div>}
     <InvoiceBlock ticket={ticket} onUse={onUse} />
   </section>;
 }

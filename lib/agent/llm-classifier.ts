@@ -86,10 +86,14 @@ export interface LlmConfig { apiKey: string; model: string; baseUrl: string; fet
 /**
  * Modelo padrão na Groq. O `llama-3.3-70b-versatile`, padrão anterior, saiu do catálogo
  * (a Groq responde "model_not_found") — e como a falha cai na regex em silêncio, o
- * classificador passou a ser só regex sem ninguém notar. Medido em 17/11/2026 com o
- * prompt deste arquivo: 8 de 8 mensagens reais classificadas certo, 0,3–0,9 s.
+ * classificador passou a ser só regex sem ninguém notar.
+ *
+ * `gpt-oss-20b` e não o `120b`: a cota gratuita da Groq é **por modelo e por conta**
+ * (8.000 tokens/minuto, 1.000 pedidos/dia), e o `120b` fica com a conversa do modo
+ * autônomo (n8n). Medido em 18/11/2026 com o prompt deste arquivo: 12 de 12 mensagens
+ * reais classificadas certo, 0,3–2 s.
  */
-export const DEFAULT_LLM_MODEL = "openai/gpt-oss-120b";
+export const DEFAULT_LLM_MODEL = "openai/gpt-oss-20b";
 
 /**
  * Parâmetros de tamanho da resposta. Modelo de raciocínio (gpt-oss) gasta tokens

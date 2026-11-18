@@ -496,6 +496,12 @@ export const supportTickets = pgTable("support_tickets", {
    * aqui: só o resultado da conferência.
    */
   selfService: jsonb("self_service"),
+  /**
+   * Pedido montado pela IA no modo autônomo (assunto, ficha em texto, quando): o que a
+   * equipe precisa para executar sem perguntar de novo. Texto sanitizado — sem CPF,
+   * e-mail ou telefone; endereço fica quando o pedido é de instalação ou mudança.
+   */
+  intake: jsonb("intake"),
 }, (table) => [
   uniqueIndex("support_tickets_open_idx").on(table.channel, table.externalConversationId).where(sql`${table.status} = 'open'`),
   uniqueIndex("support_tickets_protocol_idx").on(table.protocol),
