@@ -33,6 +33,22 @@ export async function listMetaTemplates(config: MetaTemplatesConfig): Promise<{ 
   }
 }
 
+/**
+ * Limite de conversas que a empresa pode começar por dia (`messaging_limit_tier`: TIER_250,
+ * TIER_1K, TIER_10K, TIER_100K, TIER_UNLIMITED) e a qualidade do número. É o teto real da
+ * cobrança: `OUTBOUND_DAILY_CAP` precisa caber nele.
+ */
+export async function getPhoneLimits(config: MetaTemplatesConfig, phoneNumberId: string): Promise<{ ok: true; tier: string | null; quality: string | null; name: string | null } | { ok: false; reason: string }> {
+  try {
+    const response = await (config.fetcher ?? fetch)(`https://graph.facebook.com/${config.graphVersion}/${encodeURIComponent(phoneNumberId)}?fields=messaging_limit_tier,quality_rating,verified_name`, { headers: { Authorization: `Bearer ${config.accessToken}` } });
+    const body = await response.json().catch(() => ({})) as { messaging_limit_tier?: string; quality_rating?: string; verified_name?: string; error?: { message?: string } };
+    if (!response.ok) return { ok: false, reason: String(body.error?.message ?? response.status).slice(0, 200) };
+    return { ok: true, tier: body.messaging_limit_tier ?? null, quality: body.quality_rating ?? null, name: body.verified_name ?? null };
+  } catch {
+    return { ok: false, reason: "Não consegui falar com a Meta agora." };
+  }
+}
+
 export async function createMetaTemplate(config: MetaTemplatesConfig, definition: TemplateDefinition): Promise<{ ok: true; status: string } | { ok: false; reason: string }> {
   try {
     const response = await (config.fetcher ?? fetch)(url(config), {

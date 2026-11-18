@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { createMetaTemplate, listMetaTemplates, metaTemplatesConfigFromEnv } from "@/lib/integrations/meta/templates";
+import { createMetaTemplate, getPhoneLimits, listMetaTemplates, metaTemplatesConfigFromEnv } from "@/lib/integrations/meta/templates";
 import { TEMPLATES } from "@/lib/platform/outbound-shared";
 import { logUnauthenticatedAction } from "@/lib/platform/audit-log";
 import { authorize } from "@/lib/platform/session-guard";
@@ -18,7 +18,12 @@ export async function GET(request: Request) {
   const remote = await listMetaTemplates(config);
   if (!remote.ok) return NextResponse.json({ error: remote.reason }, { status: 502 });
   const byName = new Map(remote.templates.map((item) => [item.name, item]));
+  const phoneId = process.env.META_PHONE_NUMBER_ID?.trim();
+  // O limite diário de conversas iniciadas e a qualidade do número: o teto real da cobrança.
+  const phone = phoneId ? await getPhoneLimits(config, phoneId) : { ok: false as const, reason: "Falta META_PHONE_NUMBER_ID" };
   return NextResponse.json({
+    phone,
+    dailyCap: Number(process.env.OUTBOUND_DAILY_CAP) || 900,
     templates: Object.values(TEMPLATES).map((template) => ({
       name: template.name, body: template.body, status: byName.get(template.name)?.status ?? "NÃO CADASTRADO",
       rejectedReason: byName.get(template.name)?.rejectedReason ?? null,
