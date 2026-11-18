@@ -37,7 +37,8 @@ export async function GET(request: Request) {
   }
 
   const metaEnabled = process.env.FEATURE_META_WHATSAPP === "true";
-  const metaAutoReply = process.env.FEATURE_N8N_AUTOREPLY === "true";
+  // O modo autônomo também faz a IA responder sozinha, a qualquer hora; sem olhar a flag dele a tela dizia "observação".
+  const metaAutoReply = process.env.FEATURE_N8N_AUTOREPLY === "true" || process.env.FEATURE_AI_AGENT === "true";
   const metaReceives = !!process.env.META_APP_SECRET?.trim() && !!process.env.META_VERIFY_TOKEN?.trim();
   const metaSends = !!process.env.META_ACCESS_TOKEN?.trim() && !!process.env.META_PHONE_NUMBER_ID?.trim();
   const attendantReply = process.env.FEATURE_ATTENDANT_REPLY === "true";
