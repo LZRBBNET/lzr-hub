@@ -73,13 +73,13 @@ export async function GET(request: Request) {
       {
         // A flag ligada sem chave não liga nada — e essa diferença precisa aparecer,
         // senão alguém marca "classificador ativo" e ele está caindo na regex.
-        name: "Classificação de intenção (Groq)",
+        name: "Classificação de intenção (modelo de linguagem)",
         state: llm ? "ok" : process.env.FEATURE_LLM_INTENT === "true" ? "degraded" : "disabled",
         mode: llm ? llm.model : "expressões regulares",
         detail: llm
           ? "Modelo escolhe uma intenção de lista fechada; a resposta ao cliente continua sendo texto fixo"
           : process.env.FEATURE_LLM_INTENT === "true"
-            ? "FEATURE_LLM_INTENT ligada mas sem GROQ_API_KEY — está caindo na regex"
+            ? "FEATURE_LLM_INTENT ligada mas sem OPENAI_API_KEY — está caindo na regex"
             : "Intenção detectada por regra; sem modelo de linguagem",
       },
       { name: "Filas (BullMQ/Redis)", state: queues?.enabled ? "ok" : "disabled", mode: queues?.runtime ?? "—", detail: queues?.enabled ? "Jobs reais em processamento" : (queues?.detail ?? "FEATURE_QUEUES desligada") },

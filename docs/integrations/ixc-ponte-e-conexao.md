@@ -55,7 +55,9 @@ Corrigido em 2026-07-29 com `sudo ufw allow 443/tcp`. As regras antigas específ
 
 O IXC exige **GET com corpo JSON** nas listagens — padrão incomum que a API `fetch` do Node proíbe (`Request with GET/HEAD method cannot have body`).
 
-A ponte esconde isso: recebe POST e converte para GET antes de repassar. Numa conexão direta o problema volta para a aplicação, e é resolvido em [`lib/integrations/ixc/http.ts`](../../lib/integrations/ixc/http.ts), com um transporte sobre o módulo `https` nativo compatível com a interface do `fetch` (o provider continua recebendo um `fetcher` injetável, e os testes seguem usando dublês).
+A ponte esconde isso: o que chega com `ixcsoft: listar` (todas as consultas do LZR mandam) vira GET com corpo antes de repassar; **o resto passa com o método que chegou e sem o cabeçalho de listagem** — abrir OS, cadastrar cliente, renegociar, segunda via, PIX.
+
+⚠️ **Até 18/11/2026 a ponte convertia tudo em listagem.** Nenhuma escrita que passasse por ela criava nada no IXC: a abertura de OS devolvia uma lista de OS de outros clientes, o LZR não achava o número e gravava "resultado incerto". Corrigido no código em [`infra/ixc-bridge/server.js`](../../infra/ixc-bridge/server.js) (cópia versionada do que roda na VM) e provado numa porta de teste: consulta, PIX e a OS de teste 301041 (cadastro 21857) funcionaram. A troca da ponte do ar precisa de quem tem acesso à VM: `cp server.next.js server.js` em `/home/bbnet/lzr-hub-ixc-bridge` e reiniciar o serviço `lzr-hub-ixc-bridge` (o backup está em `server.js.bak-2026-11-18`). Numa conexão direta o problema volta para a aplicação, e é resolvido em [`lib/integrations/ixc/http.ts`](../../lib/integrations/ixc/http.ts), com um transporte sobre o módulo `https` nativo compatível com a interface do `fetch` (o provider continua recebendo um `fetcher` injetável, e os testes seguem usando dublês).
 
 **A conexão direta não está em uso.** O suporte existe caso um dia o IP do Railway seja liberado no IXC — e a troca é só de variáveis, sem deploy.
 

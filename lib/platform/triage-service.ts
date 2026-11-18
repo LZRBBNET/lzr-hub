@@ -8,6 +8,10 @@ import type { TriageHooks, TriageTurn } from "./n8n-channel-service.ts";
 import type { Intent } from "../agent/types.ts";
 import { sanitizeHandoffText } from "../agent/handoff.ts";
 import type { TicketIntake } from "./agent-playbook-shared.ts";
+import type { AiServiceOrderInput, AiServiceOrderResult } from "./ai-service-order.ts";
+
+/** Abre a OS no IXC pelo pedido que a IA montou. Injetado: a triagem não conhece o IXC. */
+export type ServiceOrderOpener = (input: AiServiceOrderInput) => Promise<AiServiceOrderResult | undefined>;
 import {
   ASK_CPF_TEXT, INVALID_CPF_TEXT, INVOICE_INTENTS, MAX_CPF_ATTEMPTS, MISMATCH_TEXT, UNAVAILABLE_TEXT, VERIFIED_HANDOFF_TEXT,
   extractDocument, invoiceDraft, type InvoiceSelfService,
@@ -396,13 +400,21 @@ export interface TriageMode {
    * técnica (bloqueio, massiva, OS já aberta).
    */
   agent?: boolean;
+  /** Modo autônomo: abre a OS no IXC quando o pedido técnico fica pronto (`FEATURE_AI_SERVICE_ORDER`). */
+  serviceOrder?: ServiceOrderOpener;
   now?: () => number;
 }
 
-/** Quando a equipe dá continuidade a um pedido registrado: no horário, ainda hoje; fora, a próxima abertura. */
-export function requestFooter(protocol: string | null, queue: string | null, at: Date): string {
+/**
+ * Quando a equipe dá continuidade a um pedido registrado: no horário, ainda hoje; fora, a
+ * próxima abertura. Com OS aberta pela IA, diz o número — só o que o IXC devolveu com número.
+ */
+export function requestFooter(protocol: string | null, queue: string | null, at: Date, order?: { id: string; existing?: boolean }): string {
   const team = queue && queue in QUEUE_LABELS ? `a equipe de ${QUEUE_LABELS[queue as TriageQueue].toLowerCase()}` : "a equipe";
   const when = isBusinessHours(at) ? "ainda hoje, por aqui" : `${nextOpeningText(at)}, por aqui`;
+  const proto = protocol ? ` (protocolo ${protocol})` : "";
+  if (order?.existing) return `Você já tem uma ordem de serviço aberta, nº ${order.id}${proto}: ${team} segue com ela e retorna ${when}.`;
+  if (order) return `Abri a ordem de serviço nº ${order.id}${proto} para ${team}, que entra em contato ${when}.`;
   return `${protocol ? `Seu pedido ficou registrado no protocolo ${protocol}` : "Seu pedido ficou registrado"}, e ${team} dá continuidade ${when}.`;
 }
 
@@ -461,11 +473,21 @@ export function triageHooks(repository: TicketRepository, ticket: TicketRow, dia
       intakeNow = { intent, summary: sanitizeHandoffText(summary).slice(0, 1500), at: at().toISOString() };
       await repository.update(ticket.id, { intake: intakeNow, queue: queueForIntent(intent) });
     },
+    openServiceOrder: async (intent) => {
+      if (!mode.serviceOrder || !intakeNow || ticket.identification !== "identified" || !ticket.ixcCustomerId) return undefined;
+      let result: AiServiceOrderResult | undefined;
+      try { result = await mode.serviceOrder({ customerId: ticket.ixcCustomerId, ticketId: ticket.id, intent, summary: intakeNow.summary, protocol: ticket.protocol }); }
+      catch { result = { status: "failed", detail: "Erro inesperado ao abrir a OS." }; }
+      if (!result) return undefined;
+      intakeNow = { ...intakeNow, serviceOrderStatus: result.status, serviceOrderDetail: result.detail, ...("orderId" in result ? { serviceOrderId: result.orderId } : {}) };
+      await repository.update(ticket.id, { intake: intakeNow }).catch(() => undefined);
+      return result.status === "success" || result.status === "existing" ? { id: result.orderId, existing: result.status === "existing" } : undefined;
+    },
     footer: (context) => {
       const lines: string[] = [];
       // Pedido completo: uma linha só, com o protocolo e quando a equipe continua.
       if (context?.request) {
-        lines.push(requestFooter(ticket.protocol, queueForIntent(context.request), at()));
+        lines.push(requestFooter(ticket.protocol, queueForIntent(context.request), at(), context.serviceOrder));
         if (ticket.protocol) protocolInFooter = true;
         return lines.join("\n");
       }
@@ -491,13 +513,13 @@ export function triageHooks(repository: TicketRepository, ticket: TicketRow, dia
  */
 export async function startTriage(
   repository: TicketRepository,
-  input: { channel: string; conversationId: string; lookup: CustomerLookup; diagnose?: Diagnose; invoice?: InvoiceOptions; offHours?: boolean; agent?: boolean; now?: number },
+  input: { channel: string; conversationId: string; lookup: CustomerLookup; diagnose?: Diagnose; invoice?: InvoiceOptions; offHours?: boolean; agent?: boolean; serviceOrder?: ServiceOrderOpener; now?: number },
 ): Promise<{ ticket: TicketRow; hooks: TriageHooks; knownCustomer: CustomerLookup; awaitingAnswer: boolean; handedOff: boolean } | undefined> {
   try {
     const { ticket: opened } = await openOrContinueTicket(repository, input);
     const ticket = await identifyTicketCustomer(repository, opened, input.lookup);
     return {
-      ticket, hooks: triageHooks(repository, ticket, input.diagnose, input.invoice, { offHours: input.offHours, agent: input.agent, now: input.now === undefined ? undefined : () => input.now as number }), knownCustomer: knownCustomer(ticket),
+      ticket, hooks: triageHooks(repository, ticket, input.diagnose, input.invoice, { offHours: input.offHours, agent: input.agent, serviceOrder: input.serviceOrder, now: input.now === undefined ? undefined : () => input.now as number }), knownCustomer: knownCustomer(ticket),
       // A IA perguntou algo (assunto ou CPF): a resposta do cliente merece resposta.
       awaitingAnswer: ticket.stage === "clarifying" || awaitingCpf(ticket),
       // A IA passou para o atendente neste atendimento: no modo autônomo, ela não volta a falar sozinha.

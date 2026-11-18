@@ -20,6 +20,10 @@ import { DbIncidentsRepository } from "@/lib/platform/incidents-service";
 import { isBusinessHours } from "@/lib/platform/triage-shared";
 import { doubtBotAnswerer, doubtBotConfigFromEnv } from "@/lib/platform/doubt-bot-service";
 import { DbKnowledgeRepository } from "@/lib/platform/knowledge-service";
+import { openAiServiceOrder } from "@/lib/platform/ai-service-order";
+import { DbIxcWriteOperationsRepository } from "@/lib/platform/ixc-write-service";
+import { openServiceOrder } from "@/lib/integrations/ixc/write-client";
+import { logUnauthenticatedAction } from "@/lib/platform/audit-log";
 
 /**
  * Webhook oficial do **WhatsApp Business Platform (Cloud API)**.
@@ -47,6 +51,11 @@ const offHoursAutoReplyEnabled = () => process.env.FEATURE_OFF_HOURS_AUTOREPLY =
  * atendente o que exige gente. Precisa do n8n configurado (`N8N_BOT_URL`/`N8N_BOT_SECRET`):
  * sem ele, a flag não liga nada — respostas fixas a cada fala seriam piores que o modo atual.
  */
+/**
+ * A IA abre a OS no IXC sozinha quando o pedido técnico fica pronto (modo autônomo). Também
+ * exige `FEATURE_IXC_WRITE`. Nasce desligada: abre chamado real na fila da equipe técnica.
+ */
+const aiServiceOrderEnabled = () => process.env.FEATURE_AI_SERVICE_ORDER === "true";
 const aiAgentConfig = () => (process.env.FEATURE_AI_AGENT === "true" ? doubtBotConfigFromEnv() : undefined);
 
 /**
@@ -128,6 +137,20 @@ export async function POST(request: Request) {
       offHours: offHours && botSpeaks,
       // Modo autônomo: o diagnóstico vira dado para a IA conduzir o suporte, antes da resposta.
       agent: !!agentConfig,
+      // Pedido técnico pronto vira OS no IXC — com auditoria de cada tentativa, inclusive a bloqueada.
+      serviceOrder: agentConfig && provider ? async (input) => {
+        const result = await openAiServiceOrder({
+          enabled: aiServiceOrderEnabled(), provider, ledger: new DbIxcWriteOperationsRepository(db), correlationId,
+          open: (order, corr) => openServiceOrder({ baseUrl: ixcConfig.ixcBaseUrl!, token: ixcConfig.ixcToken! }, order, corr),
+        }, input);
+        if (result && result.status !== "skipped") {
+          await logUnauthenticatedAction({
+            action: "ixc.write.service_order_open", entity: `customer:${input.customerId}`, result: result.status, correlationId, actorNotApplicable: true,
+            reason: `OS pela IA (modo autônomo${input.protocol ? `, protocolo ${input.protocol}` : ""}): ${result.detail}`,
+          }).catch(() => undefined);
+        }
+        return result;
+      } : undefined,
       channel: CHANNEL_NAME, conversationId: message.phone, lookup: lookupCustomer,
       // Atendimento técnico de cliente identificado ganha diagnóstico (contrato, login, massiva, OS aberta).
       diagnose: provider ? ixcDiagnose(provider, new DbIncidentsRepository(db), correlationId) : undefined,

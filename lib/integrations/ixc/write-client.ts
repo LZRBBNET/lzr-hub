@@ -159,6 +159,12 @@ export interface ServiceOrderInput {
   branchId: string;
   priority: string;
   message: string;
+  /**
+   * Login de conexão (`radusuarios.id`). Assuntos como 14 SEM FUNCIONAR/EQUIPE CARRO e
+   * 49 TROCAR ONU OU ROTEADOR têm `login_obrigatorio = S` no IXC da BBNET: sem ele o
+   * técnico não sabe qual conexão olhar. Só vai no corpo quando conhecido.
+   */
+  loginId?: string;
 }
 
 export async function openServiceOrder(
@@ -181,8 +187,11 @@ export async function openServiceOrder(
       },
       body: JSON.stringify({
         tipo: "C", id_assunto: input.subjectId, id_cliente: input.customerId, id_contrato_kit: input.contractId,
-        id_filial: input.branchId, origem_endereco: "M", prioridade: input.priority,
+        // Com login, o endereço vem do login ("L"): assunto com `login_obrigatorio = S` recusa "M"
+        // ("O campo 'Origem do endereço' não pode ser alterado…", visto no piloto de 18/11/2026).
+        id_filial: input.branchId, origem_endereco: input.loginId ? "L" : "M", prioridade: input.priority,
         setor: input.sectorId, status: "A", mensagem: input.message,
+        ...(input.loginId && /^[1-9]\d{0,31}$/.test(input.loginId) ? { id_login: input.loginId } : {}),
       }),
       signal: controller.signal,
     });

@@ -51,7 +51,7 @@ const n8nPadrao = async (body) => {
   return "NAO_SEI";
 };
 
-async function montar({ n8n = n8nPadrao, lookup = async () => undefined, diagnose } = {}) {
+async function montar({ n8n = n8nPadrao, lookup = async () => undefined, diagnose, serviceOrder } = {}) {
   const docs = new MemoryKnowledgeRepository();
   for (const [title, content] of DOCS) { const doc = await docs.create({ title, category: "geral", content }); await docs.publish(doc.id); }
   const channel = new MemoryChannelRepository();
@@ -66,7 +66,7 @@ async function montar({ n8n = n8nPadrao, lookup = async () => undefined, diagnos
   // Reproduz a rota da Meta com FEATURE_AI_AGENT: a IA fala sempre, em modo conversa.
   const receber = async (text) => {
     const wamid = `wamid.A${++n}`;
-    const triage = await startTriage(tickets, { channel: CHANNEL_NAME, conversationId: CLIENTE, lookup, diagnose, offHours: false, agent: true });
+    const triage = await startTriage(tickets, { channel: CHANNEL_NAME, conversationId: CLIENTE, lookup, diagnose, serviceOrder, offHours: false, agent: true });
     const auto = await metaAutoReplyOptions({
       enabled: true, states, messages: channel, claims, config: metaConfig, channel: CHANNEL_NAME,
       delivery: { begin: async () => "t", finish: async () => {}, settleUncertain: async () => {} },
@@ -230,4 +230,31 @@ test("classificador: o padrão é um modelo que existe na Groq, com o teto certo
   assert.equal(llmConfigFromEnv({ FEATURE_LLM_INTENT: "true", GROQ_API_KEY: "k" }).model, DEFAULT_LLM_MODEL);
   assert.deepEqual(completionLimits("openai/gpt-oss-20b", 60), { max_completion_tokens: 400, reasoning_effort: "low" });
   assert.deepEqual(completionLimits("qualquer-outro", 60), { max_tokens: 60 });
+});
+
+test("pedido técnico pronto de cliente identificado: a IA abre a OS e diz o número", async () => {
+  const pedidos = [];
+  const serviceOrder = async (input) => { pedidos.push(input); return { status: "success", orderId: "301041", detail: "ok" }; };
+  const { receber, textos, ticket } = await montar({ lookup: async () => ({ id: "21857" }), serviceOrder });
+  await receber("estou sem internet");
+  await receber("a luz LOS ta vermelha");
+  await receber("de tarde");
+  assert.equal(pedidos.length, 1);
+  assert.equal(pedidos[0].customerId, "21857");
+  assert.equal(pedidos[0].intent, "technical_no_connection");
+  assert.match(pedidos[0].summary, /LOS vermelha/);
+  assert.match(textos()[2], /Abri a ordem de serviço nº 301041/);
+  assert.equal(ticket().intake.serviceOrderId, "301041");
+  assert.equal(ticket().intake.serviceOrderStatus, "success");
+});
+
+test("OS não abriu (IXC fora, bloqueio): a IA não fala em OS e o pedido fica registrado para a equipe", async () => {
+  const serviceOrder = async () => ({ status: "failed", detail: "IXC fora" });
+  const { receber, textos, ticket } = await montar({ lookup: async () => ({ id: "21857" }), serviceOrder });
+  await receber("estou sem internet");
+  await receber("a luz LOS ta vermelha");
+  await receber("de tarde");
+  assert.doesNotMatch(textos()[2], /ordem de serviço/);
+  assert.match(textos()[2], /Seu pedido ficou registrado no protocolo/);
+  assert.equal(ticket().intake.serviceOrderStatus, "failed");
 });

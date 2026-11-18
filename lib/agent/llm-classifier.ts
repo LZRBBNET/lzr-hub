@@ -96,14 +96,39 @@ export interface LlmConfig { apiKey: string; model: string; baseUrl: string; fet
 export const DEFAULT_LLM_MODEL = "openai/gpt-oss-20b";
 
 /**
- * Parâmetros de tamanho da resposta. Modelo de raciocínio (gpt-oss) gasta tokens
- * pensando antes de responder: com o teto antigo (60) a resposta saía vazia. Neles
- * vai `reasoning_effort: low` e um teto maior; nos outros, o `max_tokens` de sempre.
+ * Com `OPENAI_API_KEY` (decisão do Vinícius, 18/11/2026: "quero apenas o ChatGPT") o
+ * classificador e o copiloto vão para a OpenAI. `gpt-5.4-mini` medido com o prompt deste
+ * arquivo: 12 de 12 mensagens reais certas, no máximo 1,1 s — e foi o único que entendeu
+ * "paguei ontem e continua cortado" como pagamento, não como sem internet. A API da OpenAI
+ * não usa o conteúdo para treinar por padrão; a mensagem continua saindo sanitizada.
  */
-export function completionLimits(model: string, maxTokens: number): Record<string, unknown> {
-  return /gpt-oss/.test(model)
-    ? { max_completion_tokens: Math.max(maxTokens, 400), reasoning_effort: "low" }
-    : { max_tokens: maxTokens };
+export const DEFAULT_OPENAI_MODEL = "gpt-5.4-mini";
+export const OPENAI_BASE_URL = "https://api.openai.com/v1";
+export const GROQ_BASE_URL = "https://api.groq.com/openai/v1";
+
+/** Chave, modelo e endereço: a OpenAI quando há `OPENAI_API_KEY`; a Groq só como legado. */
+export function llmProviderFromEnv(env: Record<string, string | undefined>): { apiKey: string; model: string; baseUrl: string } | undefined {
+  const openai = env.OPENAI_API_KEY?.trim();
+  const apiKey = openai || env.GROQ_API_KEY?.trim();
+  if (!apiKey) return undefined;
+  return {
+    apiKey,
+    model: env.LLM_MODEL?.trim() || (openai ? DEFAULT_OPENAI_MODEL : DEFAULT_LLM_MODEL),
+    baseUrl: env.LLM_BASE_URL?.trim() || (openai ? OPENAI_BASE_URL : GROQ_BASE_URL),
+  };
+}
+
+/**
+ * Parâmetros de amostragem e tamanho. Modelo de raciocínio gasta tokens pensando antes de
+ * responder: com o teto antigo (60) a resposta saía vazia. A família gpt-5 da OpenAI **recusa**
+ * `temperature` e aceita `reasoning_effort` (`none` na 5.4+, que é o mais rápido); o gpt-oss da
+ * Groq aceita os dois; os demais ficam com `temperature` e `max_tokens` de sempre.
+ */
+export function completionLimits(model: string, maxTokens: number, temperature?: number): Record<string, unknown> {
+  if (/^gpt-5/.test(model)) return { max_completion_tokens: Math.max(maxTokens, 600), reasoning_effort: /^gpt-5\.([4-9]|\d{2})/.test(model) ? "none" : "minimal" };
+  const sampling = temperature === undefined ? {} : { temperature };
+  if (/gpt-oss/.test(model)) return { ...sampling, max_completion_tokens: Math.max(maxTokens, 400), reasoning_effort: "low" };
+  return { ...sampling, max_tokens: maxTokens };
 }
 
 /**
@@ -112,13 +137,7 @@ export function completionLimits(model: string, maxTokens: number): Record<strin
  */
 export function llmConfigFromEnv(env: Record<string, string | undefined> = process.env): LlmConfig | undefined {
   if (env.FEATURE_LLM_INTENT !== "true") return undefined;
-  const apiKey = env.GROQ_API_KEY?.trim();
-  if (!apiKey) return undefined;
-  return {
-    apiKey,
-    model: env.LLM_MODEL?.trim() || DEFAULT_LLM_MODEL,
-    baseUrl: env.LLM_BASE_URL?.trim() || "https://api.groq.com/openai/v1",
-  };
+  return llmProviderFromEnv(env);
 }
 
 /**
@@ -171,8 +190,7 @@ export async function classifyIntent(
       headers: { Authorization: `Bearer ${config.apiKey}`, "Content-Type": "application/json" },
       body: JSON.stringify({
         model: config.model,
-        temperature: 0,
-        ...completionLimits(config.model, 60),
+        ...completionLimits(config.model, 60, 0),
         messages: [
           { role: "system", content: SYSTEM_PROMPT },
           { role: "user", content: buildClassifierInput(message, context) },

@@ -102,4 +102,11 @@ export type AgentState = "ongoing" | "resolved" | "request_complete";
 export const AGENT_STATES: ReadonlySet<string> = new Set(["ongoing", "resolved", "request_complete"]);
 
 /** Pedido montado pela IA, gravado no atendimento (`support_tickets.intake`) e mostrado ao atendente. */
-export interface TicketIntake { intent: string; summary: string; at: string }
+export interface TicketIntake {
+  intent: string; summary: string; at: string;
+  /** OS que a IA abriu no IXC para este pedido (ou a que já estava aberta). */
+  serviceOrderId?: string;
+  /** Como terminou a abertura da OS: success, existing, skipped, blocked, failed, unknown. */
+  serviceOrderStatus?: string;
+  serviceOrderDetail?: string;
+}

@@ -1,4 +1,4 @@
-import { DEFAULT_LLM_MODEL, completionLimits } from "../agent/llm-classifier.ts";
+import { completionLimits, llmProviderFromEnv } from "../agent/llm-classifier.ts";
 import { sanitizeHandoffText } from "../agent/handoff.ts";
 import { searchDocuments, type KnowledgeDoc } from "./knowledge-service.ts";
 import { isAiSender, type EffectiveState } from "./conversation-state-shared.ts";
@@ -132,13 +132,7 @@ export interface CopilotLlmConfig { apiKey: string; model: string; baseUrl: stri
 
 export function copilotLlmConfigFromEnv(env: Record<string, string | undefined> = process.env): CopilotLlmConfig | undefined {
   if (env.FEATURE_COPILOT_LLM !== "true") return undefined;
-  const apiKey = env.GROQ_API_KEY?.trim();
-  if (!apiKey) return undefined;
-  return {
-    apiKey,
-    model: env.LLM_MODEL?.trim() || DEFAULT_LLM_MODEL,
-    baseUrl: env.LLM_BASE_URL?.trim() || "https://api.groq.com/openai/v1",
-  };
+  return llmProviderFromEnv(env);
 }
 
 /** O modelo devolve isto quando os trechos não respondem. Vira "não sei" em vez de virar invenção. */
@@ -179,7 +173,7 @@ export async function writeGroundedAnswer(
       method: "POST",
       headers: { Authorization: `Bearer ${config.apiKey}`, "Content-Type": "application/json" },
       body: JSON.stringify({
-        model: config.model, temperature: 0.2, ...completionLimits(config.model, 320),
+        model: config.model, ...completionLimits(config.model, 320, 0.2),
         messages: [
           { role: "system", content: WRITER_PROMPT },
           { role: "user", content: `Trechos da base:\n\n${context}\n\nPergunta do atendente: ${sanitizeHandoffText(question).slice(0, 600)}` },

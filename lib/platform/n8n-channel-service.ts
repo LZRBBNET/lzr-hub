@@ -191,11 +191,16 @@ export interface TriageHooks {
    * O que vai no fim da resposta: o protocolo (na primeira) e, fora do horário, quando o
    * atendimento com pessoas volta. Com `request` (o assunto do pedido), a linha de pedido registrado.
    */
-  footer(context?: { clarifying?: boolean; handoff?: boolean; request?: string }): string | undefined;
+  footer(context?: { clarifying?: boolean; handoff?: boolean; request?: string; serviceOrder?: { id: string; existing?: boolean } }): string | undefined;
   /** Modo autônomo: o assunto do atendimento, se o cliente é identificado e o que o sistema sabe (diagnóstico, pedido já feito). */
   context?(): { topic: string | null; identified: boolean; facts: string[] };
   /** Modo autônomo: grava o pedido que a IA deixou pronto para a equipe. */
   registerRequest?(summary: string, intent: string): Promise<void>;
+  /**
+   * Modo autônomo: abre a OS no IXC para o pedido técnico pronto. Devolve o número só quando o
+   * IXC criou (ou já havia uma aberta); qualquer outro desfecho deixa a ficha para a equipe.
+   */
+  openServiceOrder?(intent: string): Promise<{ id: string; existing?: boolean } | undefined>;
   record(entry: { intent: string; source: string; confidence: number; clarifying: boolean; delivered: boolean; protocolIncluded: boolean; handoff?: boolean }): Promise<void>;
 }
 
@@ -517,9 +522,11 @@ async function doubtBotTurn(
   // "ficou registrado" do rodapé só é dito depois de gravado. Daí a conversa fica na fila da equipe.
   const request = !!bot.agent && result.state === "request_complete";
   if (request) await options.triage?.registerRequest?.(result.summary ?? result.text, classified.intent).catch(() => undefined);
+  // Pedido técnico pronto: a OS sai no IXC antes da confirmação — o "abri a OS nº X" só é dito com o número na mão.
+  const serviceOrder = request ? await options.triage?.openServiceOrder?.(classified.intent).catch(() => undefined) : undefined;
   // A resposta pode prometer um atendente mesmo sem pedido completo: isso também deixa a conversa na fila.
   const handoff = !!bot.agent && (request || promisesHuman(result.text));
-  const footer = options.triage?.footer(request ? { request: classified.intent } : bot.agent ? { handoff } : undefined);
+  const footer = options.triage?.footer(request ? { request: classified.intent, serviceOrder } : bot.agent ? { handoff } : undefined);
   const text = footer ? `${result.text}
 
 ${footer}` : result.text;
