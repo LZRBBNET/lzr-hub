@@ -1,3 +1,4 @@
+import type { TurnFence } from "./conversation-fence.ts";
 import type { ConversationDelivery } from "./conversation-delivery-service.ts";
 import { MAX_TEXT_LENGTH, sendInteractiveList, sendTextMessage, type MetaSendConfig } from "../integrations/meta/cloud-client.ts";
 import type { ReplyRepository } from "./attendant-reply-service.ts";
@@ -30,6 +31,7 @@ export type AutoReplyClaims = Pick<ReplyRepository, "claim" | "claimState" | "se
 export interface MetaAutoReplyDeps {
   claims: AutoReplyClaims;
   delivery?: ConversationDelivery;
+  turn?: TurnFence;
   /** `undefined` quando falta token ou id do número. */
   config: MetaSendConfig | undefined;
   channel: string;
@@ -71,13 +73,28 @@ export function metaAutoReplySender(deps: MetaAutoReplyDeps): AutoReplySender {
 
     let deliveryToken: string;
     try {
-      if (!deps.delivery) throw Error("DELIVERY_UNAVAILABLE");
-      deliveryToken = await deps.delivery.begin(deps.channel, conversationId, undefined, key);
+      if (!deps.delivery?.authorizeDispatch || !deps.turn) throw Error("DELIVERY_FENCE_UNAVAILABLE");
+      deliveryToken = await deps.delivery.begin(deps.channel, conversationId, undefined, key, deps.turn);
     } catch {
       await deps.claims.release(key).catch(() => undefined);
       return blocked("Conversa reservada ou responsável não confirmado; envio automático bloqueado.");
     }
-    const finish = () => deps.delivery!.finish(deps.channel, conversationId, deliveryToken).catch(() => undefined);
+    const finish = () => deps.delivery!.finish(deps.channel, conversationId, deliveryToken);
+
+    // Production fenced delivery has a distinct, one-use authorization immediately before transport.
+    if (deps.delivery?.authorizeDispatch) {
+      try {
+        if (!deps.turn || !await deps.delivery.authorizeDispatch(deps.channel,conversationId,deliveryToken,deps.turn)) {
+          // Rejection only revokes a prepared token inside the fence transaction; never clear an authorized reservation here.
+          await deps.claims.release(key).catch(() => undefined);
+          return blocked("Turno obsoleto ou autorização já consumida; nada foi enviado.");
+        }
+      } catch {
+        // COMMIT could have succeeded. This worker has not invoked transport and is now stopping.
+        await deps.delivery.settleUncertain(deps.channel,conversationId,deliveryToken).catch(() => undefined);
+        return {sent:false,outcome:"unknown",reason:"Autorização de despacho sem confirmação; nenhuma chamada iniciada por este worker. Requer reconciliação."};
+      }
+    }
 
     // 3. Chamada.
     const sent = interactive
@@ -89,7 +106,13 @@ export function metaAutoReplySender(deps: MetaAutoReplyDeps): AutoReplySender {
         await deps.claims.setClaimState(key, { status: "unknown" }).catch(() => undefined);
         await deps.delivery.settleUncertain(deps.channel, conversationId, deliveryToken).catch(() => undefined);
       }
-      else { await deps.claims.release(key).catch(() => undefined); await finish(); }
+      else {
+        try { await finish(); await deps.claims.release(key).catch(() => undefined); }
+        catch {
+          await deps.delivery.settleUncertain(deps.channel,conversationId,deliveryToken).catch(() => undefined);
+          return {sent:false,outcome:"unknown",reason:"Provedor recusou a tentativa, mas a conclusão da reserva não foi confirmada; requer reconciliação."};
+        }
+      }
       const detail = `${sent.reason} (${sent.kind}${sent.metaCode ? ` ${sent.metaCode}` : ""})`;
       return { sent: false, outcome: ["timeout", "unreachable", "rejected"].includes(sent.kind) ? "unknown" : "failed", reason: detail };
     }

@@ -33,7 +33,8 @@ function montar({ enabled = true, comConfig = true, fetcher, mensagemDoClienteHa
   const estado = { fetcher: fetcher ?? padrao };
   const config = comConfig ? { accessToken: "TOKEN-SECRETO", phoneNumberId: "999", graphVersion: "v26.0", fetcher: (...args) => estado.fetcher(...args) } : undefined;
   const deps = {
-    delivery: { begin: async () => "test-token", finish: async () => {}, settleUncertain: async () => {} },
+    turn: {channel:"local",conversationId:"local",operation:"local",sendKey:"local",generation:"local",kind:"reply"},
+      delivery: { authorizeDispatch: async () => true, begin: async () => "test-token", finish: async () => {}, settleUncertain: async () => {} },
     enabled, states, messages: channel, claims, config, channel: CHANNEL_NAME,
     customerMessageAt: semHora ? undefined : new Date(Date.now() - mensagemDoClienteHa).toISOString(),
   };
@@ -41,7 +42,7 @@ function montar({ enabled = true, comConfig = true, fetcher, mensagemDoClienteHa
     channel,
     { externalConversationId: CLIENTE, text, idempotencyKey: wamid, correlationId: `corr-${wamid}` },
     metrics,
-    await metaAutoReplyOptions(deps, CLIENTE),
+    { ...await metaAutoReplyOptions(deps, CLIENTE), triage: { record: async () => {}, footer: () => undefined, menuChoice: () => undefined, clarification: () => undefined } },
   );
   const historico = () => channel.getHistory(CHANNEL_NAME, CLIENTE);
   return { channel, metrics, claims, states, chamadas, estado, deps, receber, historico };

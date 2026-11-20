@@ -72,7 +72,8 @@ function montar({ autoReply = true, sendData = false, identificado = true, docum
     });
     const auto = await metaAutoReplyOptions({
       enabled: autoReply, states, messages: channel, claims, config, channel: CHANNEL_NAME,
-      delivery: { begin: async () => "test-token", finish: async () => {}, settleUncertain: async () => {} },
+      turn: {channel:"local",conversationId:"local",operation:"local",sendKey:"local",generation:"local",kind:"reply"},
+      delivery: { authorizeDispatch: async () => true, begin: async () => "test-token", finish: async () => {}, settleUncertain: async () => {} },
       customerMessageAt: new Date().toISOString(), awaitingAnswer: triage?.awaitingAnswer,
     }, CLIENTE);
     return processChannelMessage(channel, { externalConversationId: CLIENTE, text, idempotencyKey: wamid, correlationId: `c-${wamid}` }, metrics, { ...auto, triage: triage?.hooks });

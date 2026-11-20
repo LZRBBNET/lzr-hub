@@ -116,7 +116,8 @@ function montar({ diagnose, offHours = true } = {}) {
     const triage = await startTriage(tickets, { channel: CHANNEL_NAME, conversationId: CLIENTE, lookup: async () => ({ id: "21857" }), diagnose, invoice, offHours, now: NOITE });
     const auto = await metaAutoReplyOptions({
       enabled: true, states, messages: channel, claims, config, channel: CHANNEL_NAME,
-      delivery: { begin: async () => "t", finish: async () => {}, settleUncertain: async () => {} },
+      turn: {channel:"local",conversationId:"local",operation:"local",sendKey:"local",generation:"local",kind:"reply"},
+      delivery: { authorizeDispatch: async () => true, begin: async () => "t", finish: async () => {}, settleUncertain: async () => {} },
       customerMessageAt: new Date().toISOString(), awaitingAnswer: triage?.awaitingAnswer,
     }, CLIENTE);
     return processChannelMessage(channel, { externalConversationId: CLIENTE, text, idempotencyKey: wamid, correlationId: `c-${wamid}` }, new MemorySupportMetricsRepository(), { ...auto, triage: triage?.hooks });

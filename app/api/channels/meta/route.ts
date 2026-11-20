@@ -1,3 +1,4 @@
+import { DbConversationFence } from "@/lib/platform/conversation-fence";
 import { DbConversationDelivery } from "@/lib/platform/conversation-delivery-service";
 import { NextResponse } from "next/server";
 import { randomUUID } from "node:crypto";
@@ -12,8 +13,8 @@ import { getIxcRuntime } from "@/lib/integrations/ixc/runtime";
 import { parseMetaMessages, parseMetaStatuses, parseMetaWebhook, signatureIsValid } from "@/lib/integrations/meta/webhook-parser";
 import { DbConversationStateRepository } from "@/lib/platform/conversation-state-service";
 import { DbReplyRepository } from "@/lib/platform/attendant-reply-service";
-import { metaAutoReplyOptions } from "@/lib/platform/meta-auto-reply-service";
-import { metaSendConfigFromEnv, sendTextMessage } from "@/lib/integrations/meta/cloud-client";
+import { metaAutoReplyOptions, metaAutoReplySender } from "@/lib/platform/meta-auto-reply-service";
+import { metaSendConfigFromEnv } from "@/lib/integrations/meta/cloud-client";
 import { DbOutboundRepository } from "@/lib/platform/outbound-service";
 import { OPT_IN_REPLY, OPT_OUT_REPLY, canonicalPhone, isOptIn, isOptOut } from "@/lib/platform/outbound-shared";
 import { fetchPixCode } from "@/lib/integrations/ixc/write-client";
@@ -119,11 +120,12 @@ export async function POST(request: Request) {
   const updated = statuses.length > 0 ? await applyStatuses(new DbDeliveryRepository(db), statuses) : 0;
   const templates = messages.some((message) => message.kind === "text") ? await loadOverrides(new DbReplyTemplatesRepository(db)) : undefined;
   const sendConfig = metaSendConfigFromEnv();
-  const tickets = new DbTicketRepository(db);
 
   const results = [];
   for (const message of messages) {
     const correlationId = randomUUID();
+    const turn = await new DbConversationFence(db).capture(CHANNEL_NAME,message.phone,message.messageId,message.sentAt);
+    const tickets = new DbTicketRepository(db,turn);
     const lookupCustomer = async (phone: string) => {
       const runtime = getIxcRuntime();
       if (!runtime.provider) throw new Error("IXC indisponível");
@@ -189,12 +191,13 @@ export async function POST(request: Request) {
         if (!(await channel.findIdempotent(message.messageId))) {
           await new DbOutboundRepository(db).setOptOut(canonicalPhone(message.phone), out, "whatsapp").catch(() => undefined);
           const reply = out ? OPT_OUT_REPLY : OPT_IN_REPLY;
-          const sent = sendConfig ? await sendTextMessage(sendConfig, { to: message.phone, text: reply }) : undefined;
+          const sent = await metaAutoReplySender({claims:new DbReplyRepository(db),delivery:new DbConversationDelivery(db),turn,
+            config:sendConfig,channel:CHANNEL_NAME,customerMessageAt:message.sentAt})({conversationId:message.phone,text:reply,inboundMessageId:message.messageId});
           await channel.saveMessages(CHANNEL_NAME, message.phone, [
             { role: "customer", content: message.text, correlationId, externalMessageId: message.messageId },
-            { role: sent?.ok ? "agent" : "suggestion", content: reply, correlationId, ...(sent?.ok ? { externalMessageId: sent.messageId, sentBy: "ia" } : {}) },
+            { role: sent.sent ? "agent" : "suggestion", content: reply, correlationId, ...(sent.sent ? { externalMessageId: sent.messageId, sentBy: "ia" } : {}) },
           ]);
-          await channel.saveIdempotency(message.messageId, CHANNEL_NAME, message.phone, { response: sent?.ok ? reply : null, autoReply: !!sent?.ok, status: out ? "opted_out" : "opted_in", handoff: false, correlationId });
+          await channel.saveIdempotency(message.messageId, CHANNEL_NAME, message.phone, { response: sent.sent ? reply : null, autoReply: !!sent.sent, status: out ? "opted_out" : "opted_in", handoff: false, correlationId });
         }
         results.push({ status: out ? "opted_out" : "opted_in" });
         continue;
@@ -204,7 +207,7 @@ export async function POST(request: Request) {
       // O robô de dúvidas usa as mesmas travas (humano, uma por espera, janela de 24 horas, idempotência).
       const auto = await metaAutoReplyOptions({
         enabled: botSpeaks || !!doubtBotConfig, states: new DbConversationStateRepository(db), messages: channel, claims: new DbReplyRepository(db),
-        delivery: new DbConversationDelivery(db), config: sendConfig, channel: CHANNEL_NAME, customerMessageAt: message.sentAt,
+        delivery: new DbConversationDelivery(db), turn, config: sendConfig, channel: CHANNEL_NAME, customerMessageAt: message.sentAt,
         awaitingAnswer: triage?.awaitingAnswer,
         // Modo autônomo: conversa inteira, até um humano assumir.
         conversational: !!agentConfig,

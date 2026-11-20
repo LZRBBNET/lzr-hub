@@ -80,7 +80,8 @@ function montar(n8n = () => resposta("A loja de Itabaiana funciona de segunda a 
     const wamid = `wamid.E${++n}`;
     const auto = await metaAutoReplyOptions({
       enabled: true, states, messages: channel, claims, config: metaConfig, channel: CHANNEL_NAME,
-      delivery: { begin: async () => "t", finish: async () => {}, settleUncertain: async () => {} },
+      turn: {channel:"local",conversationId:"local",operation:"local",sendKey:"local",generation:"local",kind:"reply"},
+      delivery: { authorizeDispatch: async () => true, begin: async () => "t", finish: async () => {}, settleUncertain: async () => {} },
       customerMessageAt: new Date().toISOString(),
     }, CLIENTE);
     return processChannelMessage(channel, { externalConversationId: CLIENTE, text, idempotencyKey: wamid, correlationId: `c-${wamid}` }, metrics, {
@@ -209,7 +210,8 @@ test("cumprimento no horário comercial: o robô pergunta o assunto com o menu d
     const triage = await startTriage(tickets, { channel: CHANNEL_NAME, conversationId: CLIENTE, lookup: async () => undefined, offHours: false });
     const auto = await metaAutoReplyOptions({
       enabled: true, states: new MemoryConversationStateRepository(), messages: channel, claims: new MemoryReplyRepository(), config: metaConfig, channel: CHANNEL_NAME,
-      delivery: { begin: async () => "t", finish: async () => {}, settleUncertain: async () => {} },
+      turn: {channel:"local",conversationId:"local",operation:"local",sendKey:"local",generation:"local",kind:"reply"},
+      delivery: { authorizeDispatch: async () => true, begin: async () => "t", finish: async () => {}, settleUncertain: async () => {} },
       customerMessageAt: new Date().toISOString(), awaitingAnswer: triage?.awaitingAnswer,
     }, CLIENTE);
     return processChannelMessage(channel, { externalConversationId: CLIENTE, text, idempotencyKey: wamid, correlationId: `c-${wamid}` }, new MemorySupportMetricsRepository(), {

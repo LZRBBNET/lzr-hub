@@ -1,3 +1,5 @@
+import { lockDelivery } from "./conversation-delivery-lock.ts";
+import { DbConversationFence, validTurn, type TurnFence } from "./conversation-fence.ts";
 import { randomUUID } from "node:crypto";
 import { and, desc, eq, inArray, ne } from "drizzle-orm";
 import { supportTickets } from "../../db/schema.ts";
@@ -574,7 +576,8 @@ const toTicket = (row: Row): TicketRow => ({
 export class DbTicketRepository implements TicketRepository {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   private readonly db: any;
-  constructor(db: unknown) { this.db = db; }
+  private readonly turn?: TurnFence;
+  constructor(db: unknown, turn?: TurnFence) { this.db = db; this.turn = turn; }
 
   async findOpen(channel: string, conversationId: string) {
     const rows: Row[] = await this.db.select().from(supportTickets)
@@ -605,10 +608,27 @@ export class DbTicketRepository implements TicketRepository {
   }
 
   async updateTriage(id: string, patch: TicketPatch): Promise<boolean> {
+    if (patch.stage === "handoff") {
+      if (!this.turn) throw new Error("HANDOFF_FENCE_REQUIRED");
+      return new DbConversationFence(this.db).handoff(this.turn, async tx => {
+        const repository = new DbTicketRepository(tx);
+        const rows = await repository.db.update(supportTickets).set(patch)
+          .where(and(eq(supportTickets.id,id),eq(supportTickets.channel,this.turn!.channel),eq(supportTickets.externalConversationId,this.turn!.conversationId),eq(supportTickets.status,"open")))
+          .returning({id:supportTickets.id});
+        return rows.length===1;
+      });
+    }
+    if (this.turn) {
+      return this.db.transaction(async (tx: unknown) => {
+        await lockDelivery(tx,this.turn!.channel,this.turn!.conversationId);
+        if (!await validTurn(tx,this.turn!.channel,this.turn!.conversationId,this.turn,true)) return false;
+        return new DbTicketRepository(tx).updateTriage(id,patch);
+      });
+    }
     // Evaluate against the current row under PostgreSQL's UPDATE lock, not the turn snapshot.
     const rows = await this.db.update(supportTickets).set(patch)
       .where(and(eq(supportTickets.id, id), eq(supportTickets.status, "open"),
-        patch.stage === "handoff" ? undefined : ne(supportTickets.stage, "handoff")))
+        ne(supportTickets.stage, "handoff")))
       .returning({ id: supportTickets.id });
     return rows.length === 1;
   }
@@ -622,10 +642,9 @@ export class DbTicketRepository implements TicketRepository {
   }
 
   async update(id: string, patch: TicketPatch) {
+    if (patch.stage) throw new Error("USE_FENCED_STAGE_TRANSITION");
     const rows: Array<{ id: string }> = await this.db.update(supportTickets).set(patch)
-      .where(patch.stage === "handoff"
-        ? and(eq(supportTickets.id, id), eq(supportTickets.status, "open"))
-        : eq(supportTickets.id, id))
+      .where(eq(supportTickets.id, id))
       .returning({ id: supportTickets.id });
     if (rows.length !== 1) throw new Error("TICKET_UPDATE_NOT_CONFIRMED");
   }

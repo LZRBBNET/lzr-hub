@@ -69,7 +69,8 @@ async function montar({ n8n = n8nPadrao, lookup = async () => undefined, diagnos
     const triage = await startTriage(tickets, { channel: CHANNEL_NAME, conversationId: CLIENTE, lookup, diagnose, serviceOrder, trustUnlock, offHours: false, agent: true });
     const auto = await metaAutoReplyOptions({
       enabled: true, states, messages: channel, claims, config: metaConfig, channel: CHANNEL_NAME,
-      delivery: { begin: async () => "t", finish: async () => {}, settleUncertain: async () => {} },
+      turn: {channel:"local",conversationId:"local",operation:"local",sendKey:"local",generation:"local",kind:"reply"},
+      delivery: { authorizeDispatch: async () => true, begin: async () => "t", finish: async () => {}, settleUncertain: async () => {} },
       customerMessageAt: new Date().toISOString(), awaitingAnswer: triage?.awaitingAnswer,
       conversational: true,
     }, CLIENTE);

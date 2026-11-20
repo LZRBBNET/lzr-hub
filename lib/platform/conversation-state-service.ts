@@ -1,5 +1,6 @@
+import { allowTransition, rotateFence } from "./conversation-fence.ts";
 import { closeOpenTicket, resumeTicketForAi, type TicketRepository } from "./triage-service.ts";
-import { hasDelivery, lockDelivery } from "./conversation-delivery-lock.ts";
+import { lockDelivery } from "./conversation-delivery-lock.ts";
 import { randomUUID } from "node:crypto";
 import { and, eq, inArray, isNull, sql } from "drizzle-orm";
 import { auditEvents, channelMessages, conversationStates } from "../../db/schema.ts";
@@ -177,8 +178,9 @@ export class DbConversationStateRepository implements ConversationStateRepositor
       await repository.db.execute(sql`SET LOCAL lock_timeout = '2s'`);
       await repository.db.execute(sql`SET LOCAL idle_in_transaction_session_timeout = '10s'`);
       await lockDelivery(repository.db, channel, conversationId);
-      if (await hasDelivery(repository.db, channel, conversationId)) return false;
+      if (!await allowTransition(repository.db, channel, conversationId)) return false;
       if (!await repository.saveIfCurrent(channel, conversationId, expected, next)) return false;
+      await rotateFence(repository.db,channel,conversationId,next.status === "resolved" ? "resolved" : next.assigneeId ? "human" : "ai");
       await repository.audit(entry);
       return true;
     });
