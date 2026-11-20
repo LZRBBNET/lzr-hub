@@ -136,6 +136,7 @@ export interface MetaInbound {
   caption?: string;
   profileName?: string;
   phoneNumberId?: string;
+  canonicalSender?: boolean;
   /**
    * Quando o cliente escreveu, pelo relógio da Meta. É daí que conta a janela de
    * 24 horas: a Meta reentrega webhook por dias, e a hora de chegada mentiria.
@@ -177,7 +178,7 @@ function messageChanges(payload: unknown): Bag[] {
  * Todas as mensagens do webhook. A Meta pode juntar mais de uma no mesmo POST —
  * ler só a primeira, como `parseMetaWebhook` faz, perderia as outras em silêncio.
  */
-export function parseMetaMessages(payload: unknown): MetaInbound[] {
+export function parseMetaMessages(payload: unknown, options?: { reportCanonicalSender?: boolean }): MetaInbound[] {
   const result: MetaInbound[] = [];
   for (const value of messageChanges(payload)) {
     const contacts = list(value.contacts).map(bag);
@@ -198,6 +199,7 @@ export function parseMetaMessages(payload: unknown): MetaInbound[] {
       const seconds = Number(message.timestamp);
       result.push({
         phone, messageId, kind, text, caption,
+        ...(options?.reportCanonicalSender ? { canonicalSender: typeof message.from === "string" && message.from === phone && /^[1-9]\d{9,14}$/.test(phone) } : {}),
         profileName: typeof name === "string" && name.trim() ? name.trim() : undefined,
         phoneNumberId: typeof metadata.phone_number_id === "string" ? metadata.phone_number_id : undefined,
         sentAt: Number.isFinite(seconds) && seconds > 0 ? new Date(seconds * 1000).toISOString() : undefined,

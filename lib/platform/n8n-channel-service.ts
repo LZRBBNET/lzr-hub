@@ -1,3 +1,4 @@
+import { ambiguousTechnicalReference, explicitUnverifiedOrderFollowup, previousTechnicalAssertion, processProtectedTechnicalTurn, protectedTechnicalIntent, publicTechnicalQuestion, safeTechnicalModelQuestion, type TechnicalEmergencyOptions } from "./meta-technical-emergency.ts";
 import { supportRequest as supportRequestForOpening } from "../agent/troubleshooting-context.ts";
 import { servicePreferences } from "../agent/service-preferences.ts";
 import { hasPriorOutput, serviceOpening } from "./service-opening.ts";
@@ -5,14 +6,14 @@ import { resolveSupportReply } from "./support-reply.ts";
 import { randomUUID } from "node:crypto";
 import { and, asc, eq, sql } from "drizzle-orm";
 import { auditEvents, channelIdempotencyKeys, channelMessages } from "../../db/schema.ts";
-import { runAgentPipeline } from "../agent/pipeline.ts";
+import { analyzeIntent, runAgentPipeline } from "../agent/pipeline.ts";
 import { classifyIntent, llmConfigFromEnv, type Classification } from "../agent/llm-classifier.ts";
 import { sanitizeHandoffText } from "../agent/handoff.ts";
 import type { ChatMessage, Intent } from "../agent/types.ts";
 import { appVersion } from "../runtime/app-version.ts";
 import { traceAgentResult } from "../observability/trace-agent-result.ts";
 import { type ReplyOverrides } from "./reply-templates-shared.ts";
-import { AI_AGENT_SENDER, AI_SENDER } from "./conversation-state-shared.ts";
+import { AI_AGENT_SENDER, AI_SENDER, isAiSender } from "./conversation-state-shared.ts";
 import { CLARIFY_BELOW, TRIAGE_MENU, listAsText, type InteractiveList } from "./triage-shared.ts";
 import { agentTask } from "./agent-playbook-shared.ts";
 import type { DoubtBotInput, DoubtBotResult } from "./doubt-bot-service.ts";
@@ -94,6 +95,7 @@ export type AutoReplyDelivery =
 export type AutoReplySender = (input: { conversationId: string; text: string; inboundMessageId: string; interactive?: InteractiveList }) => Promise<AutoReplyDelivery>;
 
 export interface ChannelOptions {
+  technicalEmergency?: TechnicalEmergencyOptions;
   autoReply: boolean;
   /** Injected clock for deterministic local courtesy; no session reset. */
   now?: number;
@@ -328,14 +330,35 @@ export async function processChannelMessage(
 ): Promise<ChannelResponse> {
   const existing = await repository.findIdempotent(input.idempotencyKey);
   if (existing) return existing;
+  const emergency = options.technicalEmergency;
+  if (emergency && explicitUnverifiedOrderFollowup(input.text))
+    return processProtectedTechnicalTurn(repository, input, { ...emergency, reviewReason: "guard_unverified_os_followup" });
+  if (emergency && (publicTechnicalQuestion(input.text) || protectedTechnicalIntent(analyzeIntent(input.text).intent))) {
+    return processProtectedTechnicalTurn(repository, input, emergency);
+  }
 
-  // Antes de qualquer coisa, e sem esperar: se for gente nova, o funil registra.
-  // O `catch` é a regra — um CRM fora do ar não pode impedir o atendimento.
+  const storedHistory = await repository.getHistory(CHANNEL_NAME, input.externalConversationId);
+  const lastReply = [...storedHistory].reverse().find(row => row.role === "agent");
+  const now = Date.now();
+  const lastReplyAt = Date.parse(lastReply?.createdAt ?? "");
+  if (emergency && lastReply && isAiSender(lastReply.sentBy)
+    && lastReplyAt <= now && now - lastReplyAt <= LLM_CONTEXT_MAX_AGE_MS) {
+    if (ambiguousTechnicalReference(input.text) && previousTechnicalAssertion(lastReply.content))
+      return processProtectedTechnicalTurn(repository, input, { ...emergency, reviewReason: "guard_referred_technical_claim" });
+    if (safeTechnicalModelQuestion(lastReply.content)) return processProtectedTechnicalTurn(repository, input, emergency);
+  }
+  if (emergency && protectedTechnicalIntent(emergency.priorIntent))
+    return processProtectedTechnicalTurn(repository, input, emergency);
+
+  // Context isolation only; keep the immutable original transcript/audit intact.
+  const historyRows = emergency
+    ? storedHistory.filter(row => row.role !== "agent" || !isAiSender(row.sentBy) || !previousTechnicalAssertion(row.content))
+    : storedHistory;
+
+  // A captação de lead permanece no fluxo existente, fora do recorte técnico.
   if (captureLead) {
     await captureLead({ contactKey: input.externalConversationId, text: input.text }).catch(() => undefined);
   }
-
-  const historyRows = await repository.getHistory(CHANNEL_NAME, input.externalConversationId);
   // Sugestão não é turno de conversa: o cliente nunca a viu, então ela não entra
   // no histórico que a IA usa para decidir o próximo passo.
   const history: ChatMessage[] = historyRows.filter((row) => row.role !== SUGGESTION_ROLE).slice(-MAX_HISTORY) as ChatMessage[];
@@ -396,6 +419,9 @@ export async function processChannelMessage(
   const classified: Classification = menuIntent
     ? { intent: menuIntent, confidence: 1, source: "menu" }
     : await classifyIntent(input.text, llmConfigFromEnv(), undefined, contextForClassifier(historyRows));
+
+  // A classificação tardia não deve escapar para diagnóstico/autoatendimento.
+  if (emergency && protectedTechnicalIntent(classified.intent)) return processProtectedTechnicalTurn(repository, input, emergency);
 
   // Sem certeza do assunto, a IA pergunta — mas só quando é ela quem fala. No
   // modo observação o atendente lê a conversa e não precisa de menu.

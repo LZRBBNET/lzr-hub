@@ -10,6 +10,7 @@ import pg from 'pg';
 import {drizzle} from 'drizzle-orm/node-postgres';
 import {migrate} from 'drizzle-orm/node-postgres/migrator';
 import {runDeliveryQA} from './human-delivery-postgres.mjs';
+import {assertTechnicalReplayAfterRestart,runTechnicalInboundQA} from './technical-inbound-postgres.mjs';
 import {DbConversationStateRepository,changeConversationState} from '../../lib/platform/conversation-state-service.ts';
 import {DbConversationsRepository} from '../../lib/platform/conversations-service.ts';
 import {loadConversationSummary} from '../../lib/platform/copilot-summary-service.ts';
@@ -35,6 +36,13 @@ try{
  GRANT INSERT(id,channel,external_conversation_id,role,content,correlation_id,sent_by,external_message_id,delivery_status,delivery_error,delivery_updated_at,created_at) ON channel_messages TO synthetic_delivery_runtime;
  GRANT INSERT(channel,external_conversation_id,status,assignee_id,assignee_name,assigned_at,resolved_at,resolved_by,updated_at),UPDATE(status,assignee_id,assignee_name,assigned_at,resolved_at,resolved_by,updated_at) ON conversation_states TO synthetic_delivery_runtime;`);
  runtime=new pg.Pool({host:dir,user:'synthetic_delivery_runtime',database:'handoff_synthetic'});
+ if (process.env.TECHNICAL_ONLY === "1") {
+   await runTechnicalInboundQA(pool,runtime,record);
+   await runtime.end();runtime=null;await pool.end();pool=null;
+   execFileSync(join(bin,'pg_ctl'),['-D',data,'-l',join(dir,'postgres.log'),'-m','fast','-w','restart'],{env,stdio:'pipe'});
+   runtime=new pg.Pool({host:dir,user:'synthetic_delivery_runtime',database:'handoff_synthetic'});
+   await assertTechnicalReplayAfterRestart(runtime,record);
+ } else {
  await runDeliveryQA(pool,record,runtime);
  const {runReconciliationQA}=await import("./reconciliation-postgres.mjs");await runReconciliationQA(pool,runtime,record);
  const db=drizzle(runtime),states=new DbConversationStateRepository(db),conversations=new DbConversationsRepository(db),phone='5511000000001';
@@ -55,5 +63,6 @@ try{
  pool=new pg.Pool({host:dir,user:process.env.USER||'agent',database:'handoff_synthetic'});
  const pending=Number((await pool.query("SELECT count(*) FROM channel_idempotency_keys WHERE idempotency_key LIKE 'delivery:%'")).rows[0].count);assert.equal(pending,pendingBefore);assert.ok(pending>0);
  record('delivery_reservations_survive_restart',{pendingReservations:pending,powerFailureTested:false});
+ }
  await writeFile(join(dir,'results.json'),JSON.stringify(results,null,2)+'\n');console.log('QA_EVIDENCE='+join(dir,'results.json'));
 }finally{if(runtime)await runtime.end();if(pool)await pool.end();if(started)execFileSync(join(bin,'pg_ctl'),['-D',data,'-m','fast','-w','stop'],{env,stdio:'pipe'});}

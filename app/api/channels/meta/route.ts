@@ -2,6 +2,7 @@ import { DbConversationDelivery } from "@/lib/platform/conversation-delivery-ser
 import { NextResponse } from "next/server";
 import { randomUUID } from "node:crypto";
 import { getDb } from "@/db";
+import { reserveTechnicalInbound } from "@/lib/platform/technical-inbound-repository";
 import { CHANNEL_NAME, D1ChannelRepository, MAX_MESSAGE_LENGTH, processChannelMessage, recordUnsupportedMessage } from "@/lib/platform/n8n-channel-service";
 import { DbContactsRepository, rememberContactName } from "@/lib/platform/channel-contacts";
 import { DbDeliveryRepository, applyStatuses } from "@/lib/platform/delivery-status-service";
@@ -19,8 +20,9 @@ import { OPT_IN_REPLY, OPT_OUT_REPLY, canonicalPhone, isOptIn, isOptOut } from "
 import { fetchPixCode } from "@/lib/integrations/ixc/write-client";
 import { DbTicketRepository, ixcDiagnose, ixcInvoiceLookup, startTriage } from "@/lib/platform/triage-service";
 import { DbIncidentsRepository } from "@/lib/platform/incidents-service";
+import { windowOpen } from "@/lib/platform/conversation-state-shared";
 import { isBusinessHours } from "@/lib/platform/triage-shared";
-import { doubtBotAnswerer, doubtBotConfigFromEnv } from "@/lib/platform/doubt-bot-service";
+import { askDoubtBot, doubtBotAnswerer, doubtBotConfigFromEnv } from "@/lib/platform/doubt-bot-service";
 import { DbKnowledgeRepository } from "@/lib/platform/knowledge-service";
 import { openAiServiceOrder } from "@/lib/platform/ai-service-order";
 import { DbIxcWriteOperationsRepository } from "@/lib/platform/ixc-write-service";
@@ -105,7 +107,7 @@ export async function POST(request: Request) {
 
   // Um POST pode trazer várias mensagens e recibos de entrega juntos. Ler só o
   // primeiro item, como antes, perdia o resto em silêncio.
-  const messages = parseMetaMessages(payload);
+  const messages = parseMetaMessages(payload, { reportCanonicalSender: true });
   const statuses = parseMetaStatuses(payload);
   if (messages.length === 0 && statuses.length === 0) {
     // Evento ignorado responde 200: a Meta reenvia o que não recebe 200, e um
@@ -142,6 +144,7 @@ export async function POST(request: Request) {
       offHours: offHours && botSpeaks,
       // Modo autônomo: o diagnóstico vira dado para a IA conduzir o suporte, antes da resposta.
       agent: !!agentConfig,
+      internalDiagnosisOnly: true,
       // Pedido técnico pronto vira OS no IXC — com auditoria de cada tentativa, inclusive a bloqueada.
       serviceOrder: agentConfig && provider ? async (input) => {
         const result = await openAiServiceOrder({
@@ -221,6 +224,22 @@ export async function POST(request: Request) {
             : undefined,
           templates,
           triage: triage?.hooks,
+          technicalEmergency: {
+            channel: CHANNEL_NAME,
+            priorIntent: triage?.ticket.intent,
+            humanHandoff: triage?.handedOff === true,
+            reviewReason: process.env.FEATURE_META_TECHNICAL_REPLY_PAUSED === "true" ? "guard_operator_paused" : undefined,
+            privateFlowPending: !!triage?.ticket.selfService || !!triage?.ticket.intent?.startsWith("financial_"),
+            eligible: !!agentConfig && !!sendConfig && auto.autoReply && !!message.sentAt
+              && Date.parse(message.sentAt) <= Date.now() && windowOpen(message.sentAt, Date.now())
+              && message.phoneNumberId === sendConfig.phoneNumberId && message.canonicalSender === true
+              && /^wamid\.[A-Za-z0-9_=+\/-]{1,240}$/.test(message.messageId),
+            answer: agentConfig ? (input) => askDoubtBot({
+              ...agentConfig, fetcher: (url, init) => fetch(url, { ...init, redirect: "error" }),
+            }, input, []) : undefined,
+            sender: auto.send,
+            reserveInbound: (input) => reserveTechnicalInbound(db, CHANNEL_NAME, input),
+          },
         },
         (input) => captureLeadFromContact(new DbCrmRepository(db), input, triage?.knownCustomer ?? lookupCustomer),
       ));

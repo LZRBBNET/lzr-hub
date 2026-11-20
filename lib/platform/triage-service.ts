@@ -399,6 +399,8 @@ export function diagnosisReply(diagnosis: ConnectionDiagnosis, canAskCpf: boolea
 export interface TriageMode {
   /** Fora do horário comercial: lista clicável e aviso de quando o atendimento com pessoas volta. */
   offHours?: boolean;
+  /** Keep current and cached diagnostic facts inside the ticket. */
+  internalDiagnosisOnly?: boolean;
   /**
    * Modo autônomo: o diagnóstico roda **antes** da resposta e vira dado para a IA conduzir
    * o suporte; a resposta fixa pelo diagnóstico fica só para o que encerra a conversa
@@ -450,6 +452,7 @@ export function triageHooks(repository: TicketRepository, ticket: TicketRow, dia
       if (!diagnosis) return undefined;
       diagnosedNow = true;
       diagnosisNow = diagnosis;
+      if (mode.internalDiagnosisOnly) return undefined;
       // Modo autônomo: conexão ativa ou fora sem causa conhecida não encerra a conversa — a IA usa
       // o diagnóstico (sinal da fibra, login, luzes) para conduzir o suporte.
       if (mode.agent && !(diagnosis.verdict === "blocked" || diagnosis.incident || diagnosis.openServiceOrderId)) return undefined;
@@ -471,8 +474,8 @@ export function triageHooks(repository: TicketRepository, ticket: TicketRow, dia
       return mode.offHours ? { text: offHoursMenuText(at()), interactive: TRIAGE_LIST } : { text: CLARIFY_TEXT };
     },
     context: () => {
-      const facts = diagnosisNow ? [...diagnosisNow.facts, `Leitura do sistema: ${diagnosisNow.next}`] : [];
-      if (intakeNow) facts.push(`Pedido já registrado neste atendimento (${intakeNow.intent}): ${intakeNow.summary}`);
+      const facts = !mode.internalDiagnosisOnly && diagnosisNow ? [...diagnosisNow.facts, `Leitura do sistema: ${diagnosisNow.next}`] : [];
+      if (intakeNow && !mode.internalDiagnosisOnly) facts.push(`Pedido já registrado neste atendimento (${intakeNow.intent}): ${intakeNow.summary}`);
       return { topic: ticket.intent, identified: ticket.identification === "identified" && !!ticket.ixcCustomerId, facts };
     },
     registerRequest: async (summary, intent) => {
@@ -529,13 +532,13 @@ export function triageHooks(repository: TicketRepository, ticket: TicketRow, dia
  */
 export async function startTriage(
   repository: TicketRepository,
-  input: { channel: string; conversationId: string; lookup: CustomerLookup; diagnose?: Diagnose; invoice?: InvoiceOptions; offHours?: boolean; agent?: boolean; serviceOrder?: ServiceOrderOpener; trustUnlock?: TrustUnlocker; now?: number },
+  input: { channel: string; conversationId: string; lookup: CustomerLookup; diagnose?: Diagnose; invoice?: InvoiceOptions; offHours?: boolean; internalDiagnosisOnly?: boolean; agent?: boolean; serviceOrder?: ServiceOrderOpener; trustUnlock?: TrustUnlocker; now?: number },
 ): Promise<{ ticket: TicketRow; hooks: TriageHooks; knownCustomer: CustomerLookup; awaitingAnswer: boolean; handedOff: boolean } | undefined> {
   try {
     const { ticket: opened } = await openOrContinueTicket(repository, input);
     const ticket = await identifyTicketCustomer(repository, opened, input.lookup);
     return {
-      ticket, hooks: triageHooks(repository, ticket, input.diagnose, input.invoice, { offHours: input.offHours, agent: input.agent, serviceOrder: input.serviceOrder, trustUnlock: input.trustUnlock, now: input.now === undefined ? undefined : () => input.now as number }), knownCustomer: knownCustomer(ticket),
+      ticket, hooks: triageHooks(repository, ticket, input.diagnose, input.invoice, { offHours: input.offHours, internalDiagnosisOnly: input.internalDiagnosisOnly, agent: input.agent, serviceOrder: input.serviceOrder, trustUnlock: input.trustUnlock, now: input.now === undefined ? undefined : () => input.now as number }), knownCustomer: knownCustomer(ticket),
       // A IA perguntou algo (assunto ou CPF): a resposta do cliente merece resposta.
       awaitingAnswer: ticket.stage === "clarifying" || awaitingCpf(ticket),
       // A IA passou para o atendente neste atendimento: no modo autônomo, ela não volta a falar sozinha.
