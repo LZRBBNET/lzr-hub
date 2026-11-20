@@ -182,3 +182,57 @@ test("operator pause keeps the technical inbound for review and does not invoke 
   assert.equal((await repo.getHistory(CHANNEL_NAME, inbound.externalConversationId)).filter(row => row.role === "customer").length, 1);
   assert.deepEqual(repo.audits.map(entry => entry.result), ["guard_operator_paused"]);
 });
+
+test("current Portuguese greeting precedes hidden technical intent and sends only the n8n question for the right daypart", async () => {
+  for (const [text, generated] of [
+    ["ola bom dia", "Bom dia! Em que posso ajudar?"],
+    ["boa tarde", "Boa tarde! Como posso ajudar?"],
+    ["Oi, boa noite!", "Boa noite! Posso te ajudar?"],
+    ["Oi, tudo bem?", "Oi! Como posso te ajudar?"],
+  ]) {
+    const sent = [];
+    const requests = [];
+    const { repo, run } = fixture({ priorIntent: "technical_no_connection", answer: async (prompt) => {
+      requests.push(prompt);
+      return { kind: "answer", text: generated, sources: [], state: "ongoing" };
+    }, sender: async (payload) => {
+      sent.push(payload);
+      return { sent: true, messageId: "wamid.synthetic-greeting" };
+    } });
+    await recordLegacyTurn(repo);
+    const incoming = { ...inbound, text };
+    const results = await Promise.all([run(incoming), run(incoming)]);
+    assert.ok(results.some(r => r.response === generated));
+    assert.equal((await run(incoming)).response, generated);
+    assert.equal(requests.length, 1);
+    assert.equal(sent.length, 1);
+    assert.equal(sent[0].text, generated);
+    assert.equal(requests[0].intent, "general_information");
+    assert.equal(requests[0].question, text);
+    assert.deepEqual(requests[0].history, []);
+    assert.equal("facts" in requests[0], false);
+    assert.doesNotMatch(JSON.stringify(requests), /consta|chamado|sinal óptico|synthetic-conversation/i);
+    assert.equal((await repo.getHistory(CHANNEL_NAME, inbound.externalConversationId))[0].content, oldAssistantClaim);
+  }
+});
+
+test("greeting refuses wrong daypart, side effects and model failure; pause and private/human gates still hold", async () => {
+  for (const override of [
+    { answer: async () => ({ kind: "answer", text: "Bom dia! Como posso ajudar?" }) },
+    { answer: async () => ({ kind: "answer", text: "Olá! Como posso ajudar?" }) },
+    { answer: async () => ({ kind: "answer", text: "Boa tarde! Sua ordem está aberta. Como posso ajudar?" }) },
+    { answer: async () => ({ kind: "answer", text: "Boa tarde! Como posso ajudar?", action: "trust_unlock" }) },
+    { answer: async () => ({ kind: "answer", text: "Boa tarde! Como posso ajudar?", state: "request_complete" }) },
+    { answer: async () => ({ kind: "none" }) },
+    { answer: undefined }, { eligible: false }, { humanHandoff: true }, { privateFlowPending: true },
+    { reviewReason: "guard_operator_paused" },
+  ]) {
+    const { run, calls } = fixture({ priorIntent: "technical_no_connection", ...override });
+    const result = await run({ ...inbound, text: "boa tarde" });
+    assert.equal(result.response, null);
+    assert.equal(result.suggestion, undefined);
+    assert.ok(!calls.some(([kind]) => kind === "meta"), "no synthetic fallback");
+    if ("eligible" in override || "humanHandoff" in override || "privateFlowPending" in override || "reviewReason" in override)
+      assert.deepEqual(calls, []);
+  }
+});

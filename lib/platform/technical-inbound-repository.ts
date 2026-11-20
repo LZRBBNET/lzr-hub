@@ -31,3 +31,12 @@ export function reserveTechnicalInbound(db: TechnicalInboundDb, channel: string,
     return true;
   });
 }
+
+// The previous outbound can enable one AI follow-up even if the customer
+// submits two different inbound messages simultaneously. No reopen on timeout.
+export function claimTechnicalFollowup(
+  db: unknown, channel: string, conversationId: string, anchorMessageId: string,
+): Promise<boolean> {
+  const key = createHash("sha256").update(JSON.stringify([channel, conversationId, anchorMessageId])).digest("hex");
+  return new DbReplyRepository(db).claim(`technical-followup:${key}`, channel, conversationId);
+}

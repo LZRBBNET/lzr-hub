@@ -11,6 +11,7 @@ import {drizzle} from 'drizzle-orm/node-postgres';
 import {migrate} from 'drizzle-orm/node-postgres/migrator';
 import {runDeliveryQA} from './human-delivery-postgres.mjs';
 import {assertTechnicalReplayAfterRestart,runTechnicalInboundQA} from './technical-inbound-postgres.mjs';
+import {assertTechnicalContinuityAfterRestart,runTechnicalContinuityQA} from './technical-continuity-postgres.mjs';
 import {DbConversationStateRepository,changeConversationState} from '../../lib/platform/conversation-state-service.ts';
 import {DbConversationsRepository} from '../../lib/platform/conversations-service.ts';
 import {loadConversationSummary} from '../../lib/platform/copilot-summary-service.ts';
@@ -38,10 +39,12 @@ try{
  runtime=new pg.Pool({host:dir,user:'synthetic_delivery_runtime',database:'handoff_synthetic'});
  if (process.env.TECHNICAL_ONLY === "1") {
    await runTechnicalInboundQA(pool,runtime,record);
+   await runTechnicalContinuityQA(pool,runtime,record);
    await runtime.end();runtime=null;await pool.end();pool=null;
    execFileSync(join(bin,'pg_ctl'),['-D',data,'-l',join(dir,'postgres.log'),'-m','fast','-w','restart'],{env,stdio:'pipe'});
    runtime=new pg.Pool({host:dir,user:'synthetic_delivery_runtime',database:'handoff_synthetic'});
    await assertTechnicalReplayAfterRestart(runtime,record);
+   await assertTechnicalContinuityAfterRestart(runtime,record);
  } else {
  await runDeliveryQA(pool,record,runtime);
  const {runReconciliationQA}=await import("./reconciliation-postgres.mjs");await runReconciliationQA(pool,runtime,record);

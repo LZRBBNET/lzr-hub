@@ -138,6 +138,42 @@ export async function runTechnicalInboundQA(admin, runtime, record) {
   record("technical_inbound_postgres_real_dispatch_mock_transport", {
     lateHumanClaimRetained: true, blockedHumanTransportCalls: 0, ambiguousTimeoutTransportCalls: 1, realMessages: 0,
   });
+
+  const greeting = { ...input("greeting"), text: "ola bom dia" };
+  await new D1ChannelRepository(db).saveMessages(channel, greeting.externalConversationId, [{
+    role: "agent", content: "A ordem de serviço está em andamento; sinal óptico fraco.",
+    correlationId: "synthetic-old-greeting-context", sentBy: "ia-agente",
+  }]);
+  let greetingModelCalls = 0, greetingMetaCalls = 0;
+  const greetingOptions = {
+    priorIntent: "technical_no_connection",
+    answer: async (prompt) => {
+      greetingModelCalls++;
+      assert.equal(prompt.intent, "general_information");
+      assert.equal(prompt.question, greeting.text);
+      assert.deepEqual(prompt.history, []);
+      assert.equal("facts" in prompt, false);
+      return { kind: "answer", state: "ongoing", text: "Bom dia! Em que posso ajudar?" };
+    },
+    sender: async ({ text }) => {
+      greetingMetaCalls++;
+      assert.equal(text, "Bom dia! Em que posso ajudar?");
+      return { sent: true, messageId: "wamid.synthetic-greeting-reply" };
+    },
+  };
+  const greetings = await Promise.all([run(greeting, db, greetingOptions), run(greeting, db, greetingOptions)]);
+  assert.ok(greetings.some(reply => reply.response === "Bom dia! Em que posso ajudar?"));
+  assert.equal((await run(greeting, db, greetingOptions)).response, "Bom dia! Em que posso ajudar?");
+  assert.equal(greetingModelCalls, 1);
+  assert.equal(greetingMetaCalls, 1);
+  assert.equal(await inbound(greeting), 1);
+  assert.equal(await claim(greeting), 1);
+  const paused = { ...input("greeting-paused"), text: "boa tarde" };
+  assert.equal((await run(paused, db, { ...greetingOptions, reviewReason: "guard_operator_paused" })).response, null);
+  assert.equal(greetingModelCalls, 1);
+  assert.equal(greetingMetaCalls, 1);
+  assert.equal(await inbound(paused), 1);
+  record("greeting_postgres_replay_and_pause", { previousTechnicalIssue: true, noHistoricalFacts: true, modelMocks: 1, metaMocks: 1, pauseMocks: 0 });
 }
 
 export async function assertTechnicalReplayAfterRestart(runtime, record) {

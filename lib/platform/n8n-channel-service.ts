@@ -1,4 +1,5 @@
-import { ambiguousTechnicalReference, explicitUnverifiedOrderFollowup, previousTechnicalAssertion, processProtectedTechnicalTurn, protectedTechnicalIntent, publicTechnicalQuestion, safeTechnicalModelQuestion, type TechnicalEmergencyOptions } from "./meta-technical-emergency.ts";
+import { ambiguousTechnicalReference, explicitUnverifiedOrderFollowup, previousTechnicalAssertion, processProtectedTechnicalTurn, protectedTechnicalIntent, publicGreeting, publicTechnicalQuestion, safeTechnicalModelQuestion, technicalContinuity, type TechnicalEmergencyOptions, type TechnicalQuestionStage } from "./meta-technical-emergency.ts";
+import { currentTechnicalComplaint } from "./current-support-tone.ts";
 import { supportRequest as supportRequestForOpening } from "../agent/troubleshooting-context.ts";
 import { servicePreferences } from "../agent/service-preferences.ts";
 import { hasPriorOutput, serviceOpening } from "./service-opening.ts";
@@ -74,6 +75,8 @@ export interface ChannelMessageRow {
   sentBy?: string;
   /** `wamid` da Meta, quando existe. */
   externalMessageId?: string;
+  /** Meta comprovou falha de entrega, quando houve recibo gravado. */
+  deliveryStatus?: string;
 }
 /**
  * `response` vem `null` quando a resposta automática está desligada — o fluxo do
@@ -82,7 +85,7 @@ export interface ChannelMessageRow {
  * `externalMessageId` é o `wamid` da resposta quando o próprio canal a enviou
  * (rota da Meta): presente = já saiu, e quem chama não reenvia.
  */
-export interface ChannelResponse { response: string | null; autoReply: boolean; suggestion?: string; status: string; handoff: boolean; correlationId: string; externalMessageId?: string }
+export interface ChannelResponse { response: string | null; autoReply: boolean; suggestion?: string; status: string; handoff: boolean; correlationId: string; externalMessageId?: string; technicalQuestionStage?: TechnicalQuestionStage }
 
 /**
  * O resultado de tentar levar a resposta ao cliente. `unknown` = pode ter saído
@@ -331,13 +334,27 @@ export async function processChannelMessage(
   const existing = await repository.findIdempotent(input.idempotencyKey);
   if (existing) return existing;
   const emergency = options.technicalEmergency;
+  if (emergency && publicGreeting(input.text))
+    return processProtectedTechnicalTurn(repository, input, { ...emergency, replyKind: "greeting" });
   if (emergency && explicitUnverifiedOrderFollowup(input.text))
     return processProtectedTechnicalTurn(repository, input, { ...emergency, reviewReason: "guard_unverified_os_followup" });
-  if (emergency && (publicTechnicalQuestion(input.text) || protectedTechnicalIntent(analyzeIntent(input.text).intent))) {
-    return processProtectedTechnicalTurn(repository, input, emergency);
+  const complaint = emergency && currentTechnicalComplaint(input.text);
+  if (emergency && complaint) {
+    return processProtectedTechnicalTurn(repository, input, complaint.kind === "review"
+      ? { ...emergency, reviewReason: emergency.reviewReason ?? "guard_current_complaint_needs_review" }
+      : { ...emergency, complaint });
   }
+  if (emergency && publicTechnicalQuestion(input.text)) return processProtectedTechnicalTurn(repository, input, emergency);
 
+  // Only otherwise unhandled words may answer a proven recent technical question.
+  const isProtectedInput = emergency && protectedTechnicalIntent(analyzeIntent(input.text).intent);
+  if (emergency && isProtectedInput && !emergency.continuation) return processProtectedTechnicalTurn(repository, input, emergency);
   const storedHistory = await repository.getHistory(CHANNEL_NAME, input.externalConversationId);
+  if (emergency?.continuation) {
+    const anchored = await technicalContinuity(repository, storedHistory, input, emergency.continuation.sentAt, undefined, emergency.continuation.replyToMessageId);
+    if (anchored) return processProtectedTechnicalTurn(repository, input, emergency, anchored);
+  }
+  if (emergency && isProtectedInput) return processProtectedTechnicalTurn(repository, input, emergency);
   const lastReply = [...storedHistory].reverse().find(row => row.role === "agent");
   const now = Date.now();
   const lastReplyAt = Date.parse(lastReply?.createdAt ?? "");
@@ -722,7 +739,7 @@ export class D1ChannelRepository implements ChannelRepository {
       .where(and(eq(channelMessages.channel, channel), eq(channelMessages.externalConversationId, externalConversationId)))
       // Empate de carimbo (gravações antigas do mesmo lote): a fala do cliente vem antes da resposta.
       .orderBy(asc(channelMessages.createdAt), asc(sql`case ${channelMessages.role} when 'customer' then 0 else 1 end`));
-    return rows.map((row: { role: string; content: string; correlationId: string | null; createdAt: string; sentBy: string | null; externalMessageId: string | null }) => ({
+    return rows.map((row: { role: string; content: string; correlationId: string | null; createdAt: string; sentBy: string | null; externalMessageId: string | null; deliveryStatus: string | null }) => ({
       role: row.role === "agent" ? "agent" : row.role === SUGGESTION_ROLE ? SUGGESTION_ROLE : "customer",
       content: row.content,
       // Devolvido junto porque está gravado: esconder na leitura o que o banco
@@ -731,6 +748,7 @@ export class D1ChannelRepository implements ChannelRepository {
       createdAt: row.createdAt,
       sentBy: row.sentBy ?? undefined,
       externalMessageId: row.externalMessageId ?? undefined,
+      deliveryStatus: row.deliveryStatus ?? undefined,
     }));
   }
   async saveMessages(channel: string, externalConversationId: string, messages: ChannelMessageRow[]): Promise<void> {

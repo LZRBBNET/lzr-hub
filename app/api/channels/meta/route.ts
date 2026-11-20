@@ -2,7 +2,7 @@ import { DbConversationDelivery } from "@/lib/platform/conversation-delivery-ser
 import { NextResponse } from "next/server";
 import { randomUUID } from "node:crypto";
 import { getDb } from "@/db";
-import { reserveTechnicalInbound } from "@/lib/platform/technical-inbound-repository";
+import { claimTechnicalFollowup, reserveTechnicalInbound } from "@/lib/platform/technical-inbound-repository";
 import { CHANNEL_NAME, D1ChannelRepository, MAX_MESSAGE_LENGTH, processChannelMessage, recordUnsupportedMessage } from "@/lib/platform/n8n-channel-service";
 import { DbContactsRepository, rememberContactName } from "@/lib/platform/channel-contacts";
 import { DbDeliveryRepository, applyStatuses } from "@/lib/platform/delivery-status-service";
@@ -18,8 +18,10 @@ import { metaSendConfigFromEnv, sendTextMessage } from "@/lib/integrations/meta/
 import { DbOutboundRepository } from "@/lib/platform/outbound-service";
 import { OPT_IN_REPLY, OPT_OUT_REPLY, canonicalPhone, isOptIn, isOptOut } from "@/lib/platform/outbound-shared";
 import { fetchPixCode } from "@/lib/integrations/ixc/write-client";
-import { DbTicketRepository, ixcDiagnose, ixcInvoiceLookup, startTriage } from "@/lib/platform/triage-service";
+import { DbTicketRepository, ixcDiagnose, ixcInvoiceLookup, startTriage, type TicketRow } from "@/lib/platform/triage-service";
 import { DbIncidentsRepository } from "@/lib/platform/incidents-service";
+import { publicGreeting, publicTechnicalQuestion } from "@/lib/platform/meta-technical-emergency";
+import { currentTechnicalComplaint, currentTicketGates } from "@/lib/platform/current-support-tone";
 import { windowOpen } from "@/lib/platform/conversation-state-shared";
 import { isBusinessHours } from "@/lib/platform/triage-shared";
 import { askDoubtBot, doubtBotAnswerer, doubtBotConfigFromEnv } from "@/lib/platform/doubt-bot-service";
@@ -107,7 +109,7 @@ export async function POST(request: Request) {
 
   // Um POST pode trazer várias mensagens e recibos de entrega juntos. Ler só o
   // primeiro item, como antes, perdia o resto em silêncio.
-  const messages = parseMetaMessages(payload, { reportCanonicalSender: true });
+  const messages = parseMetaMessages(payload, { reportCanonicalSender: true, reportReplyContext: true });
   const statuses = parseMetaStatuses(payload);
   if (messages.length === 0 && statuses.length === 0) {
     // Evento ignorado responde 200: a Meta reenvia o que não recebe 200, e um
@@ -126,6 +128,50 @@ export async function POST(request: Request) {
   const results = [];
   for (const message of messages) {
     const correlationId = randomUUID();
+    const agentConfig = aiAgentConfig();
+    const protectedOptions = (auto: Awaited<ReturnType<typeof metaAutoReplyOptions>>, ticket?: TicketRow) => ({
+      channel: CHANNEL_NAME,
+      ...currentTicketGates(ticket),
+      reviewReason: process.env.FEATURE_META_TECHNICAL_REPLY_PAUSED === "true" ? "guard_operator_paused" as const : undefined,
+      eligible: !!agentConfig && !!sendConfig && auto.autoReply && !!message.sentAt
+        && Date.parse(message.sentAt) <= Date.now() && windowOpen(message.sentAt, Date.now())
+        && message.phoneNumberId === sendConfig.phoneNumberId && message.canonicalSender === true
+        && /^wamid\.[A-Za-z0-9_=+\/-]{1,240}$/.test(message.messageId),
+      answer: agentConfig ? (input: Parameters<typeof askDoubtBot>[1]) => askDoubtBot({
+        ...agentConfig, fetcher: (url, init) => fetch(url, { ...init, redirect: "error" }),
+      }, input, []) : undefined,
+      sender: auto.send,
+      reserveInbound: (input: Parameters<typeof reserveTechnicalInbound>[2]) => reserveTechnicalInbound(db, CHANNEL_NAME, input),
+      providerSentAt: message.sentAt,
+      continuation: process.env.FEATURE_META_TECHNICAL_CONTINUITY === "true" ? {
+        sentAt: message.sentAt,
+        replyToMessageId: message.replyToMessageId,
+        claimAnchor: (anchor: string) => claimTechnicalFollowup(db, CHANNEL_NAME, message.phone, anchor),
+      } : undefined,
+    });
+    if (message.kind === "text" && (publicGreeting(message.text) || currentTechnicalComplaint(message.text) || publicTechnicalQuestion(message.text))) {
+      // Handle bounded current openings/reports before inherited intent and any
+      // IXC lookup. Actual conversation ownership is checked regardless of ticket age.
+      if (!message.canonicalSender || !message.phoneNumberId || message.phoneNumberId !== process.env.META_PHONE_NUMBER_ID?.trim()
+        || !/^wamid\.[A-Za-z0-9_=+\/-]{1,240}$/.test(message.messageId)) {
+        results.push({ ignored: true, reason: "protected_conversation_scope_unverified" });
+        continue;
+      }
+      const states = new DbConversationStateRepository(db);
+      const [ticket, owner] = await Promise.all([tickets.findOpen(CHANNEL_NAME, message.phone), states.get(CHANNEL_NAME, message.phone)]);
+      const afterResolution = owner?.status !== "resolved"
+        || Date.parse(message.sentAt ?? "") > Date.parse(owner.resolvedAt ?? "");
+      const auto = await metaAutoReplyOptions({
+        enabled: !!agentConfig && afterResolution, states, messages: channel, claims: new DbReplyRepository(db),
+        delivery: new DbConversationDelivery(db), config: sendConfig, channel: CHANNEL_NAME,
+        customerMessageAt: message.sentAt, conversational: true,
+      }, message.phone);
+      results.push(await processChannelMessage(channel,
+        { externalConversationId: message.phone, text: message.text, idempotencyKey: message.messageId, correlationId },
+        undefined, { autoReply: false, technicalEmergency: protectedOptions(auto, ticket) },
+      ));
+      continue;
+    }
     const lookupCustomer = async (phone: string) => {
       const runtime = getIxcRuntime();
       if (!runtime.provider) throw new Error("IXC indisponível");
@@ -136,7 +182,6 @@ export async function POST(request: Request) {
     // atendimento, que a captação de lead aproveita em vez de repetir.
     const { provider, config: ixcConfig } = getIxcRuntime();
     const offHours = !isBusinessHours(new Date());
-    const agentConfig = aiAgentConfig();
     const botSpeaks = !!agentConfig || autoReplyEnabled() || (offHoursAutoReplyEnabled() && offHours);
     // Robô de dúvidas (n8n): no modo autônomo, sempre; senão, só no horário comercial e só quando a IA não fala por outro caminho.
     const doubtBotConfig = agentConfig ?? (!botSpeaks && !offHours ? doubtBotConfigFromEnv() : undefined);
@@ -224,22 +269,7 @@ export async function POST(request: Request) {
             : undefined,
           templates,
           triage: triage?.hooks,
-          technicalEmergency: {
-            channel: CHANNEL_NAME,
-            priorIntent: triage?.ticket.intent,
-            humanHandoff: triage?.handedOff === true,
-            reviewReason: process.env.FEATURE_META_TECHNICAL_REPLY_PAUSED === "true" ? "guard_operator_paused" : undefined,
-            privateFlowPending: !!triage?.ticket.selfService || !!triage?.ticket.intent?.startsWith("financial_"),
-            eligible: !!agentConfig && !!sendConfig && auto.autoReply && !!message.sentAt
-              && Date.parse(message.sentAt) <= Date.now() && windowOpen(message.sentAt, Date.now())
-              && message.phoneNumberId === sendConfig.phoneNumberId && message.canonicalSender === true
-              && /^wamid\.[A-Za-z0-9_=+\/-]{1,240}$/.test(message.messageId),
-            answer: agentConfig ? (input) => askDoubtBot({
-              ...agentConfig, fetcher: (url, init) => fetch(url, { ...init, redirect: "error" }),
-            }, input, []) : undefined,
-            sender: auto.send,
-            reserveInbound: (input) => reserveTechnicalInbound(db, CHANNEL_NAME, input),
-          },
+          technicalEmergency: protectedOptions(auto, triage?.ticket),
         },
         (input) => captureLeadFromContact(new DbCrmRepository(db), input, triage?.knownCustomer ?? lookupCustomer),
       ));

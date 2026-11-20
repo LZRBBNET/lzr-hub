@@ -137,6 +137,8 @@ export interface MetaInbound {
   profileName?: string;
   phoneNumberId?: string;
   canonicalSender?: boolean;
+  /** Parent WAMID from the signed Meta context; null means a malformed quote. */
+  replyToMessageId?: string | null;
   /**
    * Quando o cliente escreveu, pelo relógio da Meta. É daí que conta a janela de
    * 24 horas: a Meta reentrega webhook por dias, e a hora de chegada mentiria.
@@ -178,7 +180,7 @@ function messageChanges(payload: unknown): Bag[] {
  * Todas as mensagens do webhook. A Meta pode juntar mais de uma no mesmo POST —
  * ler só a primeira, como `parseMetaWebhook` faz, perderia as outras em silêncio.
  */
-export function parseMetaMessages(payload: unknown, options?: { reportCanonicalSender?: boolean }): MetaInbound[] {
+export function parseMetaMessages(payload: unknown, options?: { reportCanonicalSender?: boolean; reportReplyContext?: boolean }): MetaInbound[] {
   const result: MetaInbound[] = [];
   for (const value of messageChanges(payload)) {
     const contacts = list(value.contacts).map(bag);
@@ -197,9 +199,12 @@ export function parseMetaMessages(payload: unknown, options?: { reportCanonicalS
       const kind: InboundKind = text ? "text" : MEDIA_KINDS[type] ?? "other";
       const caption = kind === "text" ? undefined : String(bag(message[type]).caption ?? "").trim() || undefined;
       const seconds = Number(message.timestamp);
+      const quoted = bag(message.context).id;
+      const hasQuote = Object.prototype.hasOwnProperty.call(message, "context");
       result.push({
         phone, messageId, kind, text, caption,
         ...(options?.reportCanonicalSender ? { canonicalSender: typeof message.from === "string" && message.from === phone && /^[1-9]\d{9,14}$/.test(phone) } : {}),
+        ...(options?.reportReplyContext && hasQuote ? { replyToMessageId: typeof quoted === "string" && /^wamid\.[A-Za-z0-9_=+\/-]{1,240}$/.test(quoted) ? quoted : null } : {}),
         profileName: typeof name === "string" && name.trim() ? name.trim() : undefined,
         phoneNumberId: typeof metadata.phone_number_id === "string" ? metadata.phone_number_id : undefined,
         sentAt: Number.isFinite(seconds) && seconds > 0 ? new Date(seconds * 1000).toISOString() : undefined,
