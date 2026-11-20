@@ -1,3 +1,4 @@
+import { processConsentCommand } from "@/lib/platform/consent-command-service";
 import { explicitHumanHandoff, requestsHuman } from "@/lib/platform/explicit-human-handoff";
 import { processMetaBatch } from "@/lib/platform/meta-batch-service";
 import { DbConversationFence } from "@/lib/platform/conversation-fence";
@@ -18,7 +19,7 @@ import { DbReplyRepository } from "@/lib/platform/attendant-reply-service";
 import { metaAutoReplyOptions, metaAutoReplySender } from "@/lib/platform/meta-auto-reply-service";
 import { metaSendConfigFromEnv } from "@/lib/integrations/meta/cloud-client";
 import { DbOutboundRepository } from "@/lib/platform/outbound-service";
-import { OPT_IN_REPLY, OPT_OUT_REPLY, canonicalPhone, isOptIn, isOptOut } from "@/lib/platform/outbound-shared";
+import { isOptIn, isOptOut } from "@/lib/platform/outbound-shared";
 import { fetchPixCode } from "@/lib/integrations/ixc/write-client";
 import { DbTicketRepository, ixcDiagnose, ixcInvoiceLookup, startTriage } from "@/lib/platform/triage-service";
 import { DbIncidentsRepository } from "@/lib/platform/incidents-service";
@@ -125,6 +126,15 @@ export async function POST(request: Request) {
   const results: unknown[] = [];
   const batch = await processMetaBatch(messages, async (message) => {
     const correlationId = randomUUID();
+    if (message.kind === "text" && (isOptOut(message.text) || isOptIn(message.text))) {
+      results.push(await processConsentCommand({channel,confirmationEnabled:autoReplyEnabled(),
+        transaction:work=>db.transaction(tx=>work({channel:new D1ChannelRepository(tx),outbound:new DbOutboundRepository(tx)})),
+        send:async input=>{
+          const turn=await new DbConversationFence(db).capture(CHANNEL_NAME,message.phone,message.messageId,message.sentAt);
+          return metaAutoReplySender({claims:new DbReplyRepository(db),delivery:new DbConversationDelivery(db),turn,config:sendConfig,channel:CHANNEL_NAME,customerMessageAt:message.sentAt})(input);
+        }}, {conversationId:message.phone,text:message.text,inboundMessageId:message.messageId,out:isOptOut(message.text),correlationId}));
+      return;
+    }
     const turn = await new DbConversationFence(db).capture(CHANNEL_NAME,message.phone,message.messageId,message.sentAt);
     const tickets = new DbTicketRepository(db,turn);
     if (message.kind === "text" && message.text.length <= MAX_MESSAGE_LENGTH && requestsHuman(message.text,message.interactiveReplyId)) {
@@ -192,24 +202,6 @@ export async function POST(request: Request) {
     // recebe 200, e sem isso a reentrega viraria atendimento em dobro.
     if (message.kind === "text") {
       if (message.text.length > MAX_MESSAGE_LENGTH) { results.push({ ignored: true, reason: "mensagem-longa" }); return; }
-      // SAIR / VOLTAR: descadastro dos avisos automáticos de fatura e rede. Não é atendimento — a IA
-      // não entra, e o atendimento pelo WhatsApp continua. Reentrega do webhook não responde duas vezes.
-      if (isOptOut(message.text) || isOptIn(message.text)) {
-        const out = isOptOut(message.text);
-        if (!(await channel.findIdempotent(message.messageId))) {
-          await new DbOutboundRepository(db).setOptOut(canonicalPhone(message.phone), out, "whatsapp").catch(() => undefined);
-          const reply = out ? OPT_OUT_REPLY : OPT_IN_REPLY;
-          const sent = await metaAutoReplySender({claims:new DbReplyRepository(db),delivery:new DbConversationDelivery(db),turn,
-            config:sendConfig,channel:CHANNEL_NAME,customerMessageAt:message.sentAt})({conversationId:message.phone,text:reply,inboundMessageId:message.messageId});
-          await channel.saveMessages(CHANNEL_NAME, message.phone, [
-            { role: "customer", content: message.text, correlationId, externalMessageId: message.messageId },
-            { role: sent.sent ? "agent" : "suggestion", content: reply, correlationId, ...(sent.sent ? { externalMessageId: sent.messageId, sentBy: "ia" } : {}) },
-          ]);
-          await channel.saveIdempotency(message.messageId, CHANNEL_NAME, message.phone, { response: sent.sent ? reply : null, autoReply: !!sent.sent, status: out ? "opted_out" : "opted_in", handoff: false, correlationId });
-        }
-        results.push({ status: out ? "opted_out" : "opted_in" });
-        return;
-      }
       // Com um humano à frente da conversa a IA só sugere: não responde por cima dele.
       // Quando responde, é pela Cloud API, e só fica gravado como enviado o que a Meta aceitou.
       // O robô de dúvidas usa as mesmas travas (humano, uma por espera, janela de 24 horas, idempotência).
