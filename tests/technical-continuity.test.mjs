@@ -668,3 +668,39 @@ test("a single explicitly wired device is not asked to toggle Wi-Fi", async () =
   assert.equal(g.calls.length, 1);
   assert.equal(g.anchors.size, 0);
 });
+
+test("pilot sends the observed subject-elided diagnostic and safely advances a verified natural answer", async () => {
+  const opening = turn("Estou sem internet aqui na minha casa. Já reiniciei os equipamentos e nada de voltar.", "elided-open");
+  const naturalQuestion = "Acontece em outro aparelho?";
+  const lightQuestion = "Alguma luz do roteador está vermelha?";
+  const f = fixture({ first: naturalQuestion, second: lightQuestion });
+  assert.equal((await f.run(opening, { pilot: true })).response, naturalQuestion);
+  assert.equal((await f.run(turn("Sim, em todos os aparelhos aqui em casa", "elided-answer"), { pilot: true })).response, lightQuestion);
+  assert.equal(f.anchors.size, 1);
+  assert.match(f.calls[0].task, /Acontece em outro aparelho/);
+  assert.match(f.calls[1].task, /Alguma luz do roteador está vermelha/);
+  assert.deepEqual(f.calls[0].history, []);
+  for (const invalid of ["Boa tarde! Acontece em outro aparelho?", "Acontece em outro aparelho? Reinicie o roteador.", "Acontece em outro aparelho e envie seu CPF?"]) {
+    const bad = fixture({ first: invalid });
+    assert.equal((await bad.run(opening, { pilot: true })).response, null);
+    assert.equal(bad.sends.length, 0);
+  }
+  const expired = fixture({ first: naturalQuestion, second: lightQuestion });
+  assert.equal((await expired.run(opening, { pilot: true })).response, naturalQuestion);
+  assert.equal((await expired.run(turn("Sim", "expired-elided"))).response, null);
+  assert.equal(expired.anchors.size, 0);
+});
+
+test("pilot accepts one neutral close router-light question on the verified follow-up", async () => {
+  const opening = turn("Estou sem internet aqui em casa e já reiniciei o equipamento.", "light-variant-open");
+  for (const question of ["A luz do roteador está vermelha?", "Tem alguma luz vermelha no roteador?", "Há alguma luz vermelha no roteador?"]) {
+    const f = fixture({ first: deviceQuestion, second: question });
+    assert.equal((await f.run(opening, { pilot: true })).response, deviceQuestion);
+    assert.equal((await f.run(turn("Sim, em todos os aparelhos aqui em casa", "light-variant-answer"), { pilot: true })).response, question);
+    assert.equal(f.anchors.size, 1);
+  }
+  const wrong = fixture({ first: deviceQuestion, second: "Tem alguma luz vermelha no roteador? Tire o cabo da fibra." });
+  assert.equal((await wrong.run(opening, { pilot: true })).response, deviceQuestion);
+  assert.equal((await wrong.run(turn("Sim, em todos os aparelhos aqui em casa", "light-variant-answer"), { pilot: true })).response, null);
+  assert.equal(wrong.sends.length, 1);
+});

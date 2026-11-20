@@ -81,13 +81,17 @@ export type TechnicalQuestionStage = "initial" | "followup";
 const META_ID = /^wamid\.[A-Za-z0-9_=+\/-]{1,240}$/;
 const ANCHOR_MAX_AGE_MS = 15 * 60 * 1000;
 
-function technicalQuestionShape(text: string): { dimension: TechnicalDimension; yesIsClear: boolean; noIsClear: boolean } | undefined {
+function technicalQuestionShape(text: string, pilotWording = false): { dimension: TechnicalDimension; yesIsClear: boolean; noIsClear: boolean } | undefined {
   if (text.length > 135 || !/^[\p{L}\p{M} -]+\?$/u.test(text)) return undefined;
   const value = folded(text).replace(/-/g, " ").replace(/ +/g, " ");
   const asksOtherDevice = /^(?:(?:voce consegue|pode|voce pode) (?:verificar|conferir|dizer) se )?(?:o problema|isso) (?:acontece|ocorre) (?:tambem )?em (?:outro aparelho|mais de um aparelho|todos os aparelhos|todos os aparelhos ou so em um)\?$/;
+  // Portuguese commonly omits the known subject. Only the pilot accepts
+  // these single, explicit scope questions; never broaden to instructions.
+  const pilotDeviceScope = /^(?:(?:voce consegue|pode|voce pode) (?:verificar|conferir|dizer) se )?(?:(?:o problema|isso) )?(?:acontece|ocorre) (?:tambem )?em (?:outros? aparelhos?|mais de um aparelho|todos os aparelhos|todos os aparelhos ou so em um)\?$/;
   const asksLight = /^(?:(?:voce consegue|pode|voce pode) (?:verificar|conferir|dizer) se )?(?:alguma|uma) luz do roteador (?:esta|fica) vermelha\?$/;
-  if (asksOtherDevice.test(value)) return { dimension: "devices", yesIsClear: !value.endsWith("ou so em um?"), noIsClear: !value.includes("todos os aparelhos") };
-  if (asksLight.test(value)) return { dimension: "light", yesIsClear: true, noIsClear: true };
+  const pilotLightScope = /^(?:(?:voce consegue|pode|voce pode) (?:verificar|conferir|dizer) se )?(?:a luz do roteador (?:esta|fica) vermelha|(?:tem|ha|voce ve) (?:alguma|uma) luz vermelha (?:no|do) roteador)\?$/;
+  if (asksOtherDevice.test(value) || (pilotWording && pilotDeviceScope.test(value))) return { dimension: "devices", yesIsClear: !value.endsWith("ou so em um?"), noIsClear: !value.includes("todos os aparelhos") };
+  if (asksLight.test(value) || (pilotWording && pilotLightScope.test(value))) return { dimension: "light", yesIsClear: true, noIsClear: true };
 }
 
 export function safeTechnicalModelQuestion(text: string): boolean {
@@ -144,9 +148,24 @@ export async function technicalContinuity(
   if (!lastQuestion || lastQuestion.sentBy !== "ia" || !lastQuestion.externalMessageId || !lastQuestion.correlationId
     || !META_ID.test(lastQuestion.externalMessageId)) return undefined;
   const previous = technicalReplyLayout(lastQuestion.content);
-  const shape = previous && technicalQuestionShape(previous.question);
+  const ordinaryShape = previous && technicalQuestionShape(previous.question);
+  const shape = ordinaryShape || (previous && technicalQuestionShape(previous.question, true));
   const questionAt = Date.parse(lastQuestion.createdAt ?? "");
   if (!shape || !Number.isFinite(questionAt) || questionAt > now || now - questionAt > ANCHOR_MAX_AGE_MS) return undefined;
+  if (!ordinaryShape && !pilotOnly) {
+    // New pilot phrasing must not change baseline classification for an
+    // ordinary AI reply. Only a proven pilot ledger can hold this turn
+    // when the pilot is already closed.
+    const source = visible[lastQuestionIndex - 1];
+    if (source?.role !== "customer" || source.correlationId !== lastQuestion.correlationId
+      || !source.externalMessageId || !META_ID.test(source.externalMessageId)) return undefined;
+    const past = await repository.findIdempotent(source.externalMessageId).catch(() => undefined);
+    return past?.technicalPilotStep === shape.dimension && past.technicalQuestionStage === "initial"
+      && past.status === "replied" && past.autoReply && !past.handoff
+      && past.correlationId === lastQuestion.correlationId
+      && past.externalMessageId === lastQuestion.externalMessageId && past.response === lastQuestion.content
+      ? { action: "hold" } : undefined;
+  }
 
   // A second inbound may arrive when a first answer already owns this turn.
   // In that case retain the new inbound for review, do not open a fresh turn.
@@ -231,7 +250,7 @@ export async function processProtectedTechnicalTurn(
     const layout = technicalReplyLayout(value);
     if (!layout || layout.daypart !== daypart || layout.empathetic !== !!frustrated) return false;
     if (pilotStep === "wifi-one-device") return safePilotWifiStep(layout.question);
-    const shape = technicalQuestionShape(layout.question);
+    const shape = technicalQuestionShape(layout.question, !!pilotStep);
     return !!shape && (!pilotStep || shape.dimension === pilotStep)
       && (pilotStep || !anchored || shape.dimension === anchored.nextDimension);
   };
@@ -264,6 +283,8 @@ export async function processProtectedTechnicalTurn(
             question === RESTART_TRIED_REPORT
               ? "A pessoa já reiniciou os equipamentos e continua sem internet. Não peça que reinicie novamente. Vá direto a uma pergunta sobre outros aparelhos ou luz vermelha do roteador."
               : "",
+            pilotStep === "devices" ? "Exemplos seguros de forma da pergunta: “Acontece em outro aparelho?” ou “Isso acontece em mais de um aparelho?”. Não inclua outra pergunta." : "",
+            pilotStep === "light" ? "Exemplos seguros de forma da pergunta: “Alguma luz do roteador está vermelha?” ou “Tem alguma luz vermelha no roteador?”." : "",
             pilotStep ? "Piloto de suporte: use só o que a pessoa acabou de relatar. Não repita perguntas respondidas nem peça novo reinício. Seja cordial e direto. Não diga que resolveu, que mediu a rede ou que alguém recebeu um chamado." : "",
             pilotStep === "wifi-one-device" ? "O relato está restrito a um aparelho. Pergunte somente se a pessoa pode desligar e ligar o Wi-Fi nesse aparelho, sem tocar no roteador nem pedir reinício; pode pedir que confirme se voltou, nunca diga que resolveu."
               : (pilotStep ?? anchored?.nextDimension) === "devices" ? "Pergunte apenas se o problema acontece em outro aparelho."

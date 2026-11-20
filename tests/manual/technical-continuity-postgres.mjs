@@ -274,22 +274,26 @@ export async function runTechnicalContinuityQA(admin, runtime, record) {
   }
 
   const pilotText = "Desde ontem, aqui em casa a internet caiu. Tirei a ONT da tomada e depois liguei de novo e não voltou; atrapalhou meu trabalho.";
-  const pilotInitial = await run(turn("pilot-natural-first", 13, pilotText), { pilot: true, answerText: pgQuestion });
-  assert.equal(pilotInitial.response, pgQuestion);
+  const productionWording = "Acontece em outro aparelho?";
+  const pilotInitial = await run(turn("pilot-natural-first", 13, pilotText), { pilot: true, answerText: productionWording });
+  assert.equal(pilotInitial.response, productionWording);
+  assert.equal(providerRequests.at(-1).body.text.body, productionWording);
   assert.equal(pilotInitial.technicalPilotStep, "devices");
   const pilotOpening = modelRequests.at(-1).payload;
   assert.equal(pilotOpening.question, "Cliente relata internet indisponível. Cliente relata que já reiniciou o equipamento, sem solução. Cliente relata isso desde ontem.");
   assert.deepEqual([pilotOpening.history, pilotOpening.facts, pilotOpening.sources], [[], [], []]);
   assert.doesNotMatch(JSON.stringify(pilotOpening), /ONT|trabalho|tomada/);
+  const naturalLightQuestion = "Tem alguma luz vermelha no roteador?";
   const pilotFollowup = await run(turn("pilot-natural-confirmed-answer", 13, "sim, em todos os aparelhos aqui em casa"), {
-    pilot: true, answerText: pgFollowup,
+    pilot: true, answerText: naturalLightQuestion,
   });
-  assert.equal(pilotFollowup.response, pgFollowup);
+  assert.equal(pilotFollowup.response, naturalLightQuestion);
+  assert.equal(providerRequests.at(-1).body.text.body, naturalLightQuestion);
   assert.equal(pilotFollowup.technicalPilotStep, "light");
   assert.equal(modelRequests.at(-1).payload.question, "Cliente relata que o problema acontece em mais de um aparelho.");
   assert.equal(await anchoredCount(connectionId(13)), 1);
   const lastPilotOpening = turn("pilot-ending-opening", 14, pilotText);
-  const lastPilotInitial = await run(lastPilotOpening, { pilot: true, answerText: pgQuestion });
+  const lastPilotInitial = await run(lastPilotOpening, { pilot: true, answerText: productionWording });
   assert.equal(lastPilotInitial.technicalPilotStep, "devices");
   assert.equal((await realRepo.findIdempotent(lastPilotOpening.idempotencyKey)).technicalPilotStep, "devices");
   const beforeClosedPilot = [modelRequests.length, providerRequests.length];
@@ -297,7 +301,7 @@ export async function runTechnicalContinuityQA(admin, runtime, record) {
   assert.equal(afterExpiry.response, null);
   assert.deepEqual([modelRequests.length, providerRequests.length], beforeClosedPilot);
   assert.equal(await anchoredCount(connectionId(14)), 0);
-  record("technical_conversation_pilot_postgres_current_finding", { currentProse: true, normalizedOnly: true, provenNaturalFollowup: true, alternateApprovedStep: true, anchorClaims: 1, closedPilotStampedAnchorHeld: true, realMessages: 0 });
+  record("technical_conversation_pilot_postgres_current_finding", { currentProse: true, normalizedOnly: true, provenNaturalFollowup: true, alternateApprovedStep: true, anchorClaims: 1, closedPilotStampedAnchorHeld: true, productionSubjectElisionSent: true, naturalLightQuestionSent: true, realMessages: 0 });
 }
 
 export async function assertTechnicalContinuityAfterRestart(runtime, record) {
