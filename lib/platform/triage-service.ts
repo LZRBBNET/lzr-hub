@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { and, desc, eq, inArray } from "drizzle-orm";
+import { and, desc, eq, inArray, ne } from "drizzle-orm";
 import { supportTickets } from "../../db/schema.ts";
 import { REPLY_WINDOW_MS } from "./conversation-state-shared.ts";
 import { diagnoseConnection, type ConnectionDiagnosis, type DiagnosisInput } from "./connection-diagnosis-shared.ts";
@@ -49,6 +49,8 @@ export interface TicketRepository {
   /** `undefined` = já havia um aberto (duas mensagens chegaram juntas). */
   create(row: Omit<TicketRow, "protocol">): Promise<{ seq: number } | undefined>;
   update(id: string, patch: TicketPatch): Promise<void>;
+  updateTriage(id: string, patch: TicketPatch): Promise<boolean>;
+  resumeForAi(channel: string, conversationId: string): Promise<boolean>;
 }
 
 const iso = (at: number) => new Date(at).toISOString();
@@ -97,9 +99,8 @@ export async function openOrContinueTicket(
  * "Devolver à IA" depois de a IA ter passado para o atendente: o atendimento volta
  * a ser dela. Sem isso, a conversa devolvida continuaria calada até fechar.
  */
-export async function resumeTicketForAi(repository: TicketRepository, channel: string, conversationId: string): Promise<void> {
-  const open = await repository.findOpen(channel, conversationId);
-  if (open?.stage === "handoff") await repository.update(open.id, { stage: "routed" });
+export async function resumeTicketForAi(repository: TicketRepository, channel: string, conversationId: string): Promise<boolean> {
+  return repository.resumeForAi(channel, conversationId);
 }
 
 export async function closeOpenTicket(repository: TicketRepository, channel: string, conversationId: string, now = Date.now()): Promise<void> {
@@ -163,11 +164,11 @@ export function knownCustomer(ticket: TicketRow): CustomerLookup {
 export async function recordTriage(
   repository: TicketRepository,
   ticket: TicketRow,
-  entry: { intent: string; source: string; confidence: number; clarifying: boolean; delivered: boolean; protocolIncluded: boolean; handoff?: boolean; now?: number },
+  entry: { intent: string; source: string; confidence: number; clarifying: boolean; delivered: boolean; protocolIncluded: boolean; handoff?: boolean; deliveryOnly?: boolean; now?: number },
 ): Promise<void> {
   const patch: TicketPatch = {};
   const confident = entry.source === "menu" || (entry.confidence >= CLARIFY_BELOW && entry.intent !== "general_information");
-  if (confident || !ticket.intent) {
+  if (!entry.deliveryOnly && (confident || !ticket.intent)) {
     patch.intent = entry.intent; patch.intentSource = entry.source; patch.intentConfidence = Math.round(entry.confidence * 100);
     patch.queue = queueForIntent(entry.intent);
   }
@@ -183,11 +184,15 @@ export async function recordTriage(
   else if (ticket.stage === "handoff") stage = undefined;
   else if (entry.clarifying) stage = entry.delivered ? "clarifying" : undefined;
   else if (confident || ticket.stage === "clarifying") stage = "routed";
-  if (stage) patch.stage = stage;
+  if (stage && !entry.deliveryOnly) patch.stage = stage;
   if (entry.delivered && entry.protocolIncluded && !ticket.protocolSentAt) patch.protocolSentAt = iso(entry.now ?? Date.now());
   if (Object.keys(patch).length > 0) {
-    await repository.update(ticket.id, patch);
-    Object.assign(ticket, patch); // Later hooks in this turn must not undo a recorded handoff.
+    // A post-send receipt never changes routing, even if a human released meanwhile.
+    const saved = entry.deliveryOnly
+      ? await repository.update(ticket.id, patch).then(() => true)
+      : await repository.updateTriage(ticket.id, patch);
+    if (!saved && entry.handoff) throw new Error("HANDOFF_NOT_CONFIRMED");
+    if (saved) Object.assign(ticket, patch);
   }
 }
 
@@ -605,6 +610,23 @@ export class DbTicketRepository implements TicketRepository {
     return rows[0];
   }
 
+  async updateTriage(id: string, patch: TicketPatch): Promise<boolean> {
+    // Evaluate against the current row under PostgreSQL's UPDATE lock, not the turn snapshot.
+    const rows = await this.db.update(supportTickets).set(patch)
+      .where(and(eq(supportTickets.id, id), eq(supportTickets.status, "open"),
+        patch.stage === "handoff" ? undefined : ne(supportTickets.stage, "handoff")))
+      .returning({ id: supportTickets.id });
+    return rows.length === 1;
+  }
+
+  async resumeForAi(channel: string, conversationId: string): Promise<boolean> {
+    const rows = await this.db.update(supportTickets).set({ stage: "routed" })
+      .where(and(eq(supportTickets.channel, channel), eq(supportTickets.externalConversationId, conversationId),
+        eq(supportTickets.status, "open"), eq(supportTickets.stage, "handoff")))
+      .returning({ id: supportTickets.id });
+    return rows.length > 0; // Already released/no open ticket is an idempotent success.
+  }
+
   async update(id: string, patch: TicketPatch) {
     const rows: Array<{ id: string }> = await this.db.update(supportTickets).set(patch)
       .where(patch.stage === "handoff"
@@ -633,6 +655,20 @@ export class MemoryTicketRepository implements TicketRepository {
     if (this.tickets.some((t) => t.channel === row.channel && t.conversationId === row.conversationId && t.status === "open")) return undefined;
     this.tickets.push({ ...row, protocol: null });
     return { seq: ++this.seq };
+  }
+  async updateTriage(id: string, patch: TicketPatch): Promise<boolean> {
+    if (this.failUpdates) throw new Error("banco fora");
+    const index = this.tickets.findIndex(t => t.id === id && t.status === "open" && (patch.stage === "handoff" || t.stage !== "handoff"));
+    if (index < 0) return false;
+    this.tickets[index] = { ...this.tickets[index], ...patch };
+    return true;
+  }
+  async resumeForAi(channel: string, conversationId: string): Promise<boolean> {
+    if (this.failUpdates) throw new Error("banco fora");
+    const index = this.tickets.findIndex(t => t.channel === channel && t.conversationId === conversationId && t.status === "open" && t.stage === "handoff");
+    if (index < 0) return false;
+    this.tickets[index] = { ...this.tickets[index], stage: "routed" };
+    return true;
   }
   async update(id: string, patch: TicketPatch) {
     if (this.failUpdates) throw new Error("banco fora");

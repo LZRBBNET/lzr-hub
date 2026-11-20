@@ -190,7 +190,7 @@ test("a escolha no menu define assunto e setor, e ganha resposta — sem repetir
   assert.equal(ticket().intent, "financial_invoice");
   assert.equal(ticket().intentSource, "menu");
   assert.equal(ticket().queue, "financeiro");
-  assert.equal(ticket().stage, "routed");
+  assert.equal(ticket().stage, "handoff");
 
   const depois = await receber("ok, obrigado");
   assert.equal(depois.autoReply, false, "depois disso, uma por espera: o resto é do atendente");
@@ -213,7 +213,7 @@ test("a pergunta é feita uma vez por atendimento", async () => {
   await receber("oi");
   await receber("é sobre aquilo que falei");
   assert.equal(enviados().filter((texto) => texto.startsWith(CLARIFY_TEXT)).length, 1, "resposta vaga à pergunta segue para o setor, sem repetir o menu");
-  assert.equal(ticket().stage, "routed");
+  assert.equal(ticket().stage, "handoff");
   assert.equal(ticket().queue, "atendimento");
 });
 

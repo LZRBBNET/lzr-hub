@@ -2,7 +2,7 @@ import { supportRequest as supportRequestForOpening } from "../agent/troubleshoo
 import { servicePreferences } from "../agent/service-preferences.ts";
 import { hasPriorOutput, serviceOpening } from "./service-opening.ts";
 import { resolveSupportReply } from "./support-reply.ts";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { and, asc, eq, sql } from "drizzle-orm";
 import { auditEvents, channelIdempotencyKeys, channelMessages } from "../../db/schema.ts";
 import { runAgentPipeline } from "../agent/pipeline.ts";
@@ -204,7 +204,7 @@ export interface TriageHooks {
   openServiceOrder?(intent: string): Promise<{ id: string; existing?: boolean } | undefined>;
   /** Modo autônomo: o modelo pediu o desbloqueio de confiança; a triagem confere tudo e devolve o texto do desfecho. */
   trustUnlock?(promisedDate?: string): Promise<{ status: string; text: string } | undefined>;
-  record(entry: { intent: string; source: string; confidence: number; clarifying: boolean; delivered: boolean; protocolIncluded: boolean; handoff?: boolean }): Promise<void>;
+  record(entry: { intent: string; source: string; confidence: number; clarifying: boolean; delivered: boolean; protocolIncluded: boolean; handoff?: boolean; deliveryOnly?: boolean }): Promise<void>;
 }
 
 /**
@@ -330,6 +330,9 @@ async function persistHumanHandoff(
   if (!requested) return false;
   try {
     if (!options.triage) throw new Error("TRIAGE_UNAVAILABLE");
+    await repository.saveMessages(CHANNEL_NAME, input.externalConversationId, [
+      { role: "customer", content: input.text, correlationId: input.correlationId, externalMessageId: input.idempotencyKey },
+    ]);
     await prepare?.();
     await options.triage.record({ intent: classified.intent, source: classified.source, confidence: classified.confidence,
       clarifying: false, delivered: false, protocolIncluded: false, handoff: true });
@@ -361,9 +364,10 @@ export async function processChannelMessage(
       { role: "customer", content: input.text, correlationId: input.correlationId, externalMessageId: input.idempotencyKey },
     ]);
     const waiting: ChannelResponse = { response: null, autoReply: false, status: "awaiting_human", handoff: true, correlationId: input.correlationId };
-    await repository.saveIdempotency(input.idempotencyKey, CHANNEL_NAME, input.externalConversationId, waiting);
     await repository.audit({ correlationId: input.correlationId, entity: `conversation:${input.externalConversationId}`,
-      action: "whatsapp.handoff.waiting", result: "recorded", reason: "Nova entrada anexada ao encaminhamento humano. IA e envios automáticos suspensos." });
+      action: "whatsapp.handoff.waiting", result: "recorded", reason: "Encaminhamento persistido confirmado nesta entrada/retry; histórico preservado. IA e envios automáticos suspensos. Não comprova entrega nem recupera o instante da decisão original." });
+    // Complete idempotency only after recovery evidence exists; retry never sends or opens OS.
+    await repository.saveIdempotency(input.idempotencyKey, CHANNEL_NAME, input.externalConversationId, waiting);
     return waiting;
   }
 
@@ -528,7 +532,7 @@ ${footer}` : opened;
     classified, label: handoff ? "Resposta (passada ao atendente)" : "Resposta",
     sender: agentSender(options, handoff),
   });
-  await options.triage?.record({ intent: result.intent, source: classified.source, confidence: classified.confidence, clarifying: false, delivered: delivery.sent, protocolIncluded: !!footer, handoff: recordedHandoff });
+  await options.triage?.record({ intent: result.intent, source: classified.source, confidence: classified.confidence, clarifying: false, delivered: delivery.sent, protocolIncluded: !!footer, handoff: false, deliveryOnly: recordedHandoff });
   return response;
 }
 
@@ -590,7 +594,7 @@ ${footer}` : result.text;
     // No modo autônomo a resposta do robô atendeu (a conversa sai da fila), salvo se ela passou ao atendente.
     sender: agentSender(options, handoff),
   });
-  await options.triage?.record({ intent: classified.intent, source: classified.source, confidence: classified.confidence, clarifying: false, delivered: delivery.sent, protocolIncluded: !!footer, handoff: recordedHandoff });
+  await options.triage?.record({ intent: classified.intent, source: classified.source, confidence: classified.confidence, clarifying: false, delivered: delivery.sent, protocolIncluded: !!footer, handoff: false, deliveryOnly: recordedHandoff });
   return response;
 }
 
@@ -618,7 +622,7 @@ async function triageTurn(
     intent: turn.intent, handoff: recordedHandoff, handoffReason: recordedHandoff ? "human_followup" : null, classified, label: turn.label,
     sender: agentSender(options, handoff),
   });
-  await options.triage?.record({ intent: turn.intent, source: classified.source, confidence: classified.confidence, clarifying: !!turn.clarifying, delivered: delivery.sent, protocolIncluded: !!footer, handoff: recordedHandoff });
+  await options.triage?.record({ intent: turn.intent, source: classified.source, confidence: classified.confidence, clarifying: !!turn.clarifying, delivered: delivery.sent, protocolIncluded: !!footer, handoff: false, deliveryOnly: recordedHandoff });
   await turn.after?.(delivery.sent).catch(() => undefined);
   return response;
 }
@@ -758,11 +762,13 @@ export class D1ChannelRepository implements ChannelRepository {
     // devolvia a sugestão antes da fala do cliente que ela responde.
     const base = Date.now();
     await this.db.insert(channelMessages).values(messages.map((message, index) => ({
-      id: randomUUID(), channel, externalConversationId, role: message.role, content: message.content,
+      id: message.role === "customer" && message.externalMessageId
+        ? `inbound:${createHash("sha256").update(JSON.stringify([channel, externalConversationId, message.externalMessageId])).digest("hex")}`
+        : randomUUID(), channel, externalConversationId, role: message.role, content: message.content,
       correlationId: message.correlationId ?? null,
       sentBy: message.sentBy ?? null, externalMessageId: message.externalMessageId ?? null,
       createdAt: new Date(base + index).toISOString(),
-    })));
+    }))).onConflictDoNothing({ target: channelMessages.id });
   }
   async saveIdempotency(idempotencyKey: string, channel: string, externalConversationId: string, response: ChannelResponse): Promise<void> {
     await this.db.insert(channelIdempotencyKeys).values({
@@ -791,7 +797,10 @@ export class MemoryChannelRepository implements ChannelRepository {
   async saveMessages(channel: string, externalConversationId: string, messages: ChannelMessageRow[]) {
     // Carimbo como o banco real faz: o prazo da memória do classificador depende dele.
     const now = new Date().toISOString();
-    for (const message of messages) this.messageStore.push({ ...message, createdAt: now, channel, externalConversationId });
+    for (const message of messages) {
+      if (message.role === "customer" && message.externalMessageId && this.messageStore.some(m => m.channel === channel && m.externalConversationId === externalConversationId && m.role === "customer" && m.externalMessageId === message.externalMessageId)) continue;
+      this.messageStore.push({ ...message, createdAt: now, channel, externalConversationId });
+    }
   }
   async saveIdempotency(idempotencyKey: string, _channel: string, _externalConversationId: string, response: ChannelResponse) {
     this.idempotencyStore.set(idempotencyKey, response);
