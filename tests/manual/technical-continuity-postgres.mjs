@@ -28,8 +28,8 @@ export async function runTechnicalContinuityQA(admin, runtime, record) {
   const receipts = new DbDeliveryRepository(drizzle(admin));
   const modelRequests = [], providerRequests = [];
   const now = () => new Date().toISOString();
-  const sharedOptions = (input, { sentAt = now(), beforeModelReturn, unsafeAction, answerText, replyToMessageId, gates } = {}) => ({
-    channel, eligible: true, privateFlowPending: false, humanHandoff: false, ...gates,
+  const sharedOptions = (input, { sentAt = now(), beforeModelReturn, unsafeAction, answerText, replyToMessageId, gates, pilot } = {}) => ({
+    channel, eligible: true, privateFlowPending: false, humanHandoff: false, ...gates, ...(pilot ? { pilot: true } : {}),
     reserveInbound: value => reserveTechnicalInbound(db, channel, value),
     continuation: { sentAt, replyToMessageId, claimAnchor: anchor => claimTechnicalFollowup(db, channel, input.externalConversationId, anchor) },
     answer: async req => askDoubtBot({
@@ -272,6 +272,32 @@ export async function runTechnicalContinuityQA(admin, runtime, record) {
     assert.ok((await realRepo.getHistory(channel, currentOutage.externalConversationId)).some(row => row.content === currentOutage.text));
     record(marker, { currentSymptomAndAttemptOnly: true, noRepeatedRestartOrGreeting: true, genuineOriginalRecorded: true, realMessages: 0 });
   }
+
+  const pilotText = "Desde ontem, aqui em casa a internet caiu. Tirei a ONT da tomada e depois liguei de novo e não voltou; atrapalhou meu trabalho.";
+  const pilotInitial = await run(turn("pilot-natural-first", 13, pilotText), { pilot: true, answerText: pgQuestion });
+  assert.equal(pilotInitial.response, pgQuestion);
+  assert.equal(pilotInitial.technicalPilotStep, "devices");
+  const pilotOpening = modelRequests.at(-1).payload;
+  assert.equal(pilotOpening.question, "Cliente relata internet indisponível. Cliente relata que já reiniciou o equipamento, sem solução. Cliente relata isso desde ontem.");
+  assert.deepEqual([pilotOpening.history, pilotOpening.facts, pilotOpening.sources], [[], [], []]);
+  assert.doesNotMatch(JSON.stringify(pilotOpening), /ONT|trabalho|tomada/);
+  const pilotFollowup = await run(turn("pilot-natural-confirmed-answer", 13, "sim, em todos os aparelhos aqui em casa"), {
+    pilot: true, answerText: pgFollowup,
+  });
+  assert.equal(pilotFollowup.response, pgFollowup);
+  assert.equal(pilotFollowup.technicalPilotStep, "light");
+  assert.equal(modelRequests.at(-1).payload.question, "Cliente relata que o problema acontece em mais de um aparelho.");
+  assert.equal(await anchoredCount(connectionId(13)), 1);
+  const lastPilotOpening = turn("pilot-ending-opening", 14, pilotText);
+  const lastPilotInitial = await run(lastPilotOpening, { pilot: true, answerText: pgQuestion });
+  assert.equal(lastPilotInitial.technicalPilotStep, "devices");
+  assert.equal((await realRepo.findIdempotent(lastPilotOpening.idempotencyKey)).technicalPilotStep, "devices");
+  const beforeClosedPilot = [modelRequests.length, providerRequests.length];
+  const afterExpiry = await run(turn("pilot-ending-no-reply", 14, "Sim"), { answerText: pgFollowup });
+  assert.equal(afterExpiry.response, null);
+  assert.deepEqual([modelRequests.length, providerRequests.length], beforeClosedPilot);
+  assert.equal(await anchoredCount(connectionId(14)), 0);
+  record("technical_conversation_pilot_postgres_current_finding", { currentProse: true, normalizedOnly: true, provenNaturalFollowup: true, alternateApprovedStep: true, anchorClaims: 1, closedPilotStampedAnchorHeld: true, realMessages: 0 });
 }
 
 export async function assertTechnicalContinuityAfterRestart(runtime, record) {

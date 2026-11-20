@@ -1,5 +1,6 @@
 import type { AutoReplySender, ChannelMessageInput, ChannelMessageRow, ChannelRepository, ChannelResponse } from "./n8n-channel-service.ts";
 import type { DoubtBotInput, DoubtBotResult } from "./doubt-bot-service.ts";
+import { anchoredPilotAnswerContradictsBinary, currentAnswerAlreadyTriedClientControls, pilotAnchoredFinding, safePilotWifiStep, type ApprovedTechnicalStep, type PilotPlan } from "./technical-conversation-pilot.ts";
 import { explicitSupportDaypart, freshSupportDaypart, technicalReplyLayout, type CurrentTechnicalComplaint, type SupportDaypart } from "./current-support-tone.ts";
 
 const folded = (text: string) => text.normalize("NFD").replace(/\p{M}/gu, "").toLowerCase().trim();
@@ -135,6 +136,7 @@ export async function technicalContinuity(
   sentAt: string | undefined,
   now: number = Date.now(),
   replyToMessageId?: string | null,
+  pilotOnly?: boolean,
 ): Promise<TechnicalContinuity | undefined> {
   const visible = history.filter(row => row.role !== "suggestion");
   const lastQuestionIndex = visible.findLastIndex(row => row.role === "agent");
@@ -166,9 +168,17 @@ export async function technicalContinuity(
   const accepted = await repository.findIdempotent(preceding.externalMessageId).catch(() => undefined);
   if (!accepted || accepted.technicalQuestionStage !== "initial" || !accepted.autoReply || accepted.status !== "replied"
     || accepted.handoff || accepted.correlationId !== lastQuestion.correlationId
-    || accepted.externalMessageId !== lastQuestion.externalMessageId || accepted.response !== lastQuestion.content)
+    || accepted.externalMessageId !== lastQuestion.externalMessageId || accepted.response !== lastQuestion.content
+    || (pilotOnly ? accepted.technicalPilotStep !== shape.dimension : accepted.technicalPilotStep !== undefined))
     return { action: "hold" };
-  const report = technicalAnswer(input.text, shape);
+  const normalizedPilotAnswer = pilotOnly ? pilotAnchoredFinding(input.text, shape.dimension) : undefined;
+  if (normalizedPilotAnswer && (anchoredPilotAnswerContradictsBinary(input.text, normalizedPilotAnswer, shape.yesIsClear, shape.noIsClear)
+    || (normalizedPilotAnswer === "one" && currentAnswerAlreadyTriedClientControls(input.text)))) return { action: "hold" };
+  const report = normalizedPilotAnswer === "one" ? technicalAnswerTokens.oneDevice
+    : normalizedPilotAnswer === "many" ? technicalAnswerTokens.severalDevices
+      : normalizedPilotAnswer === "red" ? technicalAnswerTokens.redLight
+        : normalizedPilotAnswer === "not-red" ? technicalAnswerTokens.noRedLight
+          : technicalAnswer(input.text, shape);
   return report ? { action: "ask", anchorMessageId: lastQuestion.externalMessageId,
     nextDimension: shape.dimension === "devices" ? "light" : "devices", report } : { action: "hold" };
 }
@@ -185,8 +195,10 @@ export type TechnicalEmergencyOptions = {
   continuation?: { sentAt?: string; replyToMessageId?: string | null; claimAnchor: (anchorMessageId: string) => Promise<boolean> };
   replyKind?: "greeting";
   providerSentAt?: string;
+  pilot?: boolean;
+  pilotPlan?: PilotPlan;
   complaint?: CurrentTechnicalComplaint & { kind: "frustrated" };
-  reviewReason?: "guard_unverified_os_followup" | "guard_referred_technical_claim" | "guard_operator_paused" | "guard_current_complaint_needs_review";
+  reviewReason?: "guard_unverified_os_followup" | "guard_referred_technical_claim" | "guard_operator_paused" | "guard_current_complaint_needs_review" | "guard_pilot_review";
 };
 
 export async function processProtectedTechnicalTurn(
@@ -201,7 +213,11 @@ export async function processProtectedTechnicalTurn(
   const greeting = options.replyKind === "greeting";
   const anchored = !greeting && continuation?.action === "ask" ? continuation : undefined;
   const frustrated = !greeting && !continuation ? options.complaint : undefined;
-  const question = greeting ? publicGreeting(input.text) : continuation ? anchored?.report : frustrated?.report ?? publicTechnicalQuestion(input.text);
+  const pilotStep: ApprovedTechnicalStep | undefined = options.pilotPlan?.step ?? (options.pilot && anchored
+    ? anchored.report === technicalAnswerTokens.oneDevice ? "wifi-one-device" : anchored.nextDimension
+    : undefined);
+  const question = greeting ? publicGreeting(input.text) : continuation ? anchored?.report
+    : options.pilotPlan?.report ?? frustrated?.report ?? publicTechnicalQuestion(input.text);
   let daypart = !continuation && question ? (frustrated?.daypart ?? explicitSupportDaypart(input.text)) : undefined;
   const inferredDaypart = !continuation && question && !daypart && options.eligible && !options.humanHandoff
     && !options.privateFlowPending && !options.reviewReason ? freshSupportDaypart(options.providerSentAt) : undefined;
@@ -213,9 +229,11 @@ export async function processProtectedTechnicalTurn(
   const inScope = (value: string) => {
     if (greeting) return safeGreetingModelQuestion(value, input.text, daypart);
     const layout = technicalReplyLayout(value);
-    const shape = layout && technicalQuestionShape(layout.question);
-    return !!shape && layout.daypart === daypart && layout.empathetic === !!frustrated
-      && (!anchored || shape.dimension === anchored.nextDimension);
+    if (!layout || layout.daypart !== daypart || layout.empathetic !== !!frustrated) return false;
+    if (pilotStep === "wifi-one-device") return safePilotWifiStep(layout.question);
+    const shape = technicalQuestionShape(layout.question);
+    return !!shape && (!pilotStep || shape.dimension === pilotStep)
+      && (pilotStep || !anchored || shape.dimension === anchored.nextDimension);
   };
   const mayInvoke = !options.reviewReason && options.eligible && !options.humanHandoff && !options.privateFlowPending && !!question && !!options.answer && !!options.sender;
   // The inbound and WAMID claim commit together before any external call.
@@ -246,9 +264,11 @@ export async function processProtectedTechnicalTurn(
             question === RESTART_TRIED_REPORT
               ? "A pessoa já reiniciou os equipamentos e continua sem internet. Não peça que reinicie novamente. Vá direto a uma pergunta sobre outros aparelhos ou luz vermelha do roteador."
               : "",
-            anchored?.nextDimension === "devices" ? "Pergunte apenas se o problema acontece em outro aparelho."
-              : anchored?.nextDimension === "light" ? "Pergunte apenas se alguma luz do roteador está vermelha."
-                : "A pessoa já descreveu a necessidade. Vá direto à pergunta sobre outro aparelho ou luz vermelha do roteador, sem perguntar como pode ajudar.",
+            pilotStep ? "Piloto de suporte: use só o que a pessoa acabou de relatar. Não repita perguntas respondidas nem peça novo reinício. Seja cordial e direto. Não diga que resolveu, que mediu a rede ou que alguém recebeu um chamado." : "",
+            pilotStep === "wifi-one-device" ? "O relato está restrito a um aparelho. Pergunte somente se a pessoa pode desligar e ligar o Wi-Fi nesse aparelho, sem tocar no roteador nem pedir reinício; pode pedir que confirme se voltou, nunca diga que resolveu."
+              : (pilotStep ?? anchored?.nextDimension) === "devices" ? "Pergunte apenas se o problema acontece em outro aparelho."
+                : (pilotStep ?? anchored?.nextDimension) === "light" ? "Pergunte apenas se alguma luz do roteador está vermelha."
+                  : "A pessoa já descreveu a necessidade. Vá direto à pergunta sobre outro aparelho ou luz vermelha do roteador, sem perguntar como pode ajudar.",
           ].filter(Boolean).join(" "),
         "Escreva uma única pergunta breve em português. Não dê diagnóstico, não peça dados, não afirme estado do cliente, não prometa visita, não execute ações. Use state ongoing sem ação. Se não tiver pergunta apropriada, responda NAO_SEI.",
       ].join(" "),
@@ -265,6 +285,7 @@ export async function processProtectedTechnicalTurn(
     handoff: false, correlationId: input.correlationId, externalMessageId: delivery.messageId,
     // An older receipt may prove an accepted reply but not its provenance in this model turn.
     technicalQuestionStage: greeting || (delivery.text && delivery.text !== generated.text) ? undefined : anchored ? "followup" : "initial",
+    ...(pilotStep && (!delivery.text || delivery.text === generated.text) ? { technicalPilotStep: pilotStep } : {}),
   } satisfies ChannelResponse;
   await repository.saveMessages(options.channel, input.externalConversationId, [
     { role: "agent", content: sent.response, correlationId: input.correlationId, externalMessageId: delivery.messageId, sentBy: "ia" },

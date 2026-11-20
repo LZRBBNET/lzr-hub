@@ -1,4 +1,5 @@
 import { ambiguousTechnicalReference, explicitUnverifiedOrderFollowup, previousTechnicalAssertion, processProtectedTechnicalTurn, protectedTechnicalIntent, publicGreeting, publicTechnicalQuestion, safeTechnicalModelQuestion, technicalContinuity, type TechnicalEmergencyOptions, type TechnicalQuestionStage } from "./meta-technical-emergency.ts";
+import { choosePilotStep, extractCurrentTechnicalPilot, isPossiblePilotAnswer, type ApprovedTechnicalStep } from "./technical-conversation-pilot.ts";
 import { currentTechnicalComplaint } from "./current-support-tone.ts";
 import { supportRequest as supportRequestForOpening } from "../agent/troubleshooting-context.ts";
 import { servicePreferences } from "../agent/service-preferences.ts";
@@ -85,7 +86,7 @@ export interface ChannelMessageRow {
  * `externalMessageId` é o `wamid` da resposta quando o próprio canal a enviou
  * (rota da Meta): presente = já saiu, e quem chama não reenvia.
  */
-export interface ChannelResponse { response: string | null; autoReply: boolean; suggestion?: string; status: string; handoff: boolean; correlationId: string; externalMessageId?: string; technicalQuestionStage?: TechnicalQuestionStage }
+export interface ChannelResponse { response: string | null; autoReply: boolean; suggestion?: string; status: string; handoff: boolean; correlationId: string; externalMessageId?: string; technicalQuestionStage?: TechnicalQuestionStage; technicalPilotStep?: ApprovedTechnicalStep }
 
 /**
  * O resultado de tentar levar a resposta ao cliente. `unknown` = pode ter saído
@@ -339,6 +340,16 @@ export async function processChannelMessage(
   if (emergency && explicitUnverifiedOrderFollowup(input.text))
     return processProtectedTechnicalTurn(repository, input, { ...emergency, reviewReason: "guard_unverified_os_followup" });
   const complaint = emergency && currentTechnicalComplaint(input.text);
+  if (emergency?.pilot) {
+    const observation = extractCurrentTechnicalPilot(input.text);
+    if (observation) {
+      const pilotPlan = choosePilotStep(observation);
+      return processProtectedTechnicalTurn(repository, input, pilotPlan ? {
+        ...emergency, pilotPlan,
+        complaint: complaint ? { kind: "frustrated", report: pilotPlan.report } : undefined,
+      } : { ...emergency, reviewReason: emergency.reviewReason ?? "guard_pilot_review" });
+    }
+  }
   if (emergency && complaint) {
     return processProtectedTechnicalTurn(repository, input, complaint.kind === "review"
       ? { ...emergency, reviewReason: emergency.reviewReason ?? "guard_current_complaint_needs_review" }
@@ -351,9 +362,11 @@ export async function processChannelMessage(
   if (emergency && isProtectedInput && !emergency.continuation) return processProtectedTechnicalTurn(repository, input, emergency);
   const storedHistory = await repository.getHistory(CHANNEL_NAME, input.externalConversationId);
   if (emergency?.continuation) {
-    const anchored = await technicalContinuity(repository, storedHistory, input, emergency.continuation.sentAt, undefined, emergency.continuation.replyToMessageId);
+    const anchored = await technicalContinuity(repository, storedHistory, input, emergency.continuation.sentAt, undefined, emergency.continuation.replyToMessageId, emergency.pilot);
     if (anchored) return processProtectedTechnicalTurn(repository, input, emergency, anchored);
   }
+  if (emergency?.pilot && isPossiblePilotAnswer(input.text))
+    return processProtectedTechnicalTurn(repository, input, { ...emergency, reviewReason: emergency.reviewReason ?? "guard_pilot_review" });
   if (emergency && isProtectedInput) return processProtectedTechnicalTurn(repository, input, emergency);
   const lastReply = [...storedHistory].reverse().find(row => row.role === "agent");
   const now = Date.now();

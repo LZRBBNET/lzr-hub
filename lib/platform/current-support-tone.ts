@@ -32,6 +32,7 @@ const moodMarker = new RegExp(`\\b(?:${cues}|incompetente[s]?|idiota[s]?|desgrac
 const leadCue = new RegExp(`^(?:${cues})(?:\\b[ ,.!?:;–—-]+|$)`);
 const tailCue = new RegExp(`(?:[ ,.!?:;–—-]+(?:e )?)(?:${cues})$`);
 const dangerous = /\b(?:vou (?:te |vos |lhes )?(?:matar|agredir|bater|atirar|explodir|queimar|arrebentar|pegar)|vou (?:me matar|me machucar)|vou (?:na |ate a )?(?:loja|empresa) armado|(?:tenho|trouxe|peguei) uma arma|posso me matar)\b/;
+export function knownSupportThreat(text: string): boolean { return dangerous.test(normalize(text)); }
 const wordsOnly = /^[\p{L}\p{M} ,.!?:;–—-]+$/u;
 
 export type CurrentTechnicalComplaint =

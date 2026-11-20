@@ -21,6 +21,7 @@ import { fetchPixCode } from "@/lib/integrations/ixc/write-client";
 import { DbTicketRepository, ixcDiagnose, ixcInvoiceLookup, startTriage, type TicketRow } from "@/lib/platform/triage-service";
 import { DbIncidentsRepository } from "@/lib/platform/incidents-service";
 import { publicGreeting, publicTechnicalQuestion } from "@/lib/platform/meta-technical-emergency";
+import { extractCurrentTechnicalPilot, isPossiblePilotAnswer, technicalPilotEnabled, technicalPilotRoute } from "@/lib/platform/technical-conversation-pilot";
 import { currentTechnicalComplaint, currentTicketGates } from "@/lib/platform/current-support-tone";
 import { windowOpen } from "@/lib/platform/conversation-state-shared";
 import { isBusinessHours } from "@/lib/platform/triage-shared";
@@ -129,7 +130,12 @@ export async function POST(request: Request) {
   for (const message of messages) {
     const correlationId = randomUUID();
     const agentConfig = aiAgentConfig();
-    const protectedOptions = (auto: Awaited<ReturnType<typeof metaAutoReplyOptions>>, ticket?: TicketRow) => ({
+    const pilotScope = {
+      phone: message.phone, canonicalSender: message.canonicalSender, messageId: message.messageId,
+      actualPhoneNumberId: message.phoneNumberId, expectedPhoneNumberId: sendConfig?.phoneNumberId,
+    };
+    const pilot = message.kind === "text" && technicalPilotEnabled(process.env, pilotScope);
+    const protectedOptions = (auto: Awaited<ReturnType<typeof metaAutoReplyOptions>>, ticket?: TicketRow, usePilot = false) => ({
       channel: CHANNEL_NAME,
       ...currentTicketGates(ticket),
       reviewReason: process.env.FEATURE_META_TECHNICAL_REPLY_PAUSED === "true" ? "guard_operator_paused" as const : undefined,
@@ -137,19 +143,32 @@ export async function POST(request: Request) {
         && Date.parse(message.sentAt) <= Date.now() && windowOpen(message.sentAt, Date.now())
         && message.phoneNumberId === sendConfig.phoneNumberId && message.canonicalSender === true
         && /^wamid\.[A-Za-z0-9_=+\/-]{1,240}$/.test(message.messageId),
-      answer: agentConfig ? (input: Parameters<typeof askDoubtBot>[1]) => askDoubtBot({
-        ...agentConfig, fetcher: (url, init) => fetch(url, { ...init, redirect: "error" }),
-      }, input, []) : undefined,
-      sender: auto.send,
+      answer: agentConfig ? (input: Parameters<typeof askDoubtBot>[1]) =>
+        usePilot && !technicalPilotEnabled(process.env, pilotScope)
+          ? Promise.resolve({ kind: "none" as const })
+          : askDoubtBot({
+            ...agentConfig, fetcher: (url, init) => fetch(url, { ...init, redirect: "error" }),
+          }, input, []) : undefined,
+      sender: usePilot && auto.send ? (input: Parameters<NonNullable<typeof auto.send>>[0]) => (
+        technicalPilotEnabled(process.env, pilotScope)
+          ? auto.send!(input)
+          : Promise.resolve({ sent: false as const, outcome: "blocked" as const, reason: "pilot_closed" })
+      ) : auto.send,
       reserveInbound: (input: Parameters<typeof reserveTechnicalInbound>[2]) => reserveTechnicalInbound(db, CHANNEL_NAME, input),
       providerSentAt: message.sentAt,
-      continuation: process.env.FEATURE_META_TECHNICAL_CONTINUITY === "true" ? {
+      ...(usePilot ? { pilot: true } : {}),
+      continuation: (usePilot || process.env.FEATURE_META_TECHNICAL_CONTINUITY === "true") ? {
         sentAt: message.sentAt,
         replyToMessageId: message.replyToMessageId,
         claimAnchor: (anchor: string) => claimTechnicalFollowup(db, CHANNEL_NAME, message.phone, anchor),
       } : undefined,
     });
-    if (message.kind === "text" && (publicGreeting(message.text) || currentTechnicalComplaint(message.text) || publicTechnicalQuestion(message.text))) {
+    const baselineProtected = message.kind === "text" && Boolean(
+      publicGreeting(message.text) || currentTechnicalComplaint(message.text) || publicTechnicalQuestion(message.text),
+    );
+    const pilotCandidate = pilot && !isOptIn(message.text) && !isOptOut(message.text)
+      && Boolean(extractCurrentTechnicalPilot(message.text) || isPossiblePilotAnswer(message.text));
+    if (baselineProtected || pilotCandidate) {
       // Handle bounded current openings/reports before inherited intent and any
       // IXC lookup. Actual conversation ownership is checked regardless of ticket age.
       if (!message.canonicalSender || !message.phoneNumberId || message.phoneNumberId !== process.env.META_PHONE_NUMBER_ID?.trim()
@@ -159,18 +178,23 @@ export async function POST(request: Request) {
       }
       const states = new DbConversationStateRepository(db);
       const [ticket, owner] = await Promise.all([tickets.findOpen(CHANNEL_NAME, message.phone), states.get(CHANNEL_NAME, message.phone)]);
-      const afterResolution = owner?.status !== "resolved"
-        || Date.parse(message.sentAt ?? "") > Date.parse(owner.resolvedAt ?? "");
-      const auto = await metaAutoReplyOptions({
-        enabled: !!agentConfig && afterResolution, states, messages: channel, claims: new DbReplyRepository(db),
-        delivery: new DbConversationDelivery(db), config: sendConfig, channel: CHANNEL_NAME,
-        customerMessageAt: message.sentAt, conversational: true,
-      }, message.phone);
-      results.push(await processChannelMessage(channel,
-        { externalConversationId: message.phone, text: message.text, idempotencyKey: message.messageId, correlationId },
-        undefined, { autoReply: false, technicalEmergency: protectedOptions(auto, ticket) },
-      ));
-      continue;
+      const lane = technicalPilotRoute({ baselineProtected, pilotCandidate, ...currentTicketGates(ticket) });
+      if (lane !== "legacy") {
+        const afterResolution = owner?.status !== "resolved"
+          || Date.parse(message.sentAt ?? "") > Date.parse(owner.resolvedAt ?? "");
+        const auto = await metaAutoReplyOptions({
+          enabled: !!agentConfig && afterResolution, states, messages: channel, claims: new DbReplyRepository(db),
+          delivery: new DbConversationDelivery(db), config: sendConfig, channel: CHANNEL_NAME,
+          customerMessageAt: message.sentAt, conversational: true,
+        }, message.phone);
+        results.push(await processChannelMessage(channel,
+          { externalConversationId: message.phone, text: message.text, idempotencyKey: message.messageId, correlationId },
+          undefined, { autoReply: false, technicalEmergency: protectedOptions(auto, ticket, lane === "pilot") },
+        ));
+        continue;
+      }
+      // Pilot-only short/ambiguous input must not divert an active private
+      // answer or handoff. The original triage lane runs with pilot disabled.
     }
     const lookupCustomer = async (phone: string) => {
       const runtime = getIxcRuntime();

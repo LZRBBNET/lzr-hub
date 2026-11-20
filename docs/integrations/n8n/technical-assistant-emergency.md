@@ -118,3 +118,30 @@ não bloqueiam um cumprimento ou relato atual. Se uma etapa privada
 pendente tiver hora inválida e não houver prova de expiração, a IA se
 abstém. A posse real continua sendo conferida no envio
 independentemente da idade do atendimento da triagem.
+
+## Piloto controlado de conversa técnica (desligado por padrão)
+
+Para ativação explicitamente autorizada e por tempo limitado:
+`FEATURE_META_CONVERSATION_PILOT=true`;
+`META_CONVERSATION_PILOT_SENDER` contém um único telefone canônico completo
+(somente dígitos, exatamente como no webhook assinado);
+`META_CONVERSATION_PILOT_UNTIL` contém uma data/hora UTC ISO válida até
+24 horas no futuro. Falta ou erro no escopo desliga o piloto, sem alterar
+o comportamento anterior. A habilitação é conferida de novo antes do
+modelo e antes de começar a entrega. Um envio já iniciado pode terminar. Para
+parar, remover o `true` e verificar o deploy; o fluxo anterior não continua
+uma pergunta registrada pelo piloto. Um piloto não tira de um fluxo privado
+em de um encaminhamento ativo a resposta que já passaria pela triagem.
+
+No piloto, relatórios técnicos podem usar palavras novas ao redor de
+sintomas/reinício/aparelhos/luz reconhecidos. O n8n recebe só observações
+padronizadas do relato atual, uma tarefa limitada e histórico, fatos
+externos e fontes vazios. O modelo formula uma pergunta sobre aparelhos ou
+luz do roteador, ou sugere conferir o Wi-Fi em apenas um aparelho se essa
+etapa não foi tentada e o cliente não indicou cabo. Uma resposta curta
+contextualizada exige prova da
+pergunta anterior (WAMID exato da citação ou recibo de entrega/leitura),
+escopo, idade e uma reserva no banco. O segundo passo não repete a
+pergunta. Não há diagnóstico confirmado, encerramento automático,
+protocolo, IXC, O.S., Pix, senha, nem promessa de atendimento humano.
+Ameaças, casos mistos/contraditórios e ações não aprovadas ficam fora.
