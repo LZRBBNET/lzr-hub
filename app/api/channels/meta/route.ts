@@ -128,7 +128,7 @@ export async function POST(request: Request) {
     const turn = await new DbConversationFence(db).capture(CHANNEL_NAME,message.phone,message.messageId,message.sentAt);
     const tickets = new DbTicketRepository(db,turn);
     if (message.kind === "text" && message.text.length <= MAX_MESSAGE_LENGTH && requestsHuman(message.text,message.interactiveReplyId)) {
-      results.push(await explicitHumanHandoff({channel,tickets,
+      results.push(await explicitHumanHandoff({channel,tickets,states:new DbConversationStateRepository(db),confirmationEnabled:autoReplyEnabled(),
         send:metaAutoReplySender({claims:new DbReplyRepository(db),delivery:new DbConversationDelivery(db),turn,config:sendConfig,channel:CHANNEL_NAME,customerMessageAt:message.sentAt})},
         {conversationId:message.phone,text:message.text,inboundMessageId:message.messageId,correlationId}));
       return;

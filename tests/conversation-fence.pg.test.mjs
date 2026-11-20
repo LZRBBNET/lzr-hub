@@ -164,12 +164,27 @@ test("isolated PostgreSQL: generation, handoff confirmation and dispatch boundar
      customerMessageAt:expired?"2020-01-01T00:00:00Z":new Date().toISOString(),
      config:{accessToken:"local-only",phoneNumberId:"local",graphVersion:"v26.0",fetcher:async()=>{sends++;assert.equal((await tickets.findOpen(CHANNEL_NAME,id)).stage,"handoff");return {status:200,json:async()=>({messages:[{id:"local-explicit-accepted"}]})};}}});
     const input={conversationId:id,inboundMessageId:inbound,text:"Quero falar com um atendente",correlationId:`local-${run}-${n}`};
-    const result=await explicitHumanHandoff({tickets,channel,send},input);
+    const result=await explicitHumanHandoff({tickets,channel,states:new DbConversationStateRepository(db),confirmationEnabled:true,send},input);
     assert.equal(result.handoff,true);assert.equal(result.autoReply,!expired);
     const ticket=await tickets.findOpen(CHANNEL_NAME,id);assert.equal(ticket.queue,"atendimento");assert.equal(ticket.ixcCustomerId,null);assert.ok(ticket.protocol);
-    assert.deepEqual(await explicitHumanHandoff({tickets,channel,send},input),result);assert.equal(sends,expired?0:1);
+    assert.deepEqual(await explicitHumanHandoff({tickets,channel,states:new DbConversationStateRepository(db),confirmationEnabled:true,send},input),result);assert.equal(sends,expired?0:1);
     assert.equal((await channel.getHistory(CHANNEL_NAME,id)).filter(x=>x.role==="customer").length,1);
    }
+  });
+  await t.test("existing assigned human without handoff accepts inbound and retry without dispatch",async()=>{
+   const id=`000${run.slice(-7)}${String(++n).padStart(2,"0")}`,inbound=`assigned-${run}-${n}`;
+   const plainTickets=new DbTicketRepository(db);
+   const {ticket}=await openOrContinueTicket(plainTickets,{channel:CHANNEL_NAME,conversationId:id});
+   await plainTickets.update(ticket.id,{queue:"financeiro"});
+   await new DbConversationStateRepository(db).save(CHANNEL_NAME,id,{status:"open",assigneeId:"local-human",assigneeName:"Local",assignedAt:new Date().toISOString(),resolvedAt:null,resolvedBy:null});
+   const turn=await fence.capture(CHANNEL_NAME,id,inbound,new Date().toISOString());
+   const tickets=new DbTicketRepository(db,turn),channel=new D1ChannelRepository(db);
+   const deps={tickets,channel,states:new DbConversationStateRepository(db),confirmationEnabled:true,send:async()=>{throw Error("must not dispatch");}};
+   const input={conversationId:id,inboundMessageId:inbound,text:"quero atendente",correlationId:`local-${run}-${n}`};
+   const result=await explicitHumanHandoff(deps,input);assert.equal(result.autoReply,false);assert.equal(result.handoff,true);
+   assert.deepEqual(await explicitHumanHandoff(deps,input),result);
+   const saved=await tickets.findOpen(CHANNEL_NAME,id);assert.equal(saved.stage,"new");assert.equal(saved.queue,"financeiro");assert.equal(saved.protocol,ticket.protocol);
+   assert.equal((await channel.getHistory(CHANNEL_NAME,id)).filter(x=>x.role==="customer").length,1);
   });
   await t.test("concurrent dispatch authorization versus handoff has only one winning order",async()=>{
    for(let i=0;i<8;i++){
