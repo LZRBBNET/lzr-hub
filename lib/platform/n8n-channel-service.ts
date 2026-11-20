@@ -2,7 +2,7 @@ import { supportRequest as supportRequestForOpening } from "../agent/troubleshoo
 import { servicePreferences } from "../agent/service-preferences.ts";
 import { hasPriorOutput, serviceOpening } from "./service-opening.ts";
 import { resolveSupportReply } from "./support-reply.ts";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { and, asc, eq, sql } from "drizzle-orm";
 import { auditEvents, channelIdempotencyKeys, channelMessages } from "../../db/schema.ts";
 import { runAgentPipeline } from "../agent/pipeline.ts";
@@ -95,6 +95,8 @@ export type AutoReplySender = (input: { conversationId: string; text: string; in
 
 export interface ChannelOptions {
   autoReply: boolean;
+  /** Durable ticket state: no model, self-service, OS or outbound call while awaiting a human. */
+  handoffRecorded?: boolean;
   /** Injected clock for deterministic local courtesy; no session reset. */
   now?: number;
   /** Respostas aprovadas editadas por quem administra; o que falta cai no padrão do código. */
@@ -122,9 +124,8 @@ export interface ChannelOptions {
   doubtBot?: {
     answer(input: DoubtBotInput): Promise<DoubtBotResult>; send: AutoReplySender; agent?: boolean;
     /**
-     * Modo autônomo, depois de a IA ter passado ao atendente neste atendimento: ela continua
-     * ajudando (base, autoatendimentos, cortesia), mas tudo que diz mantém a conversa na fila
-     * e a resposta aprovada ("um atendente vai…") não se repete — vira sugestão.
+     * Encaminhamento registrado neste atendimento: a IA fica suspensa até devolução explícita.
+     * Mantido para compatibilidade; a rota também passa handoffRecorded sem depender do robô.
      */
     handedOff?: boolean;
   };
@@ -194,8 +195,6 @@ export interface TriageHooks {
   footer(context?: { clarifying?: boolean; handoff?: boolean; request?: string; serviceOrder?: { id: string; existing?: boolean } }): string | undefined;
   /** Modo autônomo: o assunto do atendimento, se o cliente é identificado e o que o sistema sabe (diagnóstico, pedido já feito). */
   context?(): { topic: string | null; identified: boolean; facts: string[] };
-  /** Modo autônomo: grava o pedido que a IA deixou pronto para a equipe. */
-  registerRequest?(summary: string, intent: string): Promise<void>;
   /**
    * Modo autônomo: abre a OS no IXC para o pedido técnico pronto. Devolve o número só quando o
    * IXC criou (ou já havia uma aberta); qualquer outro desfecho deixa a ficha para a equipe.
@@ -203,7 +202,7 @@ export interface TriageHooks {
   openServiceOrder?(intent: string): Promise<{ id: string; existing?: boolean } | undefined>;
   /** Modo autônomo: o modelo pediu o desbloqueio de confiança; a triagem confere tudo e devolve o texto do desfecho. */
   trustUnlock?(promisedDate?: string): Promise<{ status: string; text: string } | undefined>;
-  record(entry: { intent: string; source: string; confidence: number; clarifying: boolean; delivered: boolean; protocolIncluded: boolean; handoff?: boolean }): Promise<void>;
+  record(entry: { intent: string; source: string; confidence: number; clarifying: boolean; delivered: boolean; protocolIncluded: boolean; handoff?: boolean; deliveryOnly?: boolean; requestSummary?: string }): Promise<void>;
 }
 
 /**
@@ -319,6 +318,33 @@ export interface ChannelMessageInput { externalConversationId: string; text: str
  */
 export type LeadCapture = (input: { contactKey: string; text: string }) => Promise<unknown>;
 
+/** Persist queue ownership before promising a human or starting an OS operation.
+ * Failure aborts before delivery; webhook retry may recover, but never claims a recorded handoff.
+ */
+async function persistHumanHandoff(
+  repository: ChannelRepository, input: ChannelMessageInput, options: ChannelOptions,
+  classified: Classification, requested: boolean, requestSummary?: string,
+): Promise<boolean> {
+  if (!requested) return false;
+  try {
+    if (!options.triage) throw new Error("TRIAGE_UNAVAILABLE");
+    await repository.saveMessages(CHANNEL_NAME, input.externalConversationId, [
+      { role: "customer", content: input.text, correlationId: input.correlationId, externalMessageId: input.idempotencyKey },
+    ]);
+    await options.triage.record({ intent: classified.intent, source: classified.source, confidence: classified.confidence,
+      clarifying: false, delivered: false, protocolIncluded: false, handoff: true, requestSummary });
+  } catch {
+    await repository.audit({ correlationId: input.correlationId, entity: `conversation:${input.externalConversationId}`,
+      action: "whatsapp.handoff.failed", result: "failed",
+      reason: "Encaminhamento humano não confirmado no atendimento. Nenhuma confirmação enviada nem OS iniciada neste caminho." }).catch(() => undefined);
+    throw new Error("HUMAN_HANDOFF_NOT_RECORDED");
+  }
+  await repository.audit({ correlationId: input.correlationId, entity: `conversation:${input.externalConversationId}`,
+    action: "whatsapp.handoff.recorded", result: "recorded",
+    reason: "Encaminhamento registrado na fila; IA suspensa. Não comprova aceite por técnico nem entrega da confirmação ao cliente." });
+  return true;
+}
+
 export async function processChannelMessage(
   repository: ChannelRepository,
   input: ChannelMessageInput,
@@ -328,6 +354,19 @@ export async function processChannelMessage(
 ): Promise<ChannelResponse> {
   const existing = await repository.findIdempotent(input.idempotencyKey);
   if (existing) return existing;
+
+  // Before lead capture, classifier, courtesy, financial flow, n8n or any OS attempt.
+  if (options.handoffRecorded || options.doubtBot?.handedOff) {
+    await repository.saveMessages(CHANNEL_NAME, input.externalConversationId, [
+      { role: "customer", content: input.text, correlationId: input.correlationId, externalMessageId: input.idempotencyKey },
+    ]);
+    const waiting: ChannelResponse = { response: null, autoReply: false, status: "awaiting_human", handoff: true, correlationId: input.correlationId };
+    await repository.audit({ correlationId: input.correlationId, entity: `conversation:${input.externalConversationId}`,
+      action: "whatsapp.handoff.waiting", result: "recorded", reason: "Encaminhamento persistido confirmado nesta entrada/retry; histórico preservado. IA e envios automáticos suspensos. Não comprova entrega nem recupera o instante da decisão original." });
+    // Complete idempotency only after recovery evidence exists; retry never sends or opens OS.
+    await repository.saveIdempotency(input.idempotencyKey, CHANNEL_NAME, input.externalConversationId, waiting);
+    return waiting;
+  }
 
   // Antes de qualquer coisa, e sem esperar: se for gente nova, o funil registra.
   // O `catch` é a regra — um CRM fora do ar não pode impedir o atendimento.
@@ -474,6 +513,8 @@ ${footer}` : opened;
   // Meta: "um atendente retorna... Antes de encerrar, avalie" se contradiz.
   const askCsat = options.autoReply && !options.send && shouldAskCsat(result.finalStatus, result.handoff.required);
   const reply = askCsat ? `${approved}\n\n${CSAT_QUESTION}` : approved;
+  const recordedHandoff = await persistHumanHandoff(repository, input, options, classified,
+    !!(agent ? handoff : options.autoReply && result.handoff.required));
   const delivery = await deliver(pipelineOptions, input, reply);
   // Não saiu: fica a resposta aprovada, sem a pergunta de avaliação — igual ao
   // modo observação. Saiu: fica o que o cliente recebeu.
@@ -484,11 +525,11 @@ ${footer}` : opened;
       : delivery.messageId && CLAIMS_RESOLUTION.has(result.finalStatus) ? AUTO_REPLIED_STATUS
       : result.finalStatus,
     // No modo autônomo o "pede humano" da tela é a decisão da IA, não o "não entendi" do pipeline.
-    intent: result.intent, handoff: agent ? handoff : result.handoff.required, handoffReason: agent && !handoff ? null : result.handoff.reason,
+    intent: result.intent, handoff: recordedHandoff, handoffReason: agent && !handoff ? null : result.handoff.reason,
     classified, label: handoff ? "Resposta (passada ao atendente)" : "Resposta",
     sender: agentSender(options, handoff),
   });
-  await options.triage?.record({ intent: result.intent, source: classified.source, confidence: classified.confidence, clarifying: false, delivered: delivery.sent, protocolIncluded: !!footer, handoff });
+  await options.triage?.record({ intent: result.intent, source: classified.source, confidence: classified.confidence, clarifying: false, delivered: delivery.sent, protocolIncluded: !!footer, handoff: false, deliveryOnly: recordedHandoff });
   return response;
 }
 
@@ -523,13 +564,14 @@ async function doubtBotTurn(
   // Pedido pronto (modo autônomo): a ficha vai para o atendimento antes de a confirmação sair — o
   // "ficou registrado" do rodapé só é dito depois de gravado. Daí a conversa fica na fila da equipe.
   const request = !!bot.agent && result.state === "request_complete";
-  if (request) await options.triage?.registerRequest?.(result.summary ?? result.text, classified.intent).catch(() => undefined);
-  // Pedido técnico pronto: a OS sai no IXC antes da confirmação — o "abri a OS nº X" só é dito com o número na mão.
-  const serviceOrder = request ? await options.triage?.openServiceOrder?.(classified.intent).catch(() => undefined) : undefined;
-  // A resposta pode prometer um atendente mesmo sem pedido completo: isso também deixa a conversa na fila.
   const handoff = !!bot.agent && (request || promisesHuman(result.text));
+  const requestSummary = result.summary ?? result.text;
+  const recordedHandoff = await persistHumanHandoff(repository, input, options, classified, handoff,
+    request ? requestSummary : undefined);
+  // Only after the contextual request and human fallback are durably recorded.
+  const serviceOrder = request && recordedHandoff ? await options.triage?.openServiceOrder?.(classified.intent).catch(() => undefined) : undefined;
   // Pedido de desbloqueio: o desfecho real (liberou, negou pela regra, falta o CPF) vem do sistema, não do modelo.
-  const unlock = bot.agent && result.action === "trust_unlock" ? await options.triage?.trustUnlock?.(result.promisedDate).catch(() => undefined) : undefined;
+  const unlock = bot.agent && !recordedHandoff && result.action === "trust_unlock" ? await options.triage?.trustUnlock?.(result.promisedDate).catch(() => undefined) : undefined;
   if (unlock) result = { ...result, text: `${result.text}\n\n${unlock.text}` };
   const footer = options.triage?.footer(request ? { request: classified.intent, serviceOrder } : bot.agent ? { handoff } : undefined);
   const text = footer ? `${result.text}
@@ -542,11 +584,11 @@ ${footer}` : result.text;
     content: delivery.sent ? delivery.text ?? text : text, delivery,
     // Primeira resposta, não atendimento: não conta como resolvido e a conversa continua na fila.
     status: delivery.sent ? AUTO_REPLIED_STATUS : SUGGESTED_STATUS,
-    intent: classified.intent, handoff: false, handoffReason: null, classified, label,
+    intent: classified.intent, handoff: recordedHandoff, handoffReason: recordedHandoff ? "human_followup" : null, classified, label,
     // No modo autônomo a resposta do robô atendeu (a conversa sai da fila), salvo se ela passou ao atendente.
     sender: agentSender(options, handoff),
   });
-  await options.triage?.record({ intent: classified.intent, source: classified.source, confidence: classified.confidence, clarifying: false, delivered: delivery.sent, protocolIncluded: !!footer, handoff });
+  await options.triage?.record({ intent: classified.intent, source: classified.source, confidence: classified.confidence, clarifying: false, delivered: delivery.sent, protocolIncluded: !!footer, handoff: false, deliveryOnly: recordedHandoff });
   return response;
 }
 
@@ -561,6 +603,8 @@ async function triageTurn(
 ): Promise<ChannelResponse> {
   const agent = agentMode(options);
   const handoff = !turn.clarifying && (turn.handoff ?? promisesHuman(turn.text));
+  const recordedHandoff = await persistHumanHandoff(repository, input, options, classified,
+    handoff && (agent || options.autoReply));
   // O aviso de horário só deixa de sair, no modo autônomo, quando a IA resolveu: lá ele se repetiria a cada fala.
   const footer = options.triage?.footer({ clarifying: !!turn.clarifying, handoff: agent ? handoff : undefined });
   const text = footer ? `${turn.text}\n\n${footer}` : turn.text;
@@ -569,10 +613,10 @@ async function triageTurn(
   const shown = turn.interactive ? `${text}\n\n${listAsText(turn.interactive)}` : text;
   const response = await recordTurn(repository, input, metrics, {
     content: delivery.sent ? delivery.text ?? shown : shown, delivery, status: delivery.sent ? turn.status : SUGGESTED_STATUS,
-    intent: turn.intent, handoff: false, handoffReason: null, classified, label: turn.label,
+    intent: turn.intent, handoff: recordedHandoff, handoffReason: recordedHandoff ? "human_followup" : null, classified, label: turn.label,
     sender: agentSender(options, handoff),
   });
-  await options.triage?.record({ intent: turn.intent, source: classified.source, confidence: classified.confidence, clarifying: !!turn.clarifying, delivered: delivery.sent, protocolIncluded: !!footer, handoff: agent && handoff });
+  await options.triage?.record({ intent: turn.intent, source: classified.source, confidence: classified.confidence, clarifying: !!turn.clarifying, delivered: delivery.sent, protocolIncluded: !!footer, handoff: false, deliveryOnly: recordedHandoff });
   await turn.after?.(delivery.sent).catch(() => undefined);
   return response;
 }
@@ -712,11 +756,13 @@ export class D1ChannelRepository implements ChannelRepository {
     // devolvia a sugestão antes da fala do cliente que ela responde.
     const base = Date.now();
     await this.db.insert(channelMessages).values(messages.map((message, index) => ({
-      id: randomUUID(), channel, externalConversationId, role: message.role, content: message.content,
+      id: message.role === "customer" && message.externalMessageId
+        ? `inbound:${createHash("sha256").update(JSON.stringify([channel, externalConversationId, message.externalMessageId])).digest("hex")}`
+        : randomUUID(), channel, externalConversationId, role: message.role, content: message.content,
       correlationId: message.correlationId ?? null,
       sentBy: message.sentBy ?? null, externalMessageId: message.externalMessageId ?? null,
       createdAt: new Date(base + index).toISOString(),
-    })));
+    }))).onConflictDoNothing({ target: channelMessages.id });
   }
   async saveIdempotency(idempotencyKey: string, channel: string, externalConversationId: string, response: ChannelResponse): Promise<void> {
     await this.db.insert(channelIdempotencyKeys).values({
@@ -745,7 +791,10 @@ export class MemoryChannelRepository implements ChannelRepository {
   async saveMessages(channel: string, externalConversationId: string, messages: ChannelMessageRow[]) {
     // Carimbo como o banco real faz: o prazo da memória do classificador depende dele.
     const now = new Date().toISOString();
-    for (const message of messages) this.messageStore.push({ ...message, createdAt: now, channel, externalConversationId });
+    for (const message of messages) {
+      if (message.role === "customer" && message.externalMessageId && this.messageStore.some(m => m.channel === channel && m.externalConversationId === externalConversationId && m.role === "customer" && m.externalMessageId === message.externalMessageId)) continue;
+      this.messageStore.push({ ...message, createdAt: now, channel, externalConversationId });
+    }
   }
   async saveIdempotency(idempotencyKey: string, _channel: string, _externalConversationId: string, response: ChannelResponse) {
     this.idempotencyStore.set(idempotencyKey, response);

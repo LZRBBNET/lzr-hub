@@ -22,9 +22,9 @@ export async function POST(request: Request) {
   if (!guard.allowed) return NextResponse.json({ error: guard.error }, { status: guard.status });
   if (!guard.user) return NextResponse.json({ error: "Sessão obrigatória" }, { status: 401 });
   const body = await request.json().catch(() => null);
-  if (!body || !validId(body.conversationId) || typeof body.reservationId !== "string" || typeof body.outcome !== "string" || typeof body.evidence !== "string" || (body.messageId !== undefined && typeof body.messageId !== "string")) return NextResponse.json({ error: "Solicitação inválida" }, { status: 400 });
+  if (!body || !validId(body.conversationId) || typeof body.reservationId !== "string" || typeof body.outcome !== "string" || typeof body.evidence !== "string" || (body.messageId !== undefined && typeof body.messageId !== "string") || (body.workerStopEvidence !== undefined && typeof body.workerStopEvidence !== "string")) return NextResponse.json({ error: "Solicitação inválida" }, { status: 400 });
   try {
-    const result = await new DbDeliveryReconciliation(await getDb()).reconcile({ channel: CHANNEL_NAME, conversationId: body.conversationId, reservationId: body.reservationId, outcome: body.outcome, evidence: body.evidence, messageId: body.messageId, actor: guard.user, sessionToken: readSessionToken(request) ?? "" });
+    const result = await new DbDeliveryReconciliation(await getDb()).reconcile({ channel: CHANNEL_NAME, conversationId: body.conversationId, reservationId: body.reservationId, outcome: body.outcome, evidence: body.evidence, messageId: body.messageId, workerStopEvidence: body.workerStopEvidence, actor: guard.user, sessionToken: readSessionToken(request) ?? "" });
     return NextResponse.json({ ok: true, ...result }, { headers: { "Cache-Control": "no-store" } });
   } catch (error) {
     if (error instanceof ReconciliationError) return NextResponse.json({ error: error.message }, { status: error.status });

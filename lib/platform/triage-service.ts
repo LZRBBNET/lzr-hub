@@ -1,7 +1,8 @@
+import { lockDelivery } from "./conversation-delivery-lock.ts";
+import { DbConversationFence, validTurn, type TurnFence } from "./conversation-fence.ts";
 import { randomUUID } from "node:crypto";
-import { and, desc, eq, inArray } from "drizzle-orm";
+import { and, desc, eq, inArray, ne, sql } from "drizzle-orm";
 import { supportTickets } from "../../db/schema.ts";
-import { REPLY_WINDOW_MS } from "./conversation-state-shared.ts";
 import { diagnoseConnection, type ConnectionDiagnosis, type DiagnosisInput } from "./connection-diagnosis-shared.ts";
 import type { IncidentsRepository } from "./incidents-service.ts";
 import type { TriageHooks, TriageTurn } from "./n8n-channel-service.ts";
@@ -49,25 +50,22 @@ export interface TicketRepository {
   /** `undefined` = já havia um aberto (duas mensagens chegaram juntas). */
   create(row: Omit<TicketRow, "protocol">): Promise<{ seq: number } | undefined>;
   update(id: string, patch: TicketPatch): Promise<void>;
+  updateTriage(id: string, patch: TicketPatch): Promise<boolean>;
+  resumeForAi(channel: string, conversationId: string): Promise<boolean>;
 }
 
 const iso = (at: number) => new Date(at).toISOString();
 
 /**
- * O atendimento em curso, ou um novo. Aberto há mais de 24 horas sem o cliente
- * falar é fechado por inatividade: a janela da Meta já fechou, ninguém mais
- * responderia a ele, e a fala nova é outro contato — com outro protocolo.
+ * O atendimento em curso permanece aberto até resolução explícita. A janela
+ * de envio não é prazo de resolução: novo inbound preserva protocolo e contexto.
  */
 export async function openOrContinueTicket(
   repository: TicketRepository,
   input: { channel: string; conversationId: string; now?: number },
 ): Promise<{ ticket: TicketRow; created: boolean }> {
   const at = input.now ?? Date.now();
-  let open = await repository.findOpen(input.channel, input.conversationId);
-  if (open && at - Date.parse(open.lastCustomerAt) > REPLY_WINDOW_MS) {
-    await repository.update(open.id, { status: "closed", closedAt: iso(at), closedReason: "inactivity" });
-    open = undefined;
-  }
+  const open = await repository.findOpen(input.channel, input.conversationId);
   if (open) {
     await repository.update(open.id, { lastCustomerAt: iso(at) });
     return { ticket: { ...open, lastCustomerAt: iso(at) }, created: false };
@@ -97,9 +95,8 @@ export async function openOrContinueTicket(
  * "Devolver à IA" depois de a IA ter passado para o atendente: o atendimento volta
  * a ser dela. Sem isso, a conversa devolvida continuaria calada até fechar.
  */
-export async function resumeTicketForAi(repository: TicketRepository, channel: string, conversationId: string): Promise<void> {
-  const open = await repository.findOpen(channel, conversationId);
-  if (open?.stage === "handoff") await repository.update(open.id, { stage: "routed" });
+export async function resumeTicketForAi(repository: TicketRepository, channel: string, conversationId: string): Promise<boolean> {
+  return repository.resumeForAi(channel, conversationId);
 }
 
 export async function closeOpenTicket(repository: TicketRepository, channel: string, conversationId: string, now = Date.now()): Promise<void> {
@@ -163,11 +160,16 @@ export function knownCustomer(ticket: TicketRow): CustomerLookup {
 export async function recordTriage(
   repository: TicketRepository,
   ticket: TicketRow,
-  entry: { intent: string; source: string; confidence: number; clarifying: boolean; delivered: boolean; protocolIncluded: boolean; handoff?: boolean; now?: number },
+  entry: { intent: string; source: string; confidence: number; clarifying: boolean; delivered: boolean; protocolIncluded: boolean; handoff?: boolean; deliveryOnly?: boolean; requestSummary?: string; now?: number },
 ): Promise<void> {
   const patch: TicketPatch = {};
+  if (entry.requestSummary !== undefined) {
+    if (!entry.handoff || entry.deliveryOnly) throw Error("REQUEST_REQUIRES_HANDOFF");
+    patch.intake = { intent: entry.intent, summary: sanitizeHandoffText(entry.requestSummary).slice(0,1500), at: iso(entry.now ?? Date.now()) };
+    patch.queue = queueForIntent(entry.intent);
+  }
   const confident = entry.source === "menu" || (entry.confidence >= CLARIFY_BELOW && entry.intent !== "general_information");
-  if (confident || !ticket.intent) {
+  if (!entry.deliveryOnly && (confident || !ticket.intent)) {
     patch.intent = entry.intent; patch.intentSource = entry.source; patch.intentConfidence = Math.round(entry.confidence * 100);
     patch.queue = queueForIntent(entry.intent);
   }
@@ -177,15 +179,22 @@ export async function recordTriage(
   // pergunta (modo observação) deixa a etapa como está: se a resposta automática
   // for ligada no meio, a pergunta ainda pode ser feita.
   let stage: TicketStage | undefined;
-  // A IA disse ao cliente que um atendente continua: daqui em diante ela se cala
-  // (modo autônomo). Só vale se a frase chegou — sugestão não passou nada a ninguém.
-  if (entry.handoff && entry.delivered) stage = "handoff";
+  // Encaminhamento é estado durável da fila, independente da confirmação pela Meta.
+  // O canal registra a decisão antes de tentar informar o cliente.
+  if (entry.handoff) stage = "handoff";
   else if (ticket.stage === "handoff") stage = undefined;
   else if (entry.clarifying) stage = entry.delivered ? "clarifying" : undefined;
   else if (confident || ticket.stage === "clarifying") stage = "routed";
-  if (stage) patch.stage = stage;
+  if (stage && !entry.deliveryOnly) patch.stage = stage;
   if (entry.delivered && entry.protocolIncluded && !ticket.protocolSentAt) patch.protocolSentAt = iso(entry.now ?? Date.now());
-  if (Object.keys(patch).length > 0) await repository.update(ticket.id, patch);
+  if (Object.keys(patch).length > 0) {
+    // A post-send receipt never changes routing, even if a human released meanwhile.
+    const saved = entry.deliveryOnly
+      ? await repository.update(ticket.id, patch).then(() => true)
+      : await repository.updateTriage(ticket.id, patch);
+    if (!saved && entry.handoff) throw new Error("HANDOFF_NOT_CONFIRMED");
+    if (saved) Object.assign(ticket, patch);
+  }
 }
 
 /** Lê o IXC e devolve o diagnóstico. Injetado: a triagem não conhece o IXC, e os testes rodam sem ele. */
@@ -475,11 +484,6 @@ export function triageHooks(repository: TicketRepository, ticket: TicketRow, dia
       if (intakeNow) facts.push(`Pedido já registrado neste atendimento (${intakeNow.intent}): ${intakeNow.summary}`);
       return { topic: ticket.intent, identified: ticket.identification === "identified" && !!ticket.ixcCustomerId, facts };
     },
-    registerRequest: async (summary, intent) => {
-      // A ficha vai para quem não estava na conversa: sem CPF, e-mail nem telefone.
-      intakeNow = { intent, summary: sanitizeHandoffText(summary).slice(0, 1500), at: at().toISOString() };
-      await repository.update(ticket.id, { intake: intakeNow, queue: queueForIntent(intent) });
-    },
     trustUnlock: async (promisedDate) => {
       if (!mode.trustUnlock) return undefined;
       if (ticket.identification !== "identified" || !ticket.ixcCustomerId) return { status: "denied", text: TRUST_UNLOCK_TEXT.unidentified };
@@ -514,7 +518,8 @@ export function triageHooks(repository: TicketRepository, ticket: TicketRow, dia
       return lines.length ? lines.join("\n") : undefined;
     },
     record: async (entry) => {
-      await recordTriage(repository, ticket, { ...entry, protocolIncluded: entry.protocolIncluded && protocolInFooter }).catch(() => undefined);
+      await recordTriage(repository, ticket, { ...entry, protocolIncluded: entry.protocolIncluded && protocolInFooter });
+      intakeNow = ticket.intake ?? null;
       if (!entry.clarifying && !diagnosedNow) await diagnoseTicket(repository, ticket, entry.intent, diagnose);
     },
   };
@@ -571,7 +576,8 @@ const toTicket = (row: Row): TicketRow => ({
 export class DbTicketRepository implements TicketRepository {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   private readonly db: any;
-  constructor(db: unknown) { this.db = db; }
+  private readonly turn?: TurnFence;
+  constructor(db: unknown, turn?: TurnFence) { this.db = db; this.turn = turn; }
 
   async findOpen(channel: string, conversationId: string) {
     const rows: Row[] = await this.db.select().from(supportTickets)
@@ -601,8 +607,53 @@ export class DbTicketRepository implements TicketRepository {
     return rows[0];
   }
 
+  async updateTriage(id: string, patch: TicketPatch): Promise<boolean> {
+    if (patch.stage === "handoff") {
+      if (!this.turn) throw new Error("HANDOFF_FENCE_REQUIRED");
+      return new DbConversationFence(this.db).handoff(this.turn, async tx => {
+        const repository = new DbTicketRepository(tx);
+        const rows = await repository.db.update(supportTickets).set({ ...patch, queue: patch.queue ?? sql`coalesce(${supportTickets.queue}, 'atendimento')` })
+          .where(and(eq(supportTickets.id,id),eq(supportTickets.channel,this.turn!.channel),eq(supportTickets.externalConversationId,this.turn!.conversationId),eq(supportTickets.status,"open")))
+          .returning({id:supportTickets.id});
+        return rows.length===1;
+      });
+    }
+    if (this.turn) {
+      return this.db.transaction(async (tx: unknown) => {
+        await lockDelivery(tx,this.turn!.channel,this.turn!.conversationId);
+        if (!await validTurn(tx,this.turn!.channel,this.turn!.conversationId,this.turn,true)) return false;
+        return new DbTicketRepository(tx).updateTriage(id,patch);
+      });
+    }
+    // Evaluate against the current row under PostgreSQL's UPDATE lock, not the turn snapshot.
+    const rows = await this.db.update(supportTickets).set(patch)
+      .where(and(eq(supportTickets.id, id), eq(supportTickets.status, "open"),
+        ne(supportTickets.stage, "handoff")))
+      .returning({ id: supportTickets.id });
+    return rows.length === 1;
+  }
+
+  async resumeForAi(channel: string, conversationId: string): Promise<boolean> {
+    const rows = await this.db.update(supportTickets).set({ stage: "routed" })
+      .where(and(eq(supportTickets.channel, channel), eq(supportTickets.externalConversationId, conversationId),
+        eq(supportTickets.status, "open"), eq(supportTickets.stage, "handoff")))
+      .returning({ id: supportTickets.id });
+    return rows.length > 0; // Already released/no open ticket is an idempotent success.
+  }
+
   async update(id: string, patch: TicketPatch) {
-    await this.db.update(supportTickets).set(patch).where(eq(supportTickets.id, id));
+    if (patch.stage) throw new Error("USE_FENCED_STAGE_TRANSITION");
+    if (this.turn && (patch.intake !== undefined || patch.queue !== undefined)) {
+      return this.db.transaction(async (tx: unknown) => {
+        await lockDelivery(tx,this.turn!.channel,this.turn!.conversationId);
+        if (!await validTurn(tx,this.turn!.channel,this.turn!.conversationId,this.turn,true)) throw Error("OBSOLETE_TURN_MUTATION");
+        await new DbTicketRepository(tx).update(id,patch);
+      });
+    }
+    const rows: Array<{ id: string }> = await this.db.update(supportTickets).set(patch)
+      .where(eq(supportTickets.id, id))
+      .returning({ id: supportTickets.id });
+    if (rows.length !== 1) throw new Error("TICKET_UPDATE_NOT_CONFIRMED");
   }
 }
 
@@ -624,6 +675,20 @@ export class MemoryTicketRepository implements TicketRepository {
     if (this.tickets.some((t) => t.channel === row.channel && t.conversationId === row.conversationId && t.status === "open")) return undefined;
     this.tickets.push({ ...row, protocol: null });
     return { seq: ++this.seq };
+  }
+  async updateTriage(id: string, patch: TicketPatch): Promise<boolean> {
+    if (this.failUpdates) throw new Error("banco fora");
+    const index = this.tickets.findIndex(t => t.id === id && t.status === "open" && (patch.stage === "handoff" || t.stage !== "handoff"));
+    if (index < 0) return false;
+    this.tickets[index] = { ...this.tickets[index], ...patch, ...(patch.stage === "handoff" ? {queue: patch.queue ?? this.tickets[index].queue ?? "atendimento"} : {}) };
+    return true;
+  }
+  async resumeForAi(channel: string, conversationId: string): Promise<boolean> {
+    if (this.failUpdates) throw new Error("banco fora");
+    const index = this.tickets.findIndex(t => t.channel === channel && t.conversationId === conversationId && t.status === "open" && t.stage === "handoff");
+    if (index < 0) return false;
+    this.tickets[index] = { ...this.tickets[index], stage: "routed" };
+    return true;
   }
   async update(id: string, patch: TicketPatch) {
     if (this.failUpdates) throw new Error("banco fora");

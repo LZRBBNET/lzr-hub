@@ -1,4 +1,6 @@
-import { hasDelivery, lockDelivery } from "./conversation-delivery-lock.ts";
+import { allowTransition, rotateFence } from "./conversation-fence.ts";
+import { closeOpenTicket, resumeTicketForAi, type TicketRepository } from "./triage-service.ts";
+import { lockDelivery } from "./conversation-delivery-lock.ts";
 import { randomUUID } from "node:crypto";
 import { and, eq, inArray, isNull, sql } from "drizzle-orm";
 import { auditEvents, channelMessages, conversationStates } from "../../db/schema.ts";
@@ -57,6 +59,7 @@ export async function changeConversationState(
 
   let next: ConversationStateRow | null = null;
   let reason = "";
+  let changed = true;
   if (action === "claim") {
     if (current.status === "open" && current.assigneeId === actor.id) return { ok: true, state: current, changed: false };
     // Tomar a conversa de um colega é possível, mas precisa ser decidido: sem
@@ -67,11 +70,12 @@ export async function changeConversationState(
     next = { status: "open", assigneeId: actor.id, assigneeName: actor.name, assignedAt: at, resolvedAt: null, resolvedBy: null };
     reason = `Assumiu a conversa${current.status === "resolved" ? " resolvida" : ""}${was}`;
   } else if (action === "release") {
-    if (current.status === "open" && !current.assigneeId) return { ok: true, state: current, changed: false };
+    // Even a no-op release must lock/recheck ownership and audit the explicit request.
+    changed = !(current.status === "open" && !current.assigneeId);
     next = { status: "open", assigneeId: null, assigneeName: null, assignedAt: null, resolvedAt: null, resolvedBy: null };
     reason = `Devolveu a conversa para a IA${was}`;
   } else if (action === "resolve") {
-    if (current.status === "resolved") return { ok: true, state: current, changed: false };
+    changed = current.status !== "resolved";
     next = { status: "resolved", assigneeId: current.assigneeId, assigneeName: current.assigneeName, assignedAt: current.assignedAt, resolvedAt: at, resolvedBy: actor.name };
     reason = `Resolveu a conversa${was}`;
   } else {
@@ -84,7 +88,25 @@ export async function changeConversationState(
     return { ok: false, status: 409, reason: "A conversa mudou durante a ação. Atualize antes de tentar novamente." };
   }
   // Success follows a confirmed transaction; uncertain COMMIT must propagate to the caller.
-  return { ok: true, state: effectiveState(next, lastCustomerAt), changed: true };
+  return { ok: true, state: effectiveState(next, lastCustomerAt), changed };
+}
+
+/** Caller must wrap both repositories in the same database transaction. */
+export async function changeConversationStateWithTicket(
+  repository: ConversationStateRepository, tickets: TicketRepository,
+  input: Parameters<typeof changeConversationState>[1],
+): Promise<StateResult> {
+  const result = await changeConversationState(repository, input);
+  if (!result.ok) return result;
+  // Resolution must close the ticket in this transaction, including retry after a previous partial failure.
+  if (input.action === "resolve") await closeOpenTicket(tickets, input.channel, input.conversationId.trim(), (input.now ?? Date.now)());
+  // Release retries must run even when the conversation was already open/unassigned.
+  // Never infer release from a stale state returned for another action.
+  if ((input.action === "release" || (input.action === "reopen" && result.changed)) && result.state.status === "open" && !result.state.assigneeId) {
+    const resumed = await resumeTicketForAi(tickets, input.channel, input.conversationId.trim());
+    return { ...result, changed: result.changed || resumed };
+  }
+  return result;
 }
 
 /**
@@ -156,8 +178,9 @@ export class DbConversationStateRepository implements ConversationStateRepositor
       await repository.db.execute(sql`SET LOCAL lock_timeout = '2s'`);
       await repository.db.execute(sql`SET LOCAL idle_in_transaction_session_timeout = '10s'`);
       await lockDelivery(repository.db, channel, conversationId);
-      if (await hasDelivery(repository.db, channel, conversationId)) return false;
+      if (!await allowTransition(repository.db, channel, conversationId)) return false;
       if (!await repository.saveIfCurrent(channel, conversationId, expected, next)) return false;
+      await rotateFence(repository.db,channel,conversationId,next.status === "resolved" ? "resolved" : next.assigneeId ? "human" : "ai");
       await repository.audit(entry);
       return true;
     });

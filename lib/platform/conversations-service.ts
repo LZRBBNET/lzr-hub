@@ -1,7 +1,7 @@
 import { and, desc, eq, exists, ilike, inArray, like, notLike, or, sql } from "drizzle-orm";
 import type { AnyPgColumn } from "drizzle-orm/pg-core";
 import { NON_CUSTOMER_LIKE, isNonCustomerConversation } from "./conversation-scope.ts";
-import { channelContacts, channelMessages, conversationOutcomes, conversationStates, users } from "../../db/schema.ts";
+import { channelContacts, channelMessages, conversationOutcomes, conversationStates, supportTickets, users } from "../../db/schema.ts";
 import { AI_SENDER_NAME, awaitingSinceFrom, isAiSender, effectiveState, type ConversationStateRow, type EffectiveState } from "./conversation-state-shared.ts";
 
 /**
@@ -168,7 +168,7 @@ export class DbConversationsRepository implements ConversationsRepository {
       ));
     }
 
-    const grouped = await this.db.select({
+    const recentGrouped = await this.db.select({
       channel: channelMessages.channel,
       externalConversationId: channelMessages.externalConversationId,
       lastAt: sql<string>`max(${channelMessages.createdAt})`.as("last_at"),
@@ -178,6 +178,25 @@ export class DbConversationsRepository implements ConversationsRepository {
       .groupBy(channelMessages.channel, channelMessages.externalConversationId)
       .orderBy(desc(sql`max(${channelMessages.createdAt})`))
       .limit(limit);
+    // Include every explicitly pending human case, regardless of age/recent-list limit.
+    // Search and customer-only scope still apply. Resolved state is filtered by effectiveState/needsReply.
+    const pendingHuman = sql`(exists (select 1 from ${supportTickets}
+      where ${supportTickets.channel} = ${channelMessages.channel}
+        and ${supportTickets.externalConversationId} = ${channelMessages.externalConversationId}
+        and ${supportTickets.status} = 'open' and ${supportTickets.stage} = 'handoff')
+      or exists (select 1 from ${conversationStates}
+      where ${conversationStates.channel} = ${channelMessages.channel}
+        and ${conversationStates.externalConversationId} = ${channelMessages.externalConversationId}
+        and ${conversationStates.status} = 'open' and ${conversationStates.assigneeId} is not null))`;
+    const pendingGrouped = await this.db.select({
+      channel: channelMessages.channel, externalConversationId: channelMessages.externalConversationId,
+      lastAt: sql<string>`max(${channelMessages.createdAt})`.as("last_at"),
+      messages: sql<number>`count(*)`.as("messages"),
+    }).from(channelMessages).where(and(...filters, pendingHuman))
+      .groupBy(channelMessages.channel, channelMessages.externalConversationId);
+    const grouped = [...new Map([...recentGrouped, ...pendingGrouped].map((row: { channel: string; externalConversationId: string; lastAt: string; messages: number }) =>
+      [conversationKey(row.channel, row.externalConversationId), row])).values()]
+      .sort((a, b) => b.lastAt.localeCompare(a.lastAt));
     if (grouped.length === 0) return [];
 
     // A identidade da conversa é canal + ID externo, também nas consultas em lote.
@@ -195,6 +214,7 @@ export class DbConversationsRepository implements ConversationsRepository {
         content: channelMessages.content,
         createdAt: channelMessages.createdAt,
         sentBy: channelMessages.sentBy,
+        deliveryStatus: channelMessages.deliveryStatus,
       }).from(channelMessages)
         .where(scope(channelMessages))
         .orderBy(desc(channelMessages.createdAt), desc(replyAfterCustomer)),

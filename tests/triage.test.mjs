@@ -62,16 +62,15 @@ test("a primeira fala abre atendimento com protocolo; a seguinte continua o mesm
   assert.equal(tickets.tickets.length, 1);
 });
 
-test("24 horas sem o cliente falar encerram o atendimento; a fala nova ganha outro protocolo", async () => {
+test("24 horas sem o cliente falar preservam atendimento e protocolo", async () => {
   const tickets = new MemoryTicketRepository();
   const at = Date.parse("2026-10-14T13:00:00Z");
   const velho = (await openOrContinueTicket(tickets, { channel: CHANNEL_NAME, conversationId: CLIENTE, now: at })).ticket;
   const novo = await openOrContinueTicket(tickets, { channel: CHANNEL_NAME, conversationId: CLIENTE, now: at + REPLY_WINDOW_MS + 60_000 });
-  assert.equal(novo.created, true);
-  assert.notEqual(novo.ticket.protocol, velho.protocol);
-  const fechado = tickets.tickets.find((t) => t.id === velho.id);
-  assert.equal(fechado.status, "closed");
-  assert.equal(fechado.closedReason, "inactivity");
+  assert.equal(novo.created, false);
+  assert.equal(novo.ticket.protocol, velho.protocol);
+  assert.equal(novo.ticket.status, "open");
+  assert.equal(novo.ticket.closedReason, null);
 });
 
 test("resolver a conversa fecha o atendimento", async () => {
@@ -158,7 +157,8 @@ function montar({ enabled = true, fetcher, identificado = true } = {}) {
     const triage = await startTriage(tickets, { channel: CHANNEL_NAME, conversationId: CLIENTE, lookup: async () => (identificado ? { id: "21857" } : undefined) });
     const auto = await metaAutoReplyOptions({
       enabled, states, messages: channel, claims, config, channel: CHANNEL_NAME,
-      delivery: { begin: async () => "test-token", finish: async () => {}, settleUncertain: async () => {} },
+      turn: {channel:"local",conversationId:"local",operation:"local",sendKey:"local",generation:"local",kind:"reply"},
+      delivery: { authorizeDispatch: async () => true, begin: async () => "test-token", finish: async () => {}, settleUncertain: async () => {} },
       customerMessageAt: new Date().toISOString(), awaitingAnswer: triage?.awaitingAnswer,
     }, CLIENTE);
     return processChannelMessage(channel, { externalConversationId: CLIENTE, text, idempotencyKey: wamid, correlationId: `corr-${wamid}` }, metrics, { ...auto, triage: triage?.hooks });
@@ -190,7 +190,7 @@ test("a escolha no menu define assunto e setor, e ganha resposta — sem repetir
   assert.equal(ticket().intent, "financial_invoice");
   assert.equal(ticket().intentSource, "menu");
   assert.equal(ticket().queue, "financeiro");
-  assert.equal(ticket().stage, "routed");
+  assert.equal(ticket().stage, "handoff");
 
   const depois = await receber("ok, obrigado");
   assert.equal(depois.autoReply, false, "depois disso, uma por espera: o resto é do atendente");
@@ -213,7 +213,7 @@ test("a pergunta é feita uma vez por atendimento", async () => {
   await receber("oi");
   await receber("é sobre aquilo que falei");
   assert.equal(enviados().filter((texto) => texto.startsWith(CLARIFY_TEXT)).length, 1, "resposta vaga à pergunta segue para o setor, sem repetir o menu");
-  assert.equal(ticket().stage, "routed");
+  assert.equal(ticket().stage, "handoff");
   assert.equal(ticket().queue, "atendimento");
 });
 

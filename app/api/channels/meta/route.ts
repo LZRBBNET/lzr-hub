@@ -1,3 +1,7 @@
+import { processConsentCommand } from "@/lib/platform/consent-command-service";
+import { explicitHumanHandoff, requestsHuman } from "@/lib/platform/explicit-human-handoff";
+import { processMetaBatch } from "@/lib/platform/meta-batch-service";
+import { DbConversationFence } from "@/lib/platform/conversation-fence";
 import { DbConversationDelivery } from "@/lib/platform/conversation-delivery-service";
 import { NextResponse } from "next/server";
 import { randomUUID } from "node:crypto";
@@ -12,10 +16,10 @@ import { getIxcRuntime } from "@/lib/integrations/ixc/runtime";
 import { parseMetaMessages, parseMetaStatuses, parseMetaWebhook, signatureIsValid } from "@/lib/integrations/meta/webhook-parser";
 import { DbConversationStateRepository } from "@/lib/platform/conversation-state-service";
 import { DbReplyRepository } from "@/lib/platform/attendant-reply-service";
-import { metaAutoReplyOptions } from "@/lib/platform/meta-auto-reply-service";
-import { metaSendConfigFromEnv, sendTextMessage } from "@/lib/integrations/meta/cloud-client";
+import { metaAutoReplyOptions, metaAutoReplySender } from "@/lib/platform/meta-auto-reply-service";
+import { metaSendConfigFromEnv } from "@/lib/integrations/meta/cloud-client";
 import { DbOutboundRepository } from "@/lib/platform/outbound-service";
-import { OPT_IN_REPLY, OPT_OUT_REPLY, canonicalPhone, isOptIn, isOptOut } from "@/lib/platform/outbound-shared";
+import { isOptIn, isOptOut } from "@/lib/platform/outbound-shared";
 import { fetchPixCode } from "@/lib/integrations/ixc/write-client";
 import { DbTicketRepository, ixcDiagnose, ixcInvoiceLookup, startTriage } from "@/lib/platform/triage-service";
 import { DbIncidentsRepository } from "@/lib/platform/incidents-service";
@@ -117,13 +121,29 @@ export async function POST(request: Request) {
   const db = await getDb();
   const channel = new D1ChannelRepository(db);
   const updated = statuses.length > 0 ? await applyStatuses(new DbDeliveryRepository(db), statuses) : 0;
-  const templates = messages.some((message) => message.kind === "text") ? await loadOverrides(new DbReplyTemplatesRepository(db)) : undefined;
   const sendConfig = metaSendConfigFromEnv();
-  const tickets = new DbTicketRepository(db);
 
-  const results = [];
-  for (const message of messages) {
+  const results: unknown[] = [];
+  const batch = await processMetaBatch(messages, async (message) => {
     const correlationId = randomUUID();
+    if (message.kind === "text" && (isOptOut(message.text) || isOptIn(message.text))) {
+      results.push(await processConsentCommand({channel,confirmationEnabled:autoReplyEnabled(),
+        transaction:work=>db.transaction(tx=>work({channel:new D1ChannelRepository(tx),outbound:new DbOutboundRepository(tx)})),
+        send:async input=>{
+          const turn=await new DbConversationFence(db).capture(CHANNEL_NAME,message.phone,message.messageId,message.sentAt);
+          return metaAutoReplySender({claims:new DbReplyRepository(db),delivery:new DbConversationDelivery(db),turn,config:sendConfig,channel:CHANNEL_NAME,customerMessageAt:message.sentAt})(input);
+        }}, {conversationId:message.phone,text:message.text,inboundMessageId:message.messageId,out:isOptOut(message.text),correlationId}));
+      return;
+    }
+    const turn = await new DbConversationFence(db).capture(CHANNEL_NAME,message.phone,message.messageId,message.sentAt);
+    const tickets = new DbTicketRepository(db,turn);
+    if (message.kind === "text" && message.text.length <= MAX_MESSAGE_LENGTH && requestsHuman(message.text,message.interactiveReplyId)) {
+      results.push(await explicitHumanHandoff({channel,tickets,states:new DbConversationStateRepository(db),confirmationEnabled:autoReplyEnabled(),
+        send:metaAutoReplySender({claims:new DbReplyRepository(db),delivery:new DbConversationDelivery(db),turn,config:sendConfig,channel:CHANNEL_NAME,customerMessageAt:message.sentAt})},
+        {conversationId:message.phone,text:message.text,inboundMessageId:message.messageId,correlationId}));
+      return;
+    }
+    const templates = message.kind === "text" ? await loadOverrides(new DbReplyTemplatesRepository(db)) : undefined;
     const lookupCustomer = async (phone: string) => {
       const runtime = getIxcRuntime();
       if (!runtime.provider) throw new Error("IXC indisponível");
@@ -181,30 +201,13 @@ export async function POST(request: Request) {
     // `wamid` é a chave de idempotência: a Meta reenvia o webhook quando não
     // recebe 200, e sem isso a reentrega viraria atendimento em dobro.
     if (message.kind === "text") {
-      if (message.text.length > MAX_MESSAGE_LENGTH) { results.push({ ignored: true, reason: "mensagem-longa" }); continue; }
-      // SAIR / VOLTAR: descadastro dos avisos automáticos de fatura e rede. Não é atendimento — a IA
-      // não entra, e o atendimento pelo WhatsApp continua. Reentrega do webhook não responde duas vezes.
-      if (isOptOut(message.text) || isOptIn(message.text)) {
-        const out = isOptOut(message.text);
-        if (!(await channel.findIdempotent(message.messageId))) {
-          await new DbOutboundRepository(db).setOptOut(canonicalPhone(message.phone), out, "whatsapp").catch(() => undefined);
-          const reply = out ? OPT_OUT_REPLY : OPT_IN_REPLY;
-          const sent = sendConfig ? await sendTextMessage(sendConfig, { to: message.phone, text: reply }) : undefined;
-          await channel.saveMessages(CHANNEL_NAME, message.phone, [
-            { role: "customer", content: message.text, correlationId, externalMessageId: message.messageId },
-            { role: sent?.ok ? "agent" : "suggestion", content: reply, correlationId, ...(sent?.ok ? { externalMessageId: sent.messageId, sentBy: "ia" } : {}) },
-          ]);
-          await channel.saveIdempotency(message.messageId, CHANNEL_NAME, message.phone, { response: sent?.ok ? reply : null, autoReply: !!sent?.ok, status: out ? "opted_out" : "opted_in", handoff: false, correlationId });
-        }
-        results.push({ status: out ? "opted_out" : "opted_in" });
-        continue;
-      }
+      if (message.text.length > MAX_MESSAGE_LENGTH) { results.push({ ignored: true, reason: "mensagem-longa" }); return; }
       // Com um humano à frente da conversa a IA só sugere: não responde por cima dele.
       // Quando responde, é pela Cloud API, e só fica gravado como enviado o que a Meta aceitou.
       // O robô de dúvidas usa as mesmas travas (humano, uma por espera, janela de 24 horas, idempotência).
       const auto = await metaAutoReplyOptions({
         enabled: botSpeaks || !!doubtBotConfig, states: new DbConversationStateRepository(db), messages: channel, claims: new DbReplyRepository(db),
-        delivery: new DbConversationDelivery(db), config: sendConfig, channel: CHANNEL_NAME, customerMessageAt: message.sentAt,
+        delivery: new DbConversationDelivery(db), turn, config: sendConfig, channel: CHANNEL_NAME, customerMessageAt: message.sentAt,
         awaitingAnswer: triage?.awaitingAnswer,
         // Modo autônomo: conversa inteira, até um humano assumir.
         conversational: !!agentConfig,
@@ -220,6 +223,7 @@ export async function POST(request: Request) {
             ? { send: auto.send, answer: doubtBotAnswerer(doubtBotConfig, () => new DbKnowledgeRepository(db).list(200)), agent: !!agentConfig, handedOff: triage?.handedOff }
             : undefined,
           templates,
+          handoffRecorded: triage?.handedOff,
           triage: triage?.hooks,
         },
         (input) => captureLeadFromContact(new DbCrmRepository(db), input, triage?.knownCustomer ?? lookupCustomer),
@@ -230,7 +234,7 @@ export async function POST(request: Request) {
       }));
     }
     await rememberContactName(new DbContactsRepository(db), CHANNEL_NAME, message.phone, message.profileName);
-  }
+  });
 
-  return NextResponse.json({ results, statuses: updated });
+  return NextResponse.json({ results, statuses: updated, retryRequired: batch.failed > 0, failed: batch.failed }, { status: batch.failed ? 503 : 200 });
 }

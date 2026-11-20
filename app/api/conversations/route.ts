@@ -1,3 +1,4 @@
+import { conversationPage, InvalidConversationCursor } from "@/lib/platform/conversation-pages";
 import { NextResponse } from "next/server";
 import { getDb } from "@/db";
 import { DbConversationsRepository, replyWindowFrom } from "@/lib/platform/conversations-service";
@@ -54,15 +55,14 @@ export async function GET(request: Request) {
     }
     // Quem está olhando: a tela separa "Minhas" das outras e sabe quando a conversa é de um colega.
     const viewer = guard.user ? { id: guard.user.id, name: guard.user.name } : null;
-    const items = await repository.listConversations(LIST_LIMIT, url.searchParams.get("q"));
-    // Setor e protocolo do atendimento aberto de cada conversa, numa consulta só.
-    const open = await tickets.openMany(items.map((item) => item.externalConversationId)).catch(() => new Map());
-    const withTickets = items.map((item) => {
-      const ticket = open.get(`${item.channel}:${item.externalConversationId}`);
-      return ticket ? { ...item, ticket: { protocol: ticket.protocol, queue: ticket.queue, stage: ticket.stage } } : item;
+    const page = await conversationPage(db, {
+      view: url.searchParams.get("view") ?? "abertas", sector: url.searchParams.get("sector") ?? "todos",
+      search: url.searchParams.get("q"), channel: url.searchParams.get("channel"), actorId: guard.user?.id,
+      cursor: url.searchParams.get("cursor"), limit: LIST_LIMIT,
     });
-    return NextResponse.json({ available: true, items: withTickets, channelState, viewer });
-  } catch {
+    return NextResponse.json({ available: true, ...page, channelState, viewer });
+  } catch (error) {
+    if (error instanceof InvalidConversationCursor) return NextResponse.json({ error: error.message }, { status: 400 });
     return NextResponse.json({ available: false, detail: "Histórico de conversas indisponível", items: [], messages: [], channelState });
   }
 }

@@ -1,3 +1,4 @@
+import { allowTransition, auditFence, consumeTurn, readLedger, validTurn, type TurnFence } from "./conversation-fence.ts";
 import { randomUUID } from "node:crypto";
 import { and, eq, sql } from "drizzle-orm";
 import { channelIdempotencyKeys } from "../../db/schema.ts";
@@ -6,7 +7,8 @@ import { botMayReply } from "./conversation-state-shared.ts";
 import { deliveryKey, hasDelivery, lockDelivery } from "./conversation-delivery-lock.ts";
 
 export interface ConversationDelivery {
-  begin(channel: string, conversationId: string, actor?: StateActor, operationKey?: string): Promise<string>;
+  begin(channel: string, conversationId: string, actor?: StateActor, operationKey?: string, turn?: TurnFence): Promise<string>;
+  authorizeDispatch?(channel: string, conversationId: string, token: string, turn: TurnFence): Promise<boolean>;
   settleUncertain(channel: string, conversationId: string, token: string, acceptedMessageId?: string): Promise<void>;
   finish(channel: string, conversationId: string, token: string): Promise<void>;
 }
@@ -16,12 +18,15 @@ export class DbConversationDelivery implements ConversationDelivery {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   private readonly db: any;
   constructor(db: unknown) { this.db = db; }
-  async begin(channel: string, conversationId: string, actor?: StateActor, operationKey?: string): Promise<string> {
+  async begin(channel: string, conversationId: string, actor?: StateActor, operationKey?: string, turn?: TurnFence): Promise<string> {
     const token = randomUUID();
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    await this.db.transaction(async (tx: any) => {
+    const reserved = await this.db.transaction(async (tx: any) => {
       await lockDelivery(tx, channel, conversationId);
-      if (await hasDelivery(tx, channel, conversationId)) throw Error("DELIVERY_PENDING");
+      if (actor ? !await allowTransition(tx,channel,conversationId) : await hasDelivery(tx,channel,conversationId)) throw Error("DELIVERY_PENDING");
+      if (!actor && (operationKey!==turn?.sendKey || !await validTurn(tx,channel,conversationId,turn))) {
+        await auditFence(tx,channel,conversationId,"reservation_rejected","obsolete");return false;
+      }
       const states = new DbConversationStateRepository(tx);
       if (actor) {
         const claim = await changeConversationState(states, { channel, conversationId, actor, action: "claim" });
@@ -31,19 +36,47 @@ export class DbConversationDelivery implements ConversationDelivery {
       }
       const inserted = await tx.insert(channelIdempotencyKeys).values({
         idempotencyKey: deliveryKey(channel, conversationId), channel, externalConversationId: conversationId,
-        responseJson: { status: "pending", token, operationKey, kind: actor ? "human" : "bot" }, createdAt: new Date().toISOString(),
+        responseJson: { status: "pending", token, operationKey, kind: actor ? "human" : "bot", ...(actor ? {} : {phase:"prepared",generation:turn!.generation,turnOperation:turn!.operation}) }, createdAt: new Date().toISOString(),
       }).returning({ key: channelIdempotencyKeys.idempotencyKey });
       if (inserted.length !== 1) throw Error("DELIVERY_UNCONFIRMED");
+      return true;
     });
+    if (!reserved) throw Error("DELIVERY_OBSOLETE");
     return token;
   }
-  async settleUncertain(channel: string, conversationId: string, token: string, acceptedMessageId?: string): Promise<void> {
-    // Written only after the one transport attempt has returned. No later send is scheduled.
-    const updated = await this.db.update(channelIdempotencyKeys).set({ responseJson: sql`${channelIdempotencyKeys.responseJson} || ${JSON.stringify({ status: "uncertain", workerSettled: true, acceptedMessageId: acceptedMessageId ?? null })}::jsonb` })
-      .where(and(eq(channelIdempotencyKeys.idempotencyKey, deliveryKey(channel, conversationId)), sql`${channelIdempotencyKeys.responseJson}->>'token' = ${token}`, sql`${channelIdempotencyKeys.responseJson}->>'status' = 'pending'`))
-      .returning({ key: channelIdempotencyKeys.idempotencyKey });
-    if (updated.length !== 1) throw Error("DELIVERY_SETTLEMENT_UNCONFIRMED");
+  async authorizeDispatch(channel: string, conversationId: string, token: string, turn: TurnFence): Promise<boolean> {
+    // The shared lock ends before any provider call. Ownership changes refuse an outstanding authorization.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    return this.db.transaction(async (tx:any) => {
+      await lockDelivery(tx,channel,conversationId);
+      const reservation=await readLedger(tx,deliveryKey(channel,conversationId));
+      if (reservation?.token!==token || reservation.status!=="pending" || reservation.phase!=="prepared"
+        || reservation.generation!==turn.generation || reservation.turnOperation!==turn.operation || !await validTurn(tx,channel,conversationId,turn)) {
+        if (reservation?.token===token && reservation.status==="pending" && reservation.phase==="prepared") {
+          await tx.delete(channelIdempotencyKeys).where(eq(channelIdempotencyKeys.idempotencyKey,deliveryKey(channel,conversationId)));
+        }
+        await auditFence(tx,channel,conversationId,"dispatch_rejected","obsolete_or_consumed");return false;
+      }
+      await tx.update(channelIdempotencyKeys).set({responseJson:{...reservation,phase:"dispatch_authorized"}})
+        .where(eq(channelIdempotencyKeys.idempotencyKey,deliveryKey(channel,conversationId)));
+      await consumeTurn(tx,turn,token);
+      await auditFence(tx,channel,conversationId,"dispatch_authorized","not_provider_receipt");
+      return true;
+    });
   }
+  async settleUncertain(channel: string, conversationId: string, token: string, acceptedMessageId?: string): Promise<void> {
+    // Written after transport returns or authorization fails and this worker stops before transport.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await this.db.transaction(async(tx:any)=>{
+      await lockDelivery(tx,channel,conversationId);
+      const updated = await tx.update(channelIdempotencyKeys).set({ responseJson: sql`${channelIdempotencyKeys.responseJson} || ${JSON.stringify({ status: "uncertain", workerSettled: true, acceptedMessageId: acceptedMessageId ?? null })}::jsonb` })
+        .where(and(eq(channelIdempotencyKeys.idempotencyKey, deliveryKey(channel, conversationId)), sql`${channelIdempotencyKeys.responseJson}->>'token' = ${token}`, sql`${channelIdempotencyKeys.responseJson}->>'status' = 'pending'`))
+        .returning({ key: channelIdempotencyKeys.idempotencyKey });
+      if (updated.length !== 1) throw Error("DELIVERY_SETTLEMENT_UNCONFIRMED");
+      await auditFence(tx,channel,conversationId,"dispatch_uncertain","reconciliation_required");
+    });
+  }
+
   async finish(channel: string, conversationId: string, token: string): Promise<void> {
     // A late completion cannot clear a newer operation's reservation.
     await this.db.delete(channelIdempotencyKeys).where(and(
