@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { CHANNEL_NAME, MemoryChannelRepository, processChannelMessage } from "../lib/platform/n8n-channel-service.ts";
-import { publicTechnicalQuestion, technicalContinuity } from "../lib/platform/meta-technical-emergency.ts";
+import { hasRecentProtectedTechnicalAnchor, publicTechnicalQuestion, technicalContinuity } from "../lib/platform/meta-technical-emergency.ts";
 import { currentTicketGates } from "../lib/platform/current-support-tone.ts";
 import { parseMetaMessages } from "../lib/integrations/meta/webhook-parser.ts";
-import { choosePilotStep, extractCurrentTechnicalPilot, technicalPilotEnabled, technicalPilotRoute } from "../lib/platform/technical-conversation-pilot.ts";
+import { choosePilotStep, extractCurrentTechnicalPilot, isPossiblePilotAnswer, matchesProtectedTechnicalConversation, technicalConversationRelease, technicalPilotEnabled, technicalPilotRoute } from "../lib/platform/technical-conversation-pilot.ts";
 import { askDoubtBot } from "../lib/platform/doubt-bot-service.ts";
 
 const channel = CHANNEL_NAME;
@@ -703,4 +703,169 @@ test("pilot accepts one neutral close router-light question on the verified foll
   assert.equal((await wrong.run(opening, { pilot: true })).response, deviceQuestion);
   assert.equal((await wrong.run(turn("Sim, em todos os aparelhos aqui em casa", "light-variant-answer"), { pilot: true })).response, null);
   assert.equal(wrong.sends.length, 1);
+});
+
+test("three-turn pilot asks only for the label after two grounded questions and a short red LED reply", async () => {
+  const label = "Você consegue ler a sigla ao lado da luz vermelha?";
+  for (const mode of ["ok", "off", "unconfirmed-first", "unconfirmed-second", "unrelated-quote", "mixed", "unsafe-output"]) {
+    const f = fixture({ first: "Isso acontece em outro aparelho?" });
+    const opening = turn("Estou sem internet aqui, já reiniciei o roteador e nada.", "red-start");
+    const device = await f.run(opening, { pilot: true });
+    assert.equal(device.technicalPilotStep, "devices");
+    const light = await f.run(turn("Em todos", "red-middle"), { pilot: true });
+    assert.equal(light.technicalPilotStep, "light");
+    if (mode === "unconfirmed-first") f.receipt.set(device.externalMessageId, "sent");
+    if (mode === "unconfirmed-second") f.receipt.set(light.externalMessageId, "sent");
+    const third = turn(mode === "mixed" ? "Tem uma vermelha e preciso do pix" : "Tem uma vermelha", "red-third");
+    const options = {
+      pilot: true, pilotRedLightLabel: mode !== "off",
+      answer: async query => {
+        f.calls.push(query);
+        return ok(mode === "unsafe-output" ? "A luz está vermelha porque a fibra quebrou. Quer uma visita?" : label);
+      },
+    };
+    if (mode === "unrelated-quote") options.continuation = {
+      sentAt: new Date().toISOString(), replyToMessageId: device.externalMessageId, claimAnchor: async () => true,
+    };
+    const result = await f.run(third, options);
+    assert.equal(result.response, mode === "ok" ? label : null, mode);
+    if (mode === "ok") {
+      assert.equal(result.technicalPilotStep, "red-light-label");
+      assert.deepEqual(f.calls.at(-1).history, []);
+      assert.equal(f.calls.at(-1).question, "Cliente relata ver uma luz vermelha, sem informar a sigla ou o nome da luz.");
+      assert.equal((await f.run(third, options)).response, label);
+      assert.equal((await f.run(turn("LOS", "red-cap"), options)).response, null);
+      assert.equal(f.calls.length, 3);
+    } else {
+      assert.equal(f.sends.length, 2);
+      assert.equal(f.calls.length, mode === "unsafe-output" ? 3 : 2, mode);
+    }
+  }
+});
+
+test("label replies become protected ingress only with the scoped extension, without intercepting mixed requests", () => {
+  for (const answer of ["LOS", "é LOS", "Está escrito PON.", "Power"]) {
+    assert.equal(isPossiblePilotAnswer(answer, true), true, answer);
+    assert.equal(isPossiblePilotAnswer(answer), false, answer);
+  }
+  assert.equal(isPossiblePilotAnswer("não consigo ler", true), true); // Already protected by the older "não" grammar.
+  for (const unrelated of ["LOS e preciso do boleto", "LOS, CPF", "quero falar com atendente", "PON na casa do vizinho"]) {
+    assert.equal(isPossiblePilotAnswer(unrelated, true), false, unrelated);
+  }
+});
+
+test("LOS terminal guidance is scoped to one verified label answer and cannot promise action or resolution", async () => {
+  const label = "Você consegue ler a sigla ao lado da luz vermelha?";
+  const guidance = "Essa luz pode indicar perda do sinal da fibra. Não mexa no cabo. O próximo passo é verificar o sinal com o suporte técnico.";
+  for (const mode of ["ok", "disabled", "undelivered", "wrong-quote", "uncertain", "refusal", "no-state", "side-effect", "promise"]) {
+    const f = fixture({ first: "Isso acontece em outro aparelho?" });
+    const device = await f.run(turn("Estou sem internet aqui e nada está abrindo.", "label-open"), { pilot: true });
+    assert.equal((await f.run(turn("Em todos", "label-scope"), { pilot: true })).response, lightQuestion);
+    const opts = { pilot: true, pilotRedLightLabel: true };
+    const third = await f.run(turn("Tem uma vermelha", "label-red"), { ...opts, answer: async () => ok(label) });
+    assert.equal(third.response, label);
+    if (mode === "undelivered") f.receipt.set(third.externalMessageId, "sent");
+    let calls = 0;
+    const options = { ...opts, pilotLosGuidance: mode !== "disabled",
+      answer: async req => {
+        calls++;
+        assert.deepEqual(req.history, []);
+        assert.equal(req.question, "Cliente relata que a sigla ao lado da luz vermelha é LOS.");
+        if (mode === "refusal") return { kind: "none" };
+        if (mode === "no-state") return { kind: "answer", text: guidance };
+        if (mode === "side-effect") return { ...ok(guidance), action: "trust_unlock" };
+        return ok(mode === "promise" ? "Sua visita já foi marcada." : guidance);
+      },
+    };
+    if (mode === "wrong-quote") options.continuation = {
+      sentAt: new Date().toISOString(), replyToMessageId: device.externalMessageId, claimAnchor: async () => true,
+    };
+    const inbound = turn(mode === "uncertain" ? "Acho que é LOS" : "é LOS", "label-answer");
+    const terminal = await f.run(inbound, options);
+    assert.equal(terminal.response, mode === "ok" ? guidance : null, mode);
+    assert.equal(calls, ["ok", "refusal", "no-state", "side-effect", "promise"].includes(mode) ? 1 : 0, mode);
+    if (mode === "ok") {
+      assert.equal(terminal.technicalPilotStep, "los-guidance");
+      assert.equal((await f.run(inbound, options)).response, guidance);
+      assert.equal((await f.run(turn("LOS", "label-repeat"), options)).response, null);
+      assert.equal(calls, 1);
+    }
+  }
+});
+
+test("short BB NET master profile is restricted to guarded pilot technical tasks", async () => {
+  const pilot = fixture(), baseline = fixture(), greeting = fixture({ first: "Boa tarde! Em que posso ajudar?" });
+  assert.ok((await pilot.run(turn("Estou sem internet", "profile-pilot"), { pilot: true })).response);
+  assert.ok((await baseline.run(turn("Estou sem internet", "profile-baseline"))).response);
+  assert.ok((await greeting.run(turn("Boa tarde", "profile-greeting"), { pilot: true })).response);
+  assert.match(pilot.calls[0].task, /suporte técnico da BB NET no WhatsApp/);
+  assert.match(pilot.calls[0].task, /não peça reset de fábrica/);
+  assert.deepEqual(pilot.calls[0].history, []);
+  assert.doesNotMatch(baseline.calls[0].task, /BB NET/);
+  assert.doesNotMatch(greeting.calls[0].task, /BB NET/);
+});
+
+test("the same conversation engine can serve two authenticated senders independently, only under rollout", async () => {
+  const env = { FEATURE_META_TECHNICAL_CONVERSATION_ROLLOUT: "true" };
+  const sender1 = "5500000000001", sender2 = "5500000000002";
+  const scope = phone => ({ phone, actualPhoneNumberId: "official", expectedPhoneNumberId: "official", canonicalSender: true, messageId: "wamid.test-scope" });
+  const now = Date.now();
+  const pilotEnv = {
+    FEATURE_META_CONVERSATION_PILOT: "true", META_CONVERSATION_PILOT_SENDER: sender1,
+    META_CONVERSATION_PILOT_UNTIL: new Date(now + 60_000).toISOString(),
+  };
+  assert.equal(technicalConversationRelease({}, scope(sender1), now), undefined);
+  assert.deepEqual(technicalConversationRelease(pilotEnv, scope(sender1), now), { scope: "pilot", redLightLabel: false, losGuidance: false });
+  assert.equal(technicalConversationRelease(pilotEnv, scope(sender1), now + 60_000), undefined);
+  assert.equal(technicalConversationRelease(pilotEnv, scope(sender2), now), undefined);
+  for (const invalid of [{ canonicalSender: false }, { phone: "+5500000000001" }, { actualPhoneNumberId: "other" }, { expectedPhoneNumberId: undefined }, { messageId: "non-provider" }]) {
+    assert.equal(technicalConversationRelease(env, { ...scope(sender1), ...invalid }, now), undefined);
+  }
+
+  const f = fixture({ first: deviceQuestion, second: lightQuestion });
+  const openReport = "Estou sem internet aqui desde ontem";
+  for (const [index, sender] of [sender1, sender2].entries()) {
+    const release = technicalConversationRelease(env, scope(sender), now);
+    assert.deepEqual(release, { scope: "rollout", redLightLabel: true, losGuidance: true });
+    assert.equal(matchesProtectedTechnicalConversation(openReport, false, release), true);
+    assert.equal(matchesProtectedTechnicalConversation(openReport, true, release), false); // Existing consent commands never join this lane.
+    assert.equal(matchesProtectedTechnicalConversation("Estou sem internet e preciso do PIX", false, release), false);
+    assert.equal(matchesProtectedTechnicalConversation("Estou sem internet e quero abrir uma OS", false, release), false);
+    assert.equal(matchesProtectedTechnicalConversation("Estou sem internet e meu CPF é 123", false, release), false);
+    const gates = { pilot: true, pilotRedLightLabel: release.redLightLabel, pilotLosGuidance: release.losGuidance };
+    for (const owner of [{ humanHandoff: true, privateFlowPending: false }, { humanHandoff: false, privateFlowPending: true }]) {
+      assert.equal(technicalPilotRoute({ baselineProtected: false, pilotCandidate: true, ...owner }), "legacy");
+      assert.equal(technicalPilotRoute({ baselineProtected: true, pilotCandidate: true, ...owner }), "protected");
+    }
+    const id = (text, suffix) => ({ ...turn(text, `rollout-${index}-${suffix}`), externalConversationId: sender });
+    const initial = await f.run(id(openReport, "first"), { ...gates, answer: async () => ok(deviceQuestion) });
+    assert.equal(initial.technicalPilotStep, "devices");
+    const report = id("Em todos", "next");
+    if (index === 1) f.receipt.set(initial.externalMessageId, "sent");
+    const next = await f.run(report, { ...gates, answer: async request => { f.calls.push(request); return ok(lightQuestion); } });
+    assert.equal(next.response, index === 0 ? lightQuestion : null);
+  }
+  assert.equal(f.sends.length, 3);
+  assert.equal(f.anchors.size, 1);
+  assert.equal(f.calls.every(request => request.history.length === 0), true);
+});
+
+test("rollout short-answer ingress requires recent protected provenance from that conversation, not a perfect delivery", async () => {
+  const f = fixture();
+  const other = fixture();
+  const fresh = await f.run(turn("Estou sem internet", "rollout-proof-init"), { pilot: true });
+  const rows = () => f.repo.getHistory(channel, baseTurn.externalConversationId);
+  assert.equal(await hasRecentProtectedTechnicalAnchor(other.repo, []), false);
+  assert.equal(await hasRecentProtectedTechnicalAnchor(other.repo, await rows()), false);
+  assert.equal(await hasRecentProtectedTechnicalAnchor(f.repo, await rows()), true);
+  assert.equal(await hasRecentProtectedTechnicalAnchor(f.repo, await rows(), Date.now() + 2 * 60 * 60_000), false);
+  f.receipt.set(fresh.externalMessageId, "sent");
+  assert.equal(await hasRecentProtectedTechnicalAnchor(f.repo, await rows()), true);
+  await f.repo.saveMessages(channel, baseTurn.externalConversationId, [
+    { role: "customer", content: "Em todos", externalMessageId: "wamid.interleaved", correlationId: "synthetic-interleaved" },
+  ]);
+  assert.equal(await hasRecentProtectedTechnicalAnchor(f.repo, await rows()), true);
+  const candidate = await f.run(turn("Sim", "rollout-proof-racing"), { pilot: true });
+  assert.equal(candidate.response, null); // Protected hold, not a fresh call.
+  assert.equal(f.calls.length, 1);
 });

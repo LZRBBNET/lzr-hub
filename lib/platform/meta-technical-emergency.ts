@@ -1,6 +1,6 @@
 import type { AutoReplySender, ChannelMessageInput, ChannelMessageRow, ChannelRepository, ChannelResponse } from "./n8n-channel-service.ts";
 import type { DoubtBotInput, DoubtBotResult } from "./doubt-bot-service.ts";
-import { anchoredPilotAnswerContradictsBinary, currentAnswerAlreadyTriedClientControls, pilotAnchoredFinding, safePilotWifiStep, type ApprovedTechnicalStep, type PilotPlan } from "./technical-conversation-pilot.ts";
+import { anchoredPilotAnswerContradictsBinary, currentAnswerAlreadyTriedClientControls, pilotAnchoredFinding, pilotReportedRedLight, pilotReportedLosLabel, LOS_GUIDANCE, safePilotRedLightLabel, safePilotWifiStep, type ApprovedTechnicalStep, type PilotPlan } from "./technical-conversation-pilot.ts";
 import { explicitSupportDaypart, freshSupportDaypart, technicalReplyLayout, type CurrentTechnicalComplaint, type SupportDaypart } from "./current-support-tone.ts";
 
 const folded = (text: string) => text.normalize("NFD").replace(/\p{M}/gu, "").toLowerCase().trim();
@@ -125,8 +125,36 @@ function technicalAnswer(text: string, shape: NonNullable<ReturnType<typeof tech
 }
 
 export type TechnicalContinuity =
-  | { action: "ask"; anchorMessageId: string; nextDimension: TechnicalDimension; report: string }
+  | { action: "ask"; anchorMessageId: string; nextDimension: TechnicalDimension | "red-light-label" | "los-guidance"; report: string }
   | { action: "hold" };
+
+/** Proof used at general-rollout ingress so a bare "sim" or "LOS" cannot
+ * preempt unrelated triage merely by matching a technical answer's grammar. */
+export async function hasRecentProtectedTechnicalAnchor(
+  repository: Pick<ChannelRepository, "findIdempotent">,
+  history: ChannelMessageRow[],
+  now = Date.now(),
+): Promise<boolean> {
+  const visible = history.filter(row => row.role !== "suggestion");
+  const index = visible.findLastIndex(row => row.role === "agent");
+  const question = visible[index], source = visible[index - 1];
+  const sent = Date.parse(question?.createdAt ?? "");
+  if (!question || question.sentBy !== "ia" || !question.externalMessageId || !META_ID.test(question.externalMessageId)
+    || !question.correlationId || !Number.isFinite(sent) || sent > now || now - sent > ANCHOR_MAX_AGE_MS
+    || source?.role !== "customer" || !source.externalMessageId || !META_ID.test(source.externalMessageId)
+    || source.correlationId !== question.correlationId) return false;
+  const layout = technicalReplyLayout(question.content);
+  const step = question.content === LOS_GUIDANCE ? "los-guidance"
+    : layout && (safePilotRedLightLabel(layout.question) ? "red-light-label"
+      : safePilotWifiStep(layout.question) ? "wifi-one-device" : technicalQuestionShape(layout.question, true)?.dimension);
+  if (!step) return false;
+  const stamp = await repository.findIdempotent(source.externalMessageId);
+  return !!stamp && stamp.technicalPilotStep === step
+    && (stamp.technicalQuestionStage === "initial" || stamp.technicalQuestionStage === "followup")
+    && stamp.autoReply && stamp.status === "replied" && !stamp.handoff
+    && stamp.correlationId === question.correlationId && stamp.externalMessageId === question.externalMessageId
+    && stamp.response === question.content;
+}
 
 /**
  * A grammar match alone is not proof the customer was asked by this path.
@@ -141,6 +169,8 @@ export async function technicalContinuity(
   now: number = Date.now(),
   replyToMessageId?: string | null,
   pilotOnly?: boolean,
+  pilotRedLightLabel?: boolean,
+  pilotLosGuidance?: boolean,
 ): Promise<TechnicalContinuity | undefined> {
   const visible = history.filter(row => row.role !== "suggestion");
   const lastQuestionIndex = visible.findLastIndex(row => row.role === "agent");
@@ -151,6 +181,29 @@ export async function technicalContinuity(
   const ordinaryShape = previous && technicalQuestionShape(previous.question);
   const shape = ordinaryShape || (previous && technicalQuestionShape(previous.question, true));
   const questionAt = Date.parse(lastQuestion.createdAt ?? "");
+  if (lastQuestion.content === LOS_GUIDANCE || (previous && safePilotRedLightLabel(previous.question))) {
+    const source = visible[lastQuestionIndex - 1];
+    if (source?.role === "customer" && source.externalMessageId && META_ID.test(source.externalMessageId) && source.correlationId === lastQuestion.correlationId
+      && Number.isFinite(questionAt) && questionAt <= now && now - questionAt <= ANCHOR_MAX_AGE_MS) {
+      const last = await repository.findIdempotent(source.externalMessageId).catch(() => undefined);
+      if (last?.technicalPilotStep === (lastQuestion.content === LOS_GUIDANCE ? "los-guidance" : "red-light-label") && last.technicalQuestionStage === "followup"
+        && last.autoReply && last.status === "replied" && !last.handoff && last.correlationId === lastQuestion.correlationId
+        && last.externalMessageId === lastQuestion.externalMessageId && last.response === lastQuestion.content) {
+        const exactQuote = replyToMessageId === lastQuestion.externalMessageId;
+        const receiptOk = lastQuestion.deliveryStatus !== "failed" && (exactQuote ||
+          (replyToMessageId === undefined && (lastQuestion.deliveryStatus === "delivered" || lastQuestion.deliveryStatus === "read")));
+        const inboundAt = Date.parse(sentAt ?? "");
+        const earliest = exactQuote ? Math.floor(questionAt / 1000) * 1000 : questionAt;
+        if (pilotOnly && pilotRedLightLabel && pilotLosGuidance && last.technicalPilotStep === "red-light-label"
+          && receiptOk && visible.at(-1) === lastQuestion && source.externalMessageId !== input.idempotencyKey
+          && Number.isFinite(inboundAt) && inboundAt >= earliest && inboundAt <= now && pilotReportedLosLabel(input.text)) {
+          return { action: "ask", anchorMessageId: lastQuestion.externalMessageId, nextDimension: "los-guidance",
+            report: "Cliente relata que a sigla ao lado da luz vermelha é LOS." };
+        }
+        return { action: "hold" };
+      }
+    }
+  }
   if (!shape || !Number.isFinite(questionAt) || questionAt > now || now - questionAt > ANCHOR_MAX_AGE_MS) return undefined;
   if (!ordinaryShape && !pilotOnly) {
     // New pilot phrasing must not change baseline classification for an
@@ -185,6 +238,36 @@ export async function technicalContinuity(
     || !preceding.externalMessageId || !META_ID.test(preceding.externalMessageId)
     || preceding.externalMessageId === input.idempotencyKey) return { action: "hold" };
   const accepted = await repository.findIdempotent(preceding.externalMessageId).catch(() => undefined);
+  if (pilotOnly && pilotRedLightLabel && shape.dimension === "light" && pilotReportedRedLight(input.text)
+    && accepted?.technicalQuestionStage === "followup" && accepted.technicalPilotStep === "light"
+    && accepted.autoReply && accepted.status === "replied" && !accepted.handoff
+    && accepted.correlationId === lastQuestion.correlationId && accepted.externalMessageId === lastQuestion.externalMessageId
+    && accepted.response === lastQuestion.content) {
+    const priorQuestion = visible.at(-3);
+    const opening = visible.at(-4);
+    const priorLayout = priorQuestion && technicalReplyLayout(priorQuestion.content);
+    const priorShape = priorLayout && technicalQuestionShape(priorLayout.question, true);
+    const priorAt = Date.parse(priorQuestion?.createdAt ?? "");
+    if (priorQuestion?.role !== "agent" || priorQuestion.sentBy !== "ia" || !priorQuestion.externalMessageId
+      || !META_ID.test(priorQuestion.externalMessageId) || priorQuestion.externalMessageId === lastQuestion.externalMessageId
+      || (priorQuestion.deliveryStatus !== "delivered" && priorQuestion.deliveryStatus !== "read")
+      || !Number.isFinite(priorAt) || priorAt > questionAt || now - priorAt > ANCHOR_MAX_AGE_MS
+      || priorShape?.dimension !== "devices" || opening?.role !== "customer" || !opening.externalMessageId
+      || !META_ID.test(opening.externalMessageId) || !priorQuestion.correlationId
+      || opening.correlationId !== priorQuestion.correlationId) return { action: "hold" };
+    const scope = pilotAnchoredFinding(preceding.content, "devices");
+    const saidMany = scope
+      ? scope === "many" && !anchoredPilotAnswerContradictsBinary(preceding.content, scope, priorShape.yesIsClear, priorShape.noIsClear)
+      : technicalAnswer(preceding.content, priorShape) === technicalAnswerTokens.severalDevices;
+    if (!saidMany) return { action: "hold" };
+    const initial = await repository.findIdempotent(opening.externalMessageId).catch(() => undefined);
+    if (initial?.technicalPilotStep !== "devices" || initial.technicalQuestionStage !== "initial"
+      || !initial.autoReply || initial.status !== "replied" || initial.handoff
+      || initial.correlationId !== priorQuestion.correlationId || initial.externalMessageId !== priorQuestion.externalMessageId
+      || initial.response !== priorQuestion.content) return { action: "hold" };
+    return { action: "ask", anchorMessageId: lastQuestion.externalMessageId, nextDimension: "red-light-label",
+      report: "Cliente relata ver uma luz vermelha, sem informar a sigla ou o nome da luz." };
+  }
   if (!accepted || accepted.technicalQuestionStage !== "initial" || !accepted.autoReply || accepted.status !== "replied"
     || accepted.handoff || accepted.correlationId !== lastQuestion.correlationId
     || accepted.externalMessageId !== lastQuestion.externalMessageId || accepted.response !== lastQuestion.content
@@ -215,10 +298,19 @@ export type TechnicalEmergencyOptions = {
   replyKind?: "greeting";
   providerSentAt?: string;
   pilot?: boolean;
+  pilotRedLightLabel?: boolean;
+  pilotLosGuidance?: boolean;
   pilotPlan?: PilotPlan;
   complaint?: CurrentTechnicalComplaint & { kind: "frustrated" };
   reviewReason?: "guard_unverified_os_followup" | "guard_referred_technical_claim" | "guard_operator_paused" | "guard_current_complaint_needs_review" | "guard_pilot_review";
 };
+
+const PILOT_SUPPORT_PROFILE = [
+  "Você presta suporte técnico da BB NET no WhatsApp; escreva em português do Brasil, com cordialidade e objetividade.",
+  "Use apenas a observação atual verificada neste pedido. Diferencie relato de hipótese e não afirme que consultou ou diagnosticou a rede.",
+  "Avance uma etapa por vez. Não repita saudação, pergunta respondida ou teste já tentado; não peça reset de fábrica.",
+  "Não colha senhas ou dados pessoais. Não execute ações, não encerre o caso nem afirme encaminhamento, O.S., visita ou prazo sem confirmação real.",
+].join(" ");
 
 export async function processProtectedTechnicalTurn(
   repository: ChannelRepository, input: ChannelMessageInput, options: TechnicalEmergencyOptions,
@@ -247,8 +339,10 @@ export async function processProtectedTechnicalTurn(
   }
   const inScope = (value: string) => {
     if (greeting) return safeGreetingModelQuestion(value, input.text, daypart);
+    if (pilotStep === "los-guidance") return value === LOS_GUIDANCE;
     const layout = technicalReplyLayout(value);
     if (!layout || layout.daypart !== daypart || layout.empathetic !== !!frustrated) return false;
+    if (pilotStep === "red-light-label") return safePilotRedLightLabel(layout.question);
     if (pilotStep === "wifi-one-device") return safePilotWifiStep(layout.question);
     const shape = technicalQuestionShape(layout.question, !!pilotStep);
     return !!shape && (!pilotStep || shape.dimension === pilotStep)
@@ -274,7 +368,9 @@ export async function processProtectedTechnicalTurn(
   try {
     generated = await options.answer!({
       intent: greeting ? "general_information" : "technical_no_connection", question: question!, history: [],
-      task: [
+      task: (options.pilot && !greeting ? PILOT_SUPPORT_PROFILE + " " : "") + (pilotStep === "los-guidance"
+        ? `Você é o assistente de suporte técnico. Responda em português do Brasil, com cordialidade. Use só a observação atual; não repita saudação, perguntas ou reinício. Escolha se a orientação de segurança é apropriada. Se sim, com state ongoing sem ação, responda exatamente: “${LOS_GUIDANCE}” (sem aspas). Se não, responda NAO_SEI. Não diagnostique a causa efetiva, não marque como resolvido, não diga que encaminhou e não prometa visita.`
+        : [
         daypart ? `Comece com a saudação “${daypart}!” no português indicado.` : "Não use saudação de período.",
         greeting
           ? "A pessoa não informou uma necessidade. Escreva somente uma pergunta breve e cordial oferecendo ajuda."
@@ -287,16 +383,18 @@ export async function processProtectedTechnicalTurn(
             pilotStep === "light" ? "Exemplos seguros de forma da pergunta: “Alguma luz do roteador está vermelha?” ou “Tem alguma luz vermelha no roteador?”." : "",
             pilotStep ? "Piloto de suporte: use só o que a pessoa acabou de relatar. Não repita perguntas respondidas nem peça novo reinício. Seja cordial e direto. Não diga que resolveu, que mediu a rede ou que alguém recebeu um chamado." : "",
             pilotStep === "wifi-one-device" ? "O relato está restrito a um aparelho. Pergunte somente se a pessoa pode desligar e ligar o Wi-Fi nesse aparelho, sem tocar no roteador nem pedir reinício; pode pedir que confirme se voltou, nunca diga que resolveu."
+              : pilotStep === "red-light-label" ? "Peça somente para ler a sigla ao lado da luz vermelha, por exemplo: “Você consegue ler a sigla ao lado da luz vermelha?”. Não presuma LOS, não peça para tocar ou reiniciar o equipamento."
               : (pilotStep ?? anchored?.nextDimension) === "devices" ? "Pergunte apenas se o problema acontece em outro aparelho."
                 : (pilotStep ?? anchored?.nextDimension) === "light" ? "Pergunte apenas se alguma luz do roteador está vermelha."
                   : "A pessoa já descreveu a necessidade. Vá direto à pergunta sobre outro aparelho ou luz vermelha do roteador, sem perguntar como pode ajudar.",
           ].filter(Boolean).join(" "),
         "Escreva uma única pergunta breve em português. Não dê diagnóstico, não peça dados, não afirme estado do cliente, não prometa visita, não execute ações. Use state ongoing sem ação. Se não tiver pergunta apropriada, responda NAO_SEI.",
-      ].join(" "),
+      ].join(" ")),
     });
   } catch { return stop("n8n_failed"); }
   if (generated.kind !== "answer") return stop(generated.kind === "none" ? "n8n_no_answer" : "n8n_failed");
-  if (generated.action || (generated.state && generated.state !== "ongoing") || !inScope(generated.text))
+  if (generated.action || (generated.state && generated.state !== "ongoing")
+    || (pilotStep === "los-guidance" && generated.state !== "ongoing") || !inScope(generated.text))
     return stop("model_question_outside_allowlist");
   const delivery = await options.sender!({ conversationId: input.externalConversationId, text: generated.text, inboundMessageId: input.idempotencyKey })
     .catch(() => undefined);

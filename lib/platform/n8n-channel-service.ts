@@ -362,10 +362,10 @@ export async function processChannelMessage(
   if (emergency && isProtectedInput && !emergency.continuation) return processProtectedTechnicalTurn(repository, input, emergency);
   const storedHistory = await repository.getHistory(CHANNEL_NAME, input.externalConversationId);
   if (emergency?.continuation) {
-    const anchored = await technicalContinuity(repository, storedHistory, input, emergency.continuation.sentAt, undefined, emergency.continuation.replyToMessageId, emergency.pilot);
+    const anchored = await technicalContinuity(repository, storedHistory, input, emergency.continuation.sentAt, undefined, emergency.continuation.replyToMessageId, emergency.pilot, emergency.pilotRedLightLabel, emergency.pilotLosGuidance);
     if (anchored) return processProtectedTechnicalTurn(repository, input, emergency, anchored);
   }
-  if (emergency?.pilot && isPossiblePilotAnswer(input.text))
+  if (emergency?.pilot && isPossiblePilotAnswer(input.text, emergency.pilotRedLightLabel))
     return processProtectedTechnicalTurn(repository, input, { ...emergency, reviewReason: emergency.reviewReason ?? "guard_pilot_review" });
   if (emergency && isProtectedInput) return processProtectedTechnicalTurn(repository, input, emergency);
   const lastReply = [...storedHistory].reverse().find(row => row.role === "agent");

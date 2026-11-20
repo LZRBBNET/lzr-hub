@@ -20,8 +20,8 @@ import { OPT_IN_REPLY, OPT_OUT_REPLY, canonicalPhone, isOptIn, isOptOut } from "
 import { fetchPixCode } from "@/lib/integrations/ixc/write-client";
 import { DbTicketRepository, ixcDiagnose, ixcInvoiceLookup, startTriage, type TicketRow } from "@/lib/platform/triage-service";
 import { DbIncidentsRepository } from "@/lib/platform/incidents-service";
-import { publicGreeting, publicTechnicalQuestion } from "@/lib/platform/meta-technical-emergency";
-import { extractCurrentTechnicalPilot, isPossiblePilotAnswer, technicalPilotEnabled, technicalPilotRoute } from "@/lib/platform/technical-conversation-pilot";
+import { hasRecentProtectedTechnicalAnchor, publicGreeting, publicTechnicalQuestion } from "@/lib/platform/meta-technical-emergency";
+import { extractCurrentTechnicalPilot, matchesProtectedTechnicalConversation, technicalConversationRelease, technicalPilotRoute } from "@/lib/platform/technical-conversation-pilot";
 import { currentTechnicalComplaint, currentTicketGates } from "@/lib/platform/current-support-tone";
 import { windowOpen } from "@/lib/platform/conversation-state-shared";
 import { isBusinessHours } from "@/lib/platform/triage-shared";
@@ -130,12 +130,17 @@ export async function POST(request: Request) {
   for (const message of messages) {
     const correlationId = randomUUID();
     const agentConfig = aiAgentConfig();
-    const pilotScope = {
+    const signedScope = {
       phone: message.phone, canonicalSender: message.canonicalSender, messageId: message.messageId,
       actualPhoneNumberId: message.phoneNumberId, expectedPhoneNumberId: sendConfig?.phoneNumberId,
     };
-    const pilot = message.kind === "text" && technicalPilotEnabled(process.env, pilotScope);
-    const protectedOptions = (auto: Awaited<ReturnType<typeof metaAutoReplyOptions>>, ticket?: TicketRow, usePilot = false) => ({
+    const release = message.kind === "text" ? technicalConversationRelease(process.env, signedScope) : undefined;
+    const releaseStillEnabled = () => {
+      const current = technicalConversationRelease(process.env, signedScope);
+      return current?.scope === release?.scope && current?.redLightLabel === release?.redLightLabel
+        && current?.losGuidance === release?.losGuidance && !!current;
+    };
+    const protectedOptions = (auto: Awaited<ReturnType<typeof metaAutoReplyOptions>>, ticket?: TicketRow, useConversation = false) => ({
       channel: CHANNEL_NAME,
       ...currentTicketGates(ticket),
       reviewReason: process.env.FEATURE_META_TECHNICAL_REPLY_PAUSED === "true" ? "guard_operator_paused" as const : undefined,
@@ -144,20 +149,20 @@ export async function POST(request: Request) {
         && message.phoneNumberId === sendConfig.phoneNumberId && message.canonicalSender === true
         && /^wamid\.[A-Za-z0-9_=+\/-]{1,240}$/.test(message.messageId),
       answer: agentConfig ? (input: Parameters<typeof askDoubtBot>[1]) =>
-        usePilot && !technicalPilotEnabled(process.env, pilotScope)
+        useConversation && !releaseStillEnabled()
           ? Promise.resolve({ kind: "none" as const })
           : askDoubtBot({
             ...agentConfig, fetcher: (url, init) => fetch(url, { ...init, redirect: "error" }),
           }, input, []) : undefined,
-      sender: usePilot && auto.send ? (input: Parameters<NonNullable<typeof auto.send>>[0]) => (
-        technicalPilotEnabled(process.env, pilotScope)
+      sender: useConversation && auto.send ? (input: Parameters<NonNullable<typeof auto.send>>[0]) => (
+        releaseStillEnabled()
           ? auto.send!(input)
-          : Promise.resolve({ sent: false as const, outcome: "blocked" as const, reason: "pilot_closed" })
+          : Promise.resolve({ sent: false as const, outcome: "blocked" as const, reason: "technical_conversation_closed" })
       ) : auto.send,
       reserveInbound: (input: Parameters<typeof reserveTechnicalInbound>[2]) => reserveTechnicalInbound(db, CHANNEL_NAME, input),
       providerSentAt: message.sentAt,
-      ...(usePilot ? { pilot: true } : {}),
-      continuation: (usePilot || process.env.FEATURE_META_TECHNICAL_CONTINUITY === "true") ? {
+      ...(useConversation && release ? { pilot: true, pilotRedLightLabel: release.redLightLabel, pilotLosGuidance: release.losGuidance } : {}),
+      continuation: (useConversation || process.env.FEATURE_META_TECHNICAL_CONTINUITY === "true") ? {
         sentAt: message.sentAt,
         replyToMessageId: message.replyToMessageId,
         claimAnchor: (anchor: string) => claimTechnicalFollowup(db, CHANNEL_NAME, message.phone, anchor),
@@ -166,8 +171,7 @@ export async function POST(request: Request) {
     const baselineProtected = message.kind === "text" && Boolean(
       publicGreeting(message.text) || currentTechnicalComplaint(message.text) || publicTechnicalQuestion(message.text),
     );
-    const pilotCandidate = pilot && !isOptIn(message.text) && !isOptOut(message.text)
-      && Boolean(extractCurrentTechnicalPilot(message.text) || isPossiblePilotAnswer(message.text));
+    const pilotCandidate = matchesProtectedTechnicalConversation(message.text, isOptIn(message.text) || isOptOut(message.text), release);
     if (baselineProtected || pilotCandidate) {
       // Handle bounded current openings/reports before inherited intent and any
       // IXC lookup. Actual conversation ownership is checked regardless of ticket age.
@@ -178,7 +182,11 @@ export async function POST(request: Request) {
       }
       const states = new DbConversationStateRepository(db);
       const [ticket, owner] = await Promise.all([tickets.findOpen(CHANNEL_NAME, message.phone), states.get(CHANNEL_NAME, message.phone)]);
-      const lane = technicalPilotRoute({ baselineProtected, pilotCandidate, ...currentTicketGates(ticket) });
+      const gates = currentTicketGates(ticket);
+      const requiresAnchor = pilotCandidate && release?.scope === "rollout" && !extractCurrentTechnicalPilot(message.text);
+      const provenCandidate = pilotCandidate && (!requiresAnchor || (!gates.humanHandoff && !gates.privateFlowPending
+        && await hasRecentProtectedTechnicalAnchor(channel, await channel.getHistory(CHANNEL_NAME, message.phone))));
+      const lane = technicalPilotRoute({ baselineProtected, pilotCandidate: provenCandidate, ...gates });
       if (lane !== "legacy") {
         const afterResolution = owner?.status !== "resolved"
           || Date.parse(message.sentAt ?? "") > Date.parse(owner.resolvedAt ?? "");

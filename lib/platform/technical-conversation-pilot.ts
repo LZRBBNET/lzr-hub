@@ -4,7 +4,7 @@ type Issue = "offline" | "slow" | "wifi";
 type DeviceScope = "one" | "many";
 type Light = "red" | "not-red";
 type Duration = "today" | "yesterday";
-export type ApprovedTechnicalStep = "devices" | "light" | "wifi-one-device";
+export type ApprovedTechnicalStep = "devices" | "light" | "wifi-one-device" | "red-light-label" | "los-guidance";
 
 export interface PilotFinding {
   issue: Issue;
@@ -17,9 +17,11 @@ export interface PilotFinding {
 
 const CANONICAL = /^[1-9][0-9]{9,14}$/;
 const META_ID = /^wamid\.[A-Za-z0-9_=+\/-]{1,240}$/;
-export function technicalPilotEnabled(env: Record<string, string | undefined>, input: {
+type MetaConversationScope = {
   phone: string; canonicalSender?: boolean; actualPhoneNumberId?: string; expectedPhoneNumberId?: string; messageId: string;
-}, now = Date.now()): boolean {
+};
+type Environment = Record<string, string | undefined>;
+export function technicalPilotEnabled(env: Environment, input: MetaConversationScope, now = Date.now()): boolean {
   const permitted = env.META_CONVERSATION_PILOT_SENDER;
   const until = env.META_CONVERSATION_PILOT_UNTIL;
   const expires = until && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{3})?Z$/.test(until) ? Date.parse(until) : NaN;
@@ -28,6 +30,20 @@ export function technicalPilotEnabled(env: Record<string, string | undefined>, i
     && expires > now && expires - now <= 24 * 60 * 60_000
     && input.canonicalSender === true && input.phone === permitted && !!input.expectedPhoneNumberId
     && input.actualPhoneNumberId === input.expectedPhoneNumberId && META_ID.test(input.messageId);
+}
+
+/** Called only after the Meta webhook verifies its HMAC against the raw body. */
+export function technicalConversationRelease(env: Environment, signedInput: MetaConversationScope, now = Date.now()) {
+  if (env.FEATURE_META_TECHNICAL_CONVERSATION_ROLLOUT === "true" && signedInput.canonicalSender === true
+    && CANONICAL.test(signedInput.phone) && !!signedInput.expectedPhoneNumberId
+    && signedInput.actualPhoneNumberId === signedInput.expectedPhoneNumberId && META_ID.test(signedInput.messageId)) {
+    return { scope: "rollout", redLightLabel: true, losGuidance: true } as const;
+  }
+  if (technicalPilotEnabled(env, signedInput, now)) {
+    return { scope: "pilot", redLightLabel: env.FEATURE_META_CONVERSATION_PILOT_RED_LIGHT_LABEL === "true",
+      losGuidance: env.FEATURE_META_CONVERSATION_PILOT_LOS_GUIDANCE === "true" } as const;
+  }
+  return undefined;
 }
 
 /** Route only freshly eligible pilot input; leave incumbent private flows on their prior lane. */
@@ -143,9 +159,35 @@ export function pilotAnchoredFinding(text: string, dimension: "devices" | "light
   return red ? "red" : "not-red";
 }
 
-export function isPossiblePilotAnswer(text: string): boolean {
+export function pilotReportedRedLight(text: string): boolean {
+  const value = text.length <= 100 && inputWords(text)?.trim();
+  return !!value && /^(?:sim +)?(?:tem|vejo|ha) (?:uma|a) (?:luz )?vermelha(?: (?:acesa|no (?:roteador|modem)))?$/.test(value);
+}
+
+export function safePilotRedLightLabel(text: string): boolean {
+  const value = fold(text);
+  return /^(?:(?:voce consegue|pode|voce pode) (?:ler|ver|me dizer) (?:a sigla|o nome) (?:ao lado|perto) da luz vermelha|(?:qual (?:e )?(?:a sigla|o nome) (?:ao lado|perto) da luz vermelha))\?$/.test(value);
+}
+
+export const LOS_GUIDANCE = "Essa luz pode indicar perda do sinal da fibra. Não mexa no cabo. O próximo passo é verificar o sinal com o suporte técnico.";
+
+export function pilotReportedLosLabel(text: string): boolean {
+  const value = text.length <= 50 && inputWords(text)?.trim();
+  return !!value && /^(?:(?:e|a sigla e|esta escrito) )?los$/.test(value);
+}
+
+export function matchesProtectedTechnicalConversation(text: string, consentCommand: boolean, release: ReturnType<typeof technicalConversationRelease>): boolean {
+  return !!release && !consentCommand && (!!extractCurrentTechnicalPilot(text) || isPossiblePilotAnswer(text, release.redLightLabel));
+}
+
+export function isPossibleRedLightLabelAnswer(text: string): boolean {
+  const value = text.length <= 60 && inputWords(text)?.trim();
+  return !!value && /^(?:(?:(?:e|diz|esta escrito|esta marcada como|a sigla e|o nome e) )?(?:los|pon|power|alarm|internet|lan|optical|fibra)|nao (?:consigo|consegui) (?:ler|ver)(?: a sigla)?|nao da (?:para|pra) ler)$/.test(value);
+}
+
+export function isPossiblePilotAnswer(text: string, includeRedLightLabel = false): boolean {
   const value = text.length <= 100 && inputWords(text);
-  return !!value && (pilotAnchoredFinding(text, "devices") !== undefined
+  return !!value && ((includeRedLightLabel && (pilotReportedRedLight(text) || isPossibleRedLightLabelAnswer(text))) || pilotAnchoredFinding(text, "devices") !== undefined
     || pilotAnchoredFinding(text, "light") !== undefined
     || /^(?:sim|nao|isso|(?:so|somente|apenas) (?:em|no|na) |(?:em|nos) (?:mais de um|dois|todos)|(?:a |uma |alguma |nenhuma )?luz |nao (?:tem|ha) luz)/.test(value.trim()));
 }

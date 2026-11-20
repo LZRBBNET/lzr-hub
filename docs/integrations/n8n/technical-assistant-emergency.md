@@ -145,3 +145,14 @@ escopo, idade e uma reserva no banco. O segundo passo não repete a
 pergunta. Não há diagnóstico confirmado, encerramento automático,
 protocolo, IXC, O.S., Pix, senha, nem promessa de atendimento humano.
 Ameaças, casos mistos/contraditórios e ações não aprovadas ficam fora.
+
+### General technical conversation rollout (disabled by default)
+
+`FEATURE_META_TECHNICAL_CONVERSATION_ROLLOUT=true` selects the same set of
+protected technical capabilities on authenticated inbound WhatsApp text from
+a verified sender to the configured official Meta recipient. It does not
+activate finance, O.S., IXC writes, outgoing outreach or another n8n workflow.
+Do not enable before end-to-end acceptance. With the flag missing the existing
+one-sender pilot, its expiry/capability flags and the legacy paths are unchanged.
+Opt-in/opt-out commands still follow their original path and only concern
+proactive notifications, not inbound support.
