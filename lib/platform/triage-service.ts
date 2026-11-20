@@ -177,15 +177,18 @@ export async function recordTriage(
   // pergunta (modo observação) deixa a etapa como está: se a resposta automática
   // for ligada no meio, a pergunta ainda pode ser feita.
   let stage: TicketStage | undefined;
-  // A IA disse ao cliente que um atendente continua: daqui em diante ela se cala
-  // (modo autônomo). Só vale se a frase chegou — sugestão não passou nada a ninguém.
-  if (entry.handoff && entry.delivered) stage = "handoff";
+  // Encaminhamento é estado durável da fila, independente da confirmação pela Meta.
+  // O canal registra a decisão antes de tentar informar o cliente.
+  if (entry.handoff) stage = "handoff";
   else if (ticket.stage === "handoff") stage = undefined;
   else if (entry.clarifying) stage = entry.delivered ? "clarifying" : undefined;
   else if (confident || ticket.stage === "clarifying") stage = "routed";
   if (stage) patch.stage = stage;
   if (entry.delivered && entry.protocolIncluded && !ticket.protocolSentAt) patch.protocolSentAt = iso(entry.now ?? Date.now());
-  if (Object.keys(patch).length > 0) await repository.update(ticket.id, patch);
+  if (Object.keys(patch).length > 0) {
+    await repository.update(ticket.id, patch);
+    Object.assign(ticket, patch); // Later hooks in this turn must not undo a recorded handoff.
+  }
 }
 
 /** Lê o IXC e devolve o diagnóstico. Injetado: a triagem não conhece o IXC, e os testes rodam sem ele. */
@@ -477,8 +480,9 @@ export function triageHooks(repository: TicketRepository, ticket: TicketRow, dia
     },
     registerRequest: async (summary, intent) => {
       // A ficha vai para quem não estava na conversa: sem CPF, e-mail nem telefone.
-      intakeNow = { intent, summary: sanitizeHandoffText(summary).slice(0, 1500), at: at().toISOString() };
-      await repository.update(ticket.id, { intake: intakeNow, queue: queueForIntent(intent) });
+      const intake = { intent, summary: sanitizeHandoffText(summary).slice(0, 1500), at: at().toISOString() };
+      await repository.update(ticket.id, { intake, queue: queueForIntent(intent) });
+      intakeNow = intake; // Never claim a request was recorded if persistence failed.
     },
     trustUnlock: async (promisedDate) => {
       if (!mode.trustUnlock) return undefined;
@@ -514,7 +518,7 @@ export function triageHooks(repository: TicketRepository, ticket: TicketRow, dia
       return lines.length ? lines.join("\n") : undefined;
     },
     record: async (entry) => {
-      await recordTriage(repository, ticket, { ...entry, protocolIncluded: entry.protocolIncluded && protocolInFooter }).catch(() => undefined);
+      await recordTriage(repository, ticket, { ...entry, protocolIncluded: entry.protocolIncluded && protocolInFooter });
       if (!entry.clarifying && !diagnosedNow) await diagnoseTicket(repository, ticket, entry.intent, diagnose);
     },
   };
@@ -602,7 +606,12 @@ export class DbTicketRepository implements TicketRepository {
   }
 
   async update(id: string, patch: TicketPatch) {
-    await this.db.update(supportTickets).set(patch).where(eq(supportTickets.id, id));
+    const rows: Array<{ id: string }> = await this.db.update(supportTickets).set(patch)
+      .where(patch.stage === "handoff"
+        ? and(eq(supportTickets.id, id), eq(supportTickets.status, "open"))
+        : eq(supportTickets.id, id))
+      .returning({ id: supportTickets.id });
+    if (rows.length !== 1) throw new Error("TICKET_UPDATE_NOT_CONFIRMED");
   }
 }
 

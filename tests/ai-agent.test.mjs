@@ -119,16 +119,16 @@ test("conversa que a IA está atendendo sai da fila; a que ela passou ao atenden
   assert.equal(passada.ticket().stage, "handoff");
 });
 
-test("depois de passar ao atendente, a IA segue ajudando pela base, mas a conversa fica na fila", async () => {
+test("depois de registrar encaminhamento, a IA aguarda devolução explícita", async () => {
   const { receber, textos, ticket, tickets, historico } = await montar();
   await receber("como troco a senha do wifi");
   assert.equal(textos().length, 1);
   assert.equal(ticket().stage, "handoff");
-  // Pergunta que a base responde: a IA ajuda, e a conversa continua esperando o atendente.
+  // Mesmo uma pergunta da base fica para o atendente enquanto o encaminhamento está ativo.
   await receber("qual o horario de atendimento de voces");
-  assert.equal(textos().length, 2);
+  assert.equal(textos().length, 1, "não envia resposta após encaminhamento");
   const rows = await historico();
-  assert.equal(rows.at(-1).sentBy, AI_SENDER, "não tira da fila");
+  assert.equal(rows.at(-1).role, "customer", "nova entrada preservada para o humano");
   assert.ok(awaitingSinceFrom(rows.slice().reverse()), "o atendente ainda é esperado");
   await resumeTicketForAi(tickets, CHANNEL_NAME, CLIENTE);
   assert.equal(ticket().stage, "routed", "devolvida à IA");

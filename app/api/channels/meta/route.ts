@@ -220,6 +220,7 @@ export async function POST(request: Request) {
             ? { send: auto.send, answer: doubtBotAnswerer(doubtBotConfig, () => new DbKnowledgeRepository(db).list(200)), agent: !!agentConfig, handedOff: triage?.handedOff }
             : undefined,
           templates,
+          handoffRecorded: triage?.handedOff,
           triage: triage?.hooks,
         },
         (input) => captureLeadFromContact(new DbCrmRepository(db), input, triage?.knownCustomer ?? lookupCustomer),
