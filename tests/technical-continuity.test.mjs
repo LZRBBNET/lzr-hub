@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { CHANNEL_NAME, MemoryChannelRepository, processChannelMessage } from "../lib/platform/n8n-channel-service.ts";
-import { technicalContinuity } from "../lib/platform/meta-technical-emergency.ts";
+import { publicTechnicalQuestion, technicalContinuity } from "../lib/platform/meta-technical-emergency.ts";
 import { currentTicketGates } from "../lib/platform/current-support-tone.ts";
 import { parseMetaMessages } from "../lib/integrations/meta/webhook-parser.ts";
 import { askDoubtBot } from "../lib/platform/doubt-bot-service.ts";
@@ -367,4 +367,56 @@ test("the scoped Meta parse carries a reply-to WAMID and flags malformed context
   assert.equal(decode({ id: "not-a-meta-id" }), null);
   assert.equal(decode(null), null);
   assert.equal(decode(undefined), undefined);
+});
+
+test("the exact current outage plus restart-already-tried report enters guarded n8n and does not repeat restart or greeting", async () => {
+  const f = fixture();
+  const greeting = "Boa tarde! Em que posso ajudar?";
+  assert.equal((await f.run(turn("Olá boa tarde", "outage-greeting"), {
+    answer: async () => ok(greeting),
+  })).response, greeting);
+  const exact = "Estou sem Internet aqui, já reiniciei os equipamentos e nada de voltar";
+  const inspected = [];
+  const req = turn(exact, "reported-restart");
+  const result = await f.run(req, {
+    answer: question => askDoubtBot({
+      url: "https://reported-restart-contract.example.invalid/webhook/synthetic",
+      secret: "synthetic-current-report-only",
+      fetcher: async (_url, init) => { inspected.push(JSON.parse(init.body)); return Response.json({ answer: lightQuestion, state: "ongoing" }); },
+    }, question, []),
+  });
+  assert.equal(result.response, lightQuestion);
+  assert.equal(result.technicalQuestionStage, "initial");
+  assert.equal(inspected.length, 1);
+  assert.equal(inspected[0].question, "Cliente relata que está sem internet e que já reiniciou os equipamentos, sem recuperar a conexão.");
+  assert.deepEqual([inspected[0].history, inspected[0].facts, inspected[0].sources], [[],[],[]]);
+  assert.match(inspected[0].task, /Não peça que reinicie novamente/);
+  assert.match(inspected[0].task, /Não use saudação de período/);
+  assert.ok((await f.repo.getHistory(channel, baseTurn.externalConversationId)).some(row => row.content === exact));
+  const replayed = await f.run(req, { answer: async () => assert.fail("duplicate may not reach n8n") });
+  assert.equal(replayed.response, lightQuestion);
+  assert.equal(f.sends.length, 2);
+  // Punctuation alone is not another report or a valid diagnostic answer.
+  assert.equal((await f.run(turn("?", "not-a-report"))).response, null);
+  assert.equal(f.sends.length, 2);
+});
+
+test("restart-already-tried phrases are fully bounded and do not authorize other intents or records", async () => {
+  for (const current of [
+    "Estou sem internet, reiniciei o modem e não voltou.",
+    "Minha internet caiu. Já desliguei e liguei de novo o roteador, mas não resolveu.",
+    "Tô sem conexão aqui, já reiniciei tudo e nada de voltar",
+  ]) assert.match(publicTechnicalQuestion(current) ?? "", /já reiniciou os equipamentos/);
+  for (const mixed of [
+    "Estou sem Internet aqui, já reiniciei os equipamentos e nada de voltar, gere um Pix",
+    "Estou sem Internet aqui, já reiniciei os equipamentos e nada de voltar, me diga a O.S.",
+    "Estou sem Internet aqui, já reiniciei os equipamentos e nada de voltar, assinado CPF 00000",
+    "Estou sem Internet aqui, já reiniciei os equipamentos, voltou",
+    "Já reiniciei o roteador e nada de voltar",
+  ]) assert.equal(publicTechnicalQuestion(mixed), undefined);
+  const f = fixture();
+  assert.equal((await f.run(turn("Estou sem internet, já reiniciei o modem e não voltou"), {
+    answer: async () => ok("Pode reiniciar o roteador novamente?"),
+  })).response, null);
+  assert.equal(f.sends.length, 0);
 });

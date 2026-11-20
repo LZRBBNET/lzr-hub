@@ -23,9 +23,20 @@ export function safeGreetingModelQuestion(text: string, incoming: string, requir
 export function protectedTechnicalIntent(intent?: string | null) {
   return intent?.startsWith("technical_") === true;
 }
+const RESTART_TRIED_REPORT = "Cliente relata que está sem internet e que já reiniciou os equipamentos, sem recuperar a conexão.";
+const CURRENT_GREETING_PREFIX = "^(?:(?:oi|ola)(?: (?:bom dia|boa tarde|boa noite))? |(?:bom dia|boa tarde|boa noite) )?";
+const OFFLINE_AFTER_RESTART = new RegExp(CURRENT_GREETING_PREFIX
+  + "(?:eu )?(?:(?:ainda )?(?:estou |to |continuo |sigo )?(?:sem internet|sem conexao)|(?:a |minha )?internet (?:caiu|nao funciona))(?: aqui)? "
+  + "(?:e )?(?:ja )?(?:reiniciei|desliguei e liguei de novo)(?: (?:o modem e o roteador|o roteador e o modem|os equipamentos|meus equipamentos|os aparelhos|o modem|o roteador|tudo|modem|roteador))? "
+  + "(?:(?:e |mas )?(?:nada de voltar|nao voltou|nao adiantou|nao resolveu|continua sem internet|segue sem internet|a conexao nao voltou|a internet nao voltou))(?: por favor)?$");
+
 export function publicTechnicalQuestion(text: string): string | undefined {
-  if (text.length > 100 || !/^[\p{L}\p{M} ,.!?-]+$/u.test(text)) return undefined;
+  if (!/^[\p{L}\p{M} ,.!?-]+$/u.test(text)) return undefined;
   const value = folded(text).replace(/[,.!?-]/g, " ").replace(/ +/g, " ").trim();
+  // Only a complete current symptom + action already attempted + failure to
+  // recover. Never forward free-form additions, names, identifiers or old data.
+  if (text.length <= 140 && OFFLINE_AFTER_RESTART.test(value)) return RESTART_TRIED_REPORT;
+  if (text.length > 100) return undefined;
   return /^(?:(?:oi|ola)(?: (?:bom dia|boa tarde|boa noite))? |(?:bom dia|boa tarde|boa noite) )?(?:eu )?(?:ainda )?(?:estou |estamos |continuo |continuamos |sigo |to |a |minha |meu |o )?(?:sem internet|sem conexao|internet caiu|internet nao funciona|internet lenta|wifi nao conecta|wi fi nao conecta|problema de conexao|conexao continua falhando|internet continua falhando|internet continua caindo)(?:(?: de novo| novamente))?(?: por favor)?$/.test(value)
     ? text.trim() : undefined;
 }
@@ -223,10 +234,13 @@ export async function processProtectedTechnicalTurn(
           ? "A pessoa não informou uma necessidade. Escreva somente uma pergunta breve e cordial oferecendo ajuda."
           : [
             frustrated ? "A pessoa está frustrada. Com calma e sem confronto, reconheça brevemente com uma frase: “Entendo sua frustração.”, “Sinto muito pelo transtorno.”, “Lamento o transtorno.” ou “Sei que isso é frustrante.” Não mencione linguagem ofensiva." : "Não inclua frases além da saudação permitida e da pergunta.",
+            question === RESTART_TRIED_REPORT
+              ? "A pessoa já reiniciou os equipamentos e continua sem internet. Não peça que reinicie novamente. Vá direto a uma pergunta sobre outros aparelhos ou luz vermelha do roteador."
+              : "",
             anchored?.nextDimension === "devices" ? "Pergunte apenas se o problema acontece em outro aparelho."
               : anchored?.nextDimension === "light" ? "Pergunte apenas se alguma luz do roteador está vermelha."
                 : "A pessoa já descreveu a necessidade. Vá direto à pergunta sobre outro aparelho ou luz vermelha do roteador, sem perguntar como pode ajudar.",
-          ].join(" "),
+          ].filter(Boolean).join(" "),
         "Escreva uma única pergunta breve em português. Não dê diagnóstico, não peça dados, não afirme estado do cliente, não prometa visita, não execute ações. Use state ongoing sem ação. Se não tiver pergunta apropriada, responda NAO_SEI.",
       ].join(" "),
     });
