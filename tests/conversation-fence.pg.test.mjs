@@ -1,3 +1,5 @@
+import { DbDeliveryReconciliation } from "../lib/platform/delivery-reconciliation-service.ts";
+import { hashToken } from "../lib/platform/auth.ts";
 import test from "node:test";
 import assert from "node:assert/strict";
 import { Pool } from "pg";
@@ -6,7 +8,7 @@ import { migrate } from "drizzle-orm/node-postgres/migrator";
 import { sql } from "drizzle-orm";
 import { DbConversationFence, fenceKey, readLedger } from "../lib/platform/conversation-fence.ts";
 import { DbConversationDelivery } from "../lib/platform/conversation-delivery-service.ts";
-import { DbTicketRepository, openOrContinueTicket } from "../lib/platform/triage-service.ts";
+import { DbTicketRepository, openOrContinueTicket, recordTriage } from "../lib/platform/triage-service.ts";
 import { DbConversationStateRepository, changeConversationStateWithTicket } from "../lib/platform/conversation-state-service.ts";
 import { metaAutoReplySender } from "../lib/platform/meta-auto-reply-service.ts";
 import { DbReplyRepository } from "../lib/platform/attendant-reply-service.ts";
@@ -112,6 +114,44 @@ test("isolated PostgreSQL: generation, handoff confirmation and dispatch boundar
    assert.equal((await sender(input)).sent,true);
    const reservation=await readLedger(db,deliveryKey(f.channel,f.id));assert.equal(reservation.status,"uncertain");assert.equal(reservation.acceptedMessageId,"local-cleanup-accepted");
    assert.equal(await f.handoff(),false);assert.equal((await sender(input)).sent,true);assert.equal(calls,1);
+  });
+  await t.test("competing department requests commit only the winning intake with handoff",async()=>{
+   const f=await fixture();const ra=new DbTicketRepository(db,f.a),rb=new DbTicketRepository(db,f.b);
+   const base={source:"menu",confidence:1,clarifying:false,delivered:false,protocolIncluded:false,handoff:true};
+   const outcomes=await Promise.allSettled([
+    recordTriage(ra,structuredClone(f.ticket),{...base,intent:"no_connection",requestSummary:"Synthetic technical request"}),
+    recordTriage(rb,structuredClone(f.ticket),{...base,intent:"invoice",requestSummary:"Synthetic billing request"})]);
+   assert.equal(outcomes.filter(x=>x.status==="fulfilled").length,1);
+   const saved=await ra.findOpen(f.channel,f.id);assert.equal(saved.stage,"handoff");assert.equal(saved.intake.intent,saved.intent);
+   const expected=saved.intent==="invoice"?"Synthetic billing request":"Synthetic technical request";assert.equal(saved.intake.summary,expected);
+   const loser=outcomes[0].status==="rejected"?ra:rb;
+   await assert.rejects(loser.update(f.ticket.id,{intake:{intent:"invoice",summary:"stale",at:new Date().toISOString()},queue:"financeiro"}),/OBSOLETE/);
+   assert.deepEqual(await ra.findOpen(f.channel,f.id),saved);
+  });
+  await t.test("abrupt worker recovery requires observed consumed authorization and operational evidence",async()=>{
+   const f=await fixture(),claims=new DbReplyRepository(db),rec=new DbDeliveryReconciliation(db);
+   const supervisor={id:`supervisor-${run}`,email:`local-${run}@example.invalid`,name:"Local supervisor",role:"Supervisor"};
+   const sessionToken=`local-session-${run}`,now=new Date().toISOString();
+   await pool.query("INSERT INTO users(id,email,name,role,password_hash,password_salt,created_at,updated_at) VALUES($1,$2,$3,$4,'unused','unused',$5,$5)",[supervisor.id,supervisor.email,supervisor.name,supervisor.role,now]);
+   await pool.query("INSERT INTO sessions(token_hash,user_id,expires_at,created_at) VALUES($1,$2,$3,$4)",[hashToken(sessionToken),supervisor.id,new Date(Date.now()+60000).toISOString(),now]);
+   await claims.claim(f.a.sendKey,f.channel,f.id);
+   const token=await delivery.begin(f.channel,f.id,undefined,f.a.sendKey,f.a);
+   const input={channel:f.channel,conversationId:f.id,reservationId:token,outcome:"not_sent",evidence:"Local fixture provider explicitly confirms no send",actor:supervisor,sessionToken};
+   await assert.rejects(rec.reconcile({...input,workerStopEvidence:"Local fixture confirms worker interrupted"}),e=>e.status===409);
+   await delivery.authorizeDispatch(f.channel,f.id,token,f.a);
+   assert.equal((await rec.status(f.channel,f.id)).interruptedRecoveryAvailable,true);
+   await assert.rejects(rec.reconcile(input),e=>e.status===409);
+   await assert.rejects(rec.reconcile({...input,workerStopEvidence:"short"}),e=>e.status===400);
+   const recovery={...input,workerStopEvidence:"Local fixture confirms worker interrupted and cannot resume"};
+   await pool.query("UPDATE channel_idempotency_keys SET response_json=jsonb_set(response_json,'{dispatchToken}',to_jsonb('wrong-token'::text)) WHERE idempotency_key=$1",[f.a.operation]);
+   await assert.rejects(rec.reconcile(recovery),e=>e.status===409);
+   await pool.query("UPDATE channel_idempotency_keys SET response_json=jsonb_set(response_json,'{dispatchToken}',to_jsonb($2::text)) WHERE idempotency_key=$1",[f.a.operation,token]);
+   assert.equal((await rec.reconcile(recovery)).duplicate,false);assert.equal(await rec.status(f.channel,f.id),null);
+   assert.equal((await rec.reconcile(recovery)).duplicate,true);
+   await assert.rejects(delivery.begin(f.channel,f.id,undefined,f.a.sendKey,f.a),/OBSOLETE/);
+   assert.equal(await f.handoff(),true);
+   const audit=await pool.query("SELECT reason FROM audit_events WHERE action='conversation.delivery.reconciled' AND correlation_id=$1",[token]);
+   assert.equal(audit.rows.length,1);assert.match(audit.rows[0].reason,/Worker interrompido/);
   });
   await t.test("concurrent dispatch authorization versus handoff has only one winning order",async()=>{
    for(let i=0;i<8;i++){

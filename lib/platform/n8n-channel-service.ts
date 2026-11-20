@@ -195,8 +195,6 @@ export interface TriageHooks {
   footer(context?: { clarifying?: boolean; handoff?: boolean; request?: string; serviceOrder?: { id: string; existing?: boolean } }): string | undefined;
   /** Modo autônomo: o assunto do atendimento, se o cliente é identificado e o que o sistema sabe (diagnóstico, pedido já feito). */
   context?(): { topic: string | null; identified: boolean; facts: string[] };
-  /** Modo autônomo: grava o pedido que a IA deixou pronto para a equipe. */
-  registerRequest?(summary: string, intent: string): Promise<void>;
   /**
    * Modo autônomo: abre a OS no IXC para o pedido técnico pronto. Devolve o número só quando o
    * IXC criou (ou já havia uma aberta); qualquer outro desfecho deixa a ficha para a equipe.
@@ -204,7 +202,7 @@ export interface TriageHooks {
   openServiceOrder?(intent: string): Promise<{ id: string; existing?: boolean } | undefined>;
   /** Modo autônomo: o modelo pediu o desbloqueio de confiança; a triagem confere tudo e devolve o texto do desfecho. */
   trustUnlock?(promisedDate?: string): Promise<{ status: string; text: string } | undefined>;
-  record(entry: { intent: string; source: string; confidence: number; clarifying: boolean; delivered: boolean; protocolIncluded: boolean; handoff?: boolean; deliveryOnly?: boolean }): Promise<void>;
+  record(entry: { intent: string; source: string; confidence: number; clarifying: boolean; delivered: boolean; protocolIncluded: boolean; handoff?: boolean; deliveryOnly?: boolean; requestSummary?: string }): Promise<void>;
 }
 
 /**
@@ -325,7 +323,7 @@ export type LeadCapture = (input: { contactKey: string; text: string }) => Promi
  */
 async function persistHumanHandoff(
   repository: ChannelRepository, input: ChannelMessageInput, options: ChannelOptions,
-  classified: Classification, requested: boolean, prepare?: () => Promise<void>,
+  classified: Classification, requested: boolean, requestSummary?: string,
 ): Promise<boolean> {
   if (!requested) return false;
   try {
@@ -333,9 +331,8 @@ async function persistHumanHandoff(
     await repository.saveMessages(CHANNEL_NAME, input.externalConversationId, [
       { role: "customer", content: input.text, correlationId: input.correlationId, externalMessageId: input.idempotencyKey },
     ]);
-    await prepare?.();
     await options.triage.record({ intent: classified.intent, source: classified.source, confidence: classified.confidence,
-      clarifying: false, delivered: false, protocolIncluded: false, handoff: true });
+      clarifying: false, delivered: false, protocolIncluded: false, handoff: true, requestSummary });
   } catch {
     await repository.audit({ correlationId: input.correlationId, entity: `conversation:${input.externalConversationId}`,
       action: "whatsapp.handoff.failed", result: "failed",
@@ -570,10 +567,7 @@ async function doubtBotTurn(
   const handoff = !!bot.agent && (request || promisesHuman(result.text));
   const requestSummary = result.summary ?? result.text;
   const recordedHandoff = await persistHumanHandoff(repository, input, options, classified, handoff,
-    request ? async () => {
-      if (!options.triage?.registerRequest) throw new Error("REQUEST_RECORD_UNAVAILABLE");
-      await options.triage.registerRequest(requestSummary, classified.intent);
-    } : undefined);
+    request ? requestSummary : undefined);
   // Only after the contextual request and human fallback are durably recorded.
   const serviceOrder = request && recordedHandoff ? await options.triage?.openServiceOrder?.(classified.intent).catch(() => undefined) : undefined;
   // Pedido de desbloqueio: o desfecho real (liberou, negou pela regra, falta o CPF) vem do sistema, não do modelo.

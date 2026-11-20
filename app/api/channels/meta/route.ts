@@ -1,3 +1,4 @@
+import { processMetaBatch } from "@/lib/platform/meta-batch-service";
 import { DbConversationFence } from "@/lib/platform/conversation-fence";
 import { DbConversationDelivery } from "@/lib/platform/conversation-delivery-service";
 import { NextResponse } from "next/server";
@@ -121,8 +122,8 @@ export async function POST(request: Request) {
   const templates = messages.some((message) => message.kind === "text") ? await loadOverrides(new DbReplyTemplatesRepository(db)) : undefined;
   const sendConfig = metaSendConfigFromEnv();
 
-  const results = [];
-  for (const message of messages) {
+  const results: unknown[] = [];
+  const batch = await processMetaBatch(messages, async (message) => {
     const correlationId = randomUUID();
     const turn = await new DbConversationFence(db).capture(CHANNEL_NAME,message.phone,message.messageId,message.sentAt);
     const tickets = new DbTicketRepository(db,turn);
@@ -183,7 +184,7 @@ export async function POST(request: Request) {
     // `wamid` é a chave de idempotência: a Meta reenvia o webhook quando não
     // recebe 200, e sem isso a reentrega viraria atendimento em dobro.
     if (message.kind === "text") {
-      if (message.text.length > MAX_MESSAGE_LENGTH) { results.push({ ignored: true, reason: "mensagem-longa" }); continue; }
+      if (message.text.length > MAX_MESSAGE_LENGTH) { results.push({ ignored: true, reason: "mensagem-longa" }); return; }
       // SAIR / VOLTAR: descadastro dos avisos automáticos de fatura e rede. Não é atendimento — a IA
       // não entra, e o atendimento pelo WhatsApp continua. Reentrega do webhook não responde duas vezes.
       if (isOptOut(message.text) || isOptIn(message.text)) {
@@ -200,7 +201,7 @@ export async function POST(request: Request) {
           await channel.saveIdempotency(message.messageId, CHANNEL_NAME, message.phone, { response: sent.sent ? reply : null, autoReply: !!sent.sent, status: out ? "opted_out" : "opted_in", handoff: false, correlationId });
         }
         results.push({ status: out ? "opted_out" : "opted_in" });
-        continue;
+        return;
       }
       // Com um humano à frente da conversa a IA só sugere: não responde por cima dele.
       // Quando responde, é pela Cloud API, e só fica gravado como enviado o que a Meta aceitou.
@@ -234,7 +235,7 @@ export async function POST(request: Request) {
       }));
     }
     await rememberContactName(new DbContactsRepository(db), CHANNEL_NAME, message.phone, message.profileName);
-  }
+  });
 
-  return NextResponse.json({ results, statuses: updated });
+  return NextResponse.json({ results, statuses: updated, retryRequired: batch.failed > 0, failed: batch.failed }, { status: batch.failed ? 503 : 200 });
 }

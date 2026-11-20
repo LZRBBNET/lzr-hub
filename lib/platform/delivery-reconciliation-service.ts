@@ -10,7 +10,7 @@ export class ReconciliationError extends Error {
   status: number;
   constructor(status: number, message: string) { super(message); this.status = status; }
 }
-export type DeliveryStatus = { reservationId: string; status: "pending" | "uncertain"; kind: string; createdAt: string; acceptedMessageId: string | null; eligible: boolean };
+export type DeliveryStatus = { reservationId: string; status: "pending" | "uncertain"; kind: string; createdAt: string; acceptedMessageId: string | null; eligible: boolean; interruptedRecoveryAvailable: boolean };
 export class DbDeliveryReconciliation {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   private readonly db: any;
@@ -24,9 +24,9 @@ export class DbDeliveryReconciliation {
     if (!row) return null;
     const value = row.responseJson;
     return { reservationId: value.token, status: value.status === "uncertain" ? "uncertain" : "pending", kind: value.kind, createdAt: row.createdAt,
-      acceptedMessageId: value.acceptedMessageId ?? null, eligible: value.status === "uncertain" && value.workerSettled === true && typeof value.operationKey === "string" };
+      acceptedMessageId: value.acceptedMessageId ?? null, interruptedRecoveryAvailable: value.status === "pending" && value.kind === "bot" && value.phase === "dispatch_authorized" && typeof value.turnOperation === "string", eligible: value.status === "uncertain" && value.workerSettled === true && typeof value.operationKey === "string" };
   }
-  async reconcile(input: { channel: string; conversationId: string; reservationId: string; outcome: string; evidence: string; messageId?: string; sessionToken: string; actor: StateActor }) {
+  async reconcile(input: { channel: string; conversationId: string; reservationId: string; outcome: string; evidence: string; messageId?: string; workerStopEvidence?: string; sessionToken: string; actor: StateActor }) {
     const { channel, conversationId, reservationId, actor: admittedActor, outcome } = input;
     let actor = admittedActor;
     if (!actor?.id || !roles.includes(actor.role as Role) || !can(actor.role as Role, "support.reconcile")) throw new ReconciliationError(403, "Seu perfil não permite reconciliar envios.");
@@ -34,7 +34,9 @@ export class DbDeliveryReconciliation {
     if (!/^[a-f0-9-]{36}$/i.test(reservationId) || !["accepted", "not_sent"].includes(outcome) || evidence.length < 20 || evidence.length > 500 || /[\r\n\x00-\x1f]/.test(evidence) || (outcome === "accepted" && (!messageId || !/^[\w.:-]{1,200}$/.test(messageId))) || (outcome === "not_sent" && messageId)) {
       throw new ReconciliationError(400, "Informe uma conclusão, a referência da evidência (20–500 caracteres) e o ID da mensagem quando aceita.");
     }
-    const fingerprint = createHash("sha256").update(JSON.stringify([channel, conversationId, reservationId, outcome, evidence, messageId, actor.id])).digest("hex");
+    const workerStopEvidence = input.workerStopEvidence?.trim() || null;
+    if (workerStopEvidence && (workerStopEvidence.length < 20 || workerStopEvidence.length > 500 || /[\r\n\x00-\x1f]/.test(workerStopEvidence))) throw new ReconciliationError(400, "Informe referência da confirmação operacional de encerramento do worker (20–500 caracteres).");
+    const fingerprint = createHash("sha256").update(JSON.stringify([channel, conversationId, reservationId, outcome, evidence, messageId, actor.id, ...(workerStopEvidence ? [workerStopEvidence] : [])])).digest("hex");
     const resolutionKey = `delivery-resolution:${reservationId}`;
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     return this.db.transaction(async (tx: any) => {
@@ -57,14 +59,19 @@ export class DbDeliveryReconciliation {
       }
       const key = deliveryKey(channel, conversationId), row = await repository.row(key), value = row?.responseJson;
       if (!row || value.token !== reservationId) throw new ReconciliationError(409, "A reserva mudou. Atualize a conversa.");
-      if (value.status !== "uncertain" || value.workerSettled !== true || typeof value.operationKey !== "string") throw new ReconciliationError(409, "Encerramento da tentativa não comprovado. Mantenha o bloqueio; não reenvie.");
+      const interrupted = value.status === "pending" && value.kind === "bot" && value.phase === "dispatch_authorized" && !!workerStopEvidence;
+      if ((!interrupted && (value.status !== "uncertain" || value.workerSettled !== true)) || typeof value.operationKey !== "string") throw new ReconciliationError(409, "Encerramento da tentativa não comprovado. Mantenha o bloqueio; não reenvie.");
+      if (interrupted) {
+        const turn = typeof value.turnOperation === "string" ? await repository.row(value.turnOperation) : undefined;
+        if (!turn || turn.channel !== channel || turn.externalConversationId !== conversationId || turn.responseJson.dispatchToken !== reservationId || turn.responseJson.generation !== value.generation || turn.responseJson.sendKey !== value.operationKey) throw new ReconciliationError(409, "Autorização consumida não comprovada. Mantenha o bloqueio.");
+      }
       if (value.acceptedMessageId && (outcome !== "accepted" || messageId !== value.acceptedMessageId)) throw new ReconciliationError(409, "A aceitação registrada pelo servidor não corresponde à decisão.");
       const operation = await repository.row(value.operationKey);
       if (!operation || operation.channel !== channel || operation.externalConversationId !== conversationId || !/^(reply:|autoreply:)/.test(value.operationKey)) throw new ReconciliationError(409, "Vínculo da operação indisponível. Mantenha o bloqueio.");
       const auditId = randomUUID(), at = new Date().toISOString();
       const inserted = await tx.insert(auditEvents).values({ id: auditId, actorId: actor.email, role: actor.role, action: "conversation.delivery.reconciled",
         entity: `conversation:${encodeURIComponent(channel)}:${encodeURIComponent(conversationId)}`, beforeMasked: "blocked", afterMasked: outcome,
-        reason: `Conferência manual: ${evidence}. Conclusão: ${outcome}. ID de aceitação: ${messageId ?? "não aplicável"}. Nenhum reenvio.`, correlationId: reservationId, result: "success", origin: "humano", createdAt: at }).returning({ id: auditEvents.id });
+        reason: `Conferência manual: ${evidence}.${interrupted ? ` Worker interrompido, confirmado pelo operador: ${workerStopEvidence}. Estado observado: dispatch_authorized; token e geração conferidos.` : ""} Conclusão: ${outcome}. ID de aceitação: ${messageId ?? "não aplicável"}. Nenhum reenvio.`, correlationId: reservationId, result: "success", origin: "humano", createdAt: at }).returning({ id: auditEvents.id });
       if (inserted.length !== 1 || inserted[0].id !== auditId) throw Error("RECONCILIATION_AUDIT_UNCONFIRMED");
       const closed = await tx.update(channelIdempotencyKeys).set({ responseJson: { ...operation.responseJson, status: "reconciled", resolution: outcome, auditId } })
         .where(eq(channelIdempotencyKeys.idempotencyKey, value.operationKey)).returning({ key: channelIdempotencyKeys.idempotencyKey });

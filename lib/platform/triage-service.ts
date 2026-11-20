@@ -160,9 +160,14 @@ export function knownCustomer(ticket: TicketRow): CustomerLookup {
 export async function recordTriage(
   repository: TicketRepository,
   ticket: TicketRow,
-  entry: { intent: string; source: string; confidence: number; clarifying: boolean; delivered: boolean; protocolIncluded: boolean; handoff?: boolean; deliveryOnly?: boolean; now?: number },
+  entry: { intent: string; source: string; confidence: number; clarifying: boolean; delivered: boolean; protocolIncluded: boolean; handoff?: boolean; deliveryOnly?: boolean; requestSummary?: string; now?: number },
 ): Promise<void> {
   const patch: TicketPatch = {};
+  if (entry.requestSummary !== undefined) {
+    if (!entry.handoff || entry.deliveryOnly) throw Error("REQUEST_REQUIRES_HANDOFF");
+    patch.intake = { intent: entry.intent, summary: sanitizeHandoffText(entry.requestSummary).slice(0,1500), at: iso(entry.now ?? Date.now()) };
+    patch.queue = queueForIntent(entry.intent);
+  }
   const confident = entry.source === "menu" || (entry.confidence >= CLARIFY_BELOW && entry.intent !== "general_information");
   if (!entry.deliveryOnly && (confident || !ticket.intent)) {
     patch.intent = entry.intent; patch.intentSource = entry.source; patch.intentConfidence = Math.round(entry.confidence * 100);
@@ -479,12 +484,6 @@ export function triageHooks(repository: TicketRepository, ticket: TicketRow, dia
       if (intakeNow) facts.push(`Pedido já registrado neste atendimento (${intakeNow.intent}): ${intakeNow.summary}`);
       return { topic: ticket.intent, identified: ticket.identification === "identified" && !!ticket.ixcCustomerId, facts };
     },
-    registerRequest: async (summary, intent) => {
-      // A ficha vai para quem não estava na conversa: sem CPF, e-mail nem telefone.
-      const intake = { intent, summary: sanitizeHandoffText(summary).slice(0, 1500), at: at().toISOString() };
-      await repository.update(ticket.id, { intake, queue: queueForIntent(intent) });
-      intakeNow = intake; // Never claim a request was recorded if persistence failed.
-    },
     trustUnlock: async (promisedDate) => {
       if (!mode.trustUnlock) return undefined;
       if (ticket.identification !== "identified" || !ticket.ixcCustomerId) return { status: "denied", text: TRUST_UNLOCK_TEXT.unidentified };
@@ -520,6 +519,7 @@ export function triageHooks(repository: TicketRepository, ticket: TicketRow, dia
     },
     record: async (entry) => {
       await recordTriage(repository, ticket, { ...entry, protocolIncluded: entry.protocolIncluded && protocolInFooter });
+      intakeNow = ticket.intake ?? null;
       if (!entry.clarifying && !diagnosedNow) await diagnoseTicket(repository, ticket, entry.intent, diagnose);
     },
   };
@@ -643,6 +643,13 @@ export class DbTicketRepository implements TicketRepository {
 
   async update(id: string, patch: TicketPatch) {
     if (patch.stage) throw new Error("USE_FENCED_STAGE_TRANSITION");
+    if (this.turn && (patch.intake !== undefined || patch.queue !== undefined)) {
+      return this.db.transaction(async (tx: unknown) => {
+        await lockDelivery(tx,this.turn!.channel,this.turn!.conversationId);
+        if (!await validTurn(tx,this.turn!.channel,this.turn!.conversationId,this.turn,true)) throw Error("OBSOLETE_TURN_MUTATION");
+        await new DbTicketRepository(tx).update(id,patch);
+      });
+    }
     const rows: Array<{ id: string }> = await this.db.update(supportTickets).set(patch)
       .where(eq(supportTickets.id, id))
       .returning({ id: supportTickets.id });
