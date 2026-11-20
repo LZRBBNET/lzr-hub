@@ -1,3 +1,5 @@
+import { explicitHumanHandoff } from "../lib/platform/explicit-human-handoff.ts";
+import { D1ChannelRepository, CHANNEL_NAME } from "../lib/platform/n8n-channel-service.ts";
 import { DbDeliveryReconciliation } from "../lib/platform/delivery-reconciliation-service.ts";
 import { hashToken } from "../lib/platform/auth.ts";
 import test from "node:test";
@@ -152,6 +154,22 @@ test("isolated PostgreSQL: generation, handoff confirmation and dispatch boundar
    assert.equal(await f.handoff(),true);
    const audit=await pool.query("SELECT reason FROM audit_events WHERE action='conversation.delivery.reconciled' AND correlation_id=$1",[token]);
    assert.equal(audit.rows.length,1);assert.match(audit.rows[0].reason,/Worker interrompido/);
+  });
+  await t.test("explicit human request: unidentified first contact, duplicate and closed send window",async()=>{
+   for(const expired of [false,true]){
+    const id=`000${run.slice(-7)}${String(++n).padStart(2,"0")}`,inbound=`explicit-${run}-${n}`;let sends=0;
+    const turn=await fence.capture(CHANNEL_NAME,id,inbound,new Date().toISOString());
+    const tickets=new DbTicketRepository(db,turn),channel=new D1ChannelRepository(db);
+    const send=metaAutoReplySender({claims:new DbReplyRepository(db),delivery,turn,channel:CHANNEL_NAME,
+     customerMessageAt:expired?"2020-01-01T00:00:00Z":new Date().toISOString(),
+     config:{accessToken:"local-only",phoneNumberId:"local",graphVersion:"v26.0",fetcher:async()=>{sends++;assert.equal((await tickets.findOpen(CHANNEL_NAME,id)).stage,"handoff");return {status:200,json:async()=>({messages:[{id:"local-explicit-accepted"}]})};}}});
+    const input={conversationId:id,inboundMessageId:inbound,text:"Quero falar com um atendente",correlationId:`local-${run}-${n}`};
+    const result=await explicitHumanHandoff({tickets,channel,send},input);
+    assert.equal(result.handoff,true);assert.equal(result.autoReply,!expired);
+    const ticket=await tickets.findOpen(CHANNEL_NAME,id);assert.equal(ticket.queue,"atendimento");assert.equal(ticket.ixcCustomerId,null);assert.ok(ticket.protocol);
+    assert.deepEqual(await explicitHumanHandoff({tickets,channel,send},input),result);assert.equal(sends,expired?0:1);
+    assert.equal((await channel.getHistory(CHANNEL_NAME,id)).filter(x=>x.role==="customer").length,1);
+   }
   });
   await t.test("concurrent dispatch authorization versus handoff has only one winning order",async()=>{
    for(let i=0;i<8;i++){

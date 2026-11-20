@@ -1,3 +1,4 @@
+import { explicitHumanHandoff, requestsHuman } from "@/lib/platform/explicit-human-handoff";
 import { processMetaBatch } from "@/lib/platform/meta-batch-service";
 import { DbConversationFence } from "@/lib/platform/conversation-fence";
 import { DbConversationDelivery } from "@/lib/platform/conversation-delivery-service";
@@ -119,7 +120,6 @@ export async function POST(request: Request) {
   const db = await getDb();
   const channel = new D1ChannelRepository(db);
   const updated = statuses.length > 0 ? await applyStatuses(new DbDeliveryRepository(db), statuses) : 0;
-  const templates = messages.some((message) => message.kind === "text") ? await loadOverrides(new DbReplyTemplatesRepository(db)) : undefined;
   const sendConfig = metaSendConfigFromEnv();
 
   const results: unknown[] = [];
@@ -127,6 +127,13 @@ export async function POST(request: Request) {
     const correlationId = randomUUID();
     const turn = await new DbConversationFence(db).capture(CHANNEL_NAME,message.phone,message.messageId,message.sentAt);
     const tickets = new DbTicketRepository(db,turn);
+    if (message.kind === "text" && message.text.length <= MAX_MESSAGE_LENGTH && requestsHuman(message.text,message.interactiveReplyId)) {
+      results.push(await explicitHumanHandoff({channel,tickets,
+        send:metaAutoReplySender({claims:new DbReplyRepository(db),delivery:new DbConversationDelivery(db),turn,config:sendConfig,channel:CHANNEL_NAME,customerMessageAt:message.sentAt})},
+        {conversationId:message.phone,text:message.text,inboundMessageId:message.messageId,correlationId}));
+      return;
+    }
+    const templates = message.kind === "text" ? await loadOverrides(new DbReplyTemplatesRepository(db)) : undefined;
     const lookupCustomer = async (phone: string) => {
       const runtime = getIxcRuntime();
       if (!runtime.provider) throw new Error("IXC indisponível");

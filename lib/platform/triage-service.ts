@@ -1,7 +1,7 @@
 import { lockDelivery } from "./conversation-delivery-lock.ts";
 import { DbConversationFence, validTurn, type TurnFence } from "./conversation-fence.ts";
 import { randomUUID } from "node:crypto";
-import { and, desc, eq, inArray, ne } from "drizzle-orm";
+import { and, desc, eq, inArray, ne, sql } from "drizzle-orm";
 import { supportTickets } from "../../db/schema.ts";
 import { diagnoseConnection, type ConnectionDiagnosis, type DiagnosisInput } from "./connection-diagnosis-shared.ts";
 import type { IncidentsRepository } from "./incidents-service.ts";
@@ -612,7 +612,7 @@ export class DbTicketRepository implements TicketRepository {
       if (!this.turn) throw new Error("HANDOFF_FENCE_REQUIRED");
       return new DbConversationFence(this.db).handoff(this.turn, async tx => {
         const repository = new DbTicketRepository(tx);
-        const rows = await repository.db.update(supportTickets).set(patch)
+        const rows = await repository.db.update(supportTickets).set({ ...patch, queue: patch.queue ?? sql`coalesce(${supportTickets.queue}, 'atendimento')` })
           .where(and(eq(supportTickets.id,id),eq(supportTickets.channel,this.turn!.channel),eq(supportTickets.externalConversationId,this.turn!.conversationId),eq(supportTickets.status,"open")))
           .returning({id:supportTickets.id});
         return rows.length===1;
@@ -680,7 +680,7 @@ export class MemoryTicketRepository implements TicketRepository {
     if (this.failUpdates) throw new Error("banco fora");
     const index = this.tickets.findIndex(t => t.id === id && t.status === "open" && (patch.stage === "handoff" || t.stage !== "handoff"));
     if (index < 0) return false;
-    this.tickets[index] = { ...this.tickets[index], ...patch };
+    this.tickets[index] = { ...this.tickets[index], ...patch, ...(patch.stage === "handoff" ? {queue: patch.queue ?? this.tickets[index].queue ?? "atendimento"} : {}) };
     return true;
   }
   async resumeForAi(channel: string, conversationId: string): Promise<boolean> {

@@ -127,6 +127,7 @@ export function parseMetaWebhook(payload: unknown): ParseResult {
 export type InboundKind = "text" | "audio" | "image" | "video" | "document" | "sticker" | "location" | "contacts" | "other";
 
 export interface MetaInbound {
+  interactiveReplyId?: string;
   phone: string;
   messageId: string;
   kind: InboundKind;
@@ -198,6 +199,7 @@ export function parseMetaMessages(payload: unknown): MetaInbound[] {
       const seconds = Number(message.timestamp);
       result.push({
         phone, messageId, kind, text, caption,
+        ...(type === "interactive" && typeof bag(bag(message.interactive).list_reply).id === "string" ? {interactiveReplyId: String(bag(bag(message.interactive).list_reply).id)} : {}),
         profileName: typeof name === "string" && name.trim() ? name.trim() : undefined,
         phoneNumberId: typeof metadata.phone_number_id === "string" ? metadata.phone_number_id : undefined,
         sentAt: Number.isFinite(seconds) && seconds > 0 ? new Date(seconds * 1000).toISOString() : undefined,
