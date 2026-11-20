@@ -25,17 +25,26 @@ export function protectedTechnicalIntent(intent?: string | null) {
 }
 const RESTART_TRIED_REPORT = "Cliente relata que está sem internet e que já reiniciou os equipamentos, sem recuperar a conexão.";
 const CURRENT_GREETING_PREFIX = "^(?:(?:oi|ola)(?: (?:bom dia|boa tarde|boa noite))? |(?:bom dia|boa tarde|boa noite) )?";
-const OFFLINE_AFTER_RESTART = new RegExp(CURRENT_GREETING_PREFIX
-  + "(?:eu )?(?:(?:ainda )?(?:estou |to |continuo |sigo )?(?:sem internet|sem conexao)|(?:a |minha )?internet (?:caiu|nao funciona))(?: aqui)? "
-  + "(?:e )?(?:ja )?(?:reiniciei|desliguei e liguei de novo)(?: (?:o modem e o roteador|o roteador e o modem|os equipamentos|meus equipamentos|os aparelhos|o modem|o roteador|tudo|modem|roteador))? "
-  + "(?:(?:e |mas )?(?:nada de voltar|nao voltou|nao adiantou|nao resolveu|continua sem internet|segue sem internet|a conexao nao voltou|a internet nao voltou))(?: por favor)?$");
+// Compose complete, bounded components rather than enumerating sentences.
+const CURRENT_OUTAGE = "(?:(?:ainda )?(?:estou |to |continuo |sigo )?sem (?:internet|conexao)|(?:a |minha )?internet (?:caiu|nao funciona))";
+const CURRENT_TIME = "(?: desde (?:ontem|hoje|cedo|mais cedo|esta manha))?";
+const RESTART_EQUIPMENT = "(?:o modem e o roteador|o roteador e o modem|os equipamentos|meus equipamentos|os aparelhos|o modem|o roteador|a (?:onu|ont)|(?:onu|ont)|tudo|modem|roteador)";
+const RESTART_ATTEMPT = "(?:ja )?(?:reiniciei|desliguei e liguei de novo)(?: " + RESTART_EQUIPMENT + ")?";
+const RESTART_RESULT_LINK = "(?:e |mas )?(?:(?:mesmo|ainda) assim )?";
+const CONNECTION_STILL_DOWN = "(?:(?:ainda (?:estou|to)|continuo|continua|sigo|segue) sem (?:internet|conexao)|(?:a conexao|a internet) nao voltou)";
+const OFFLINE_AFTER_RESTART = new RegExp(CURRENT_GREETING_PREFIX + "(?:eu )?(?:"
+  + CURRENT_OUTAGE + "(?: aqui)?" + CURRENT_TIME + " "
+  + "(?:e )?" + RESTART_ATTEMPT + " " + RESTART_RESULT_LINK
+  + "(?:nada de voltar|nao voltou|nao adiantou|nao resolveu|" + CONNECTION_STILL_DOWN + ")"
+  + "|" + RESTART_ATTEMPT + " " + RESTART_RESULT_LINK + CONNECTION_STILL_DOWN + CURRENT_TIME
+  + ")(?: por favor)?$");
 
 export function publicTechnicalQuestion(text: string): string | undefined {
-  if (!/^[\p{L}\p{M} ,.!?-]+$/u.test(text)) return undefined;
+  if (text.length > 140 || !/^[\p{L}\p{M} ,.!?-]+$/u.test(text)) return undefined;
   const value = folded(text).replace(/[,.!?-]/g, " ").replace(/ +/g, " ").trim();
   // Only a complete current symptom + action already attempted + failure to
   // recover. Never forward free-form additions, names, identifiers or old data.
-  if (text.length <= 140 && OFFLINE_AFTER_RESTART.test(value)) return RESTART_TRIED_REPORT;
+  if (OFFLINE_AFTER_RESTART.test(value)) return RESTART_TRIED_REPORT;
   if (text.length > 100) return undefined;
   return /^(?:(?:oi|ola)(?: (?:bom dia|boa tarde|boa noite))? |(?:bom dia|boa tarde|boa noite) )?(?:eu )?(?:ainda )?(?:estou |estamos |continuo |continuamos |sigo |to |a |minha |meu |o )?(?:sem internet|sem conexao|internet caiu|internet nao funciona|internet lenta|wifi nao conecta|wi fi nao conecta|problema de conexao|conexao continua falhando|internet continua falhando|internet continua caindo)(?:(?: de novo| novamente))?(?: por favor)?$/.test(value)
     ? text.trim() : undefined;

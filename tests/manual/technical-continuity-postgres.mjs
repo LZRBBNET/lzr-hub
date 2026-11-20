@@ -251,20 +251,27 @@ export async function runTechnicalContinuityQA(admin, runtime, record) {
   assert.equal(providerRequests.length, accepts + 1);
   record("technical_continuity_postgres_delivery_or_quote", { recordedDeliveryRequiredForUnquoted: true, exactQuoteAllowedWithinSameSecond: true, missingDeliveryHeldWithoutCalls: true, realMessages: 0 });
 
-  const greetingFirst = await run(turn("outage-report-greeting", 11, "Olá boa tarde"), { answerText: "Boa tarde! Em que posso ajudar?" });
-  assert.ok(greetingFirst.externalMessageId);
-  const currentOutage = turn("outage-restart-reported", 11, "Estou sem Internet aqui, já reiniciei os equipamentos e nada de voltar");
-  const outage = await run(currentOutage, { answerText: pgFollowup });
-  assert.equal(outage.response, pgFollowup);
-  assert.equal(outage.technicalQuestionStage, "initial");
-  const afterGreeting = modelRequests.at(-1).payload;
-  assert.equal(afterGreeting.question, "Cliente relata que está sem internet e que já reiniciou os equipamentos, sem recuperar a conexão.");
-  assert.deepEqual([afterGreeting.history, afterGreeting.facts, afterGreeting.sources], [[], [], []]);
-  assert.match(afterGreeting.task, /Não peça que reinicie novamente/);
-  assert.match(afterGreeting.task, /Não use saudação de período/);
-  assert.equal(providerRequests.at(-1).body.text.body, pgFollowup);
-  assert.ok((await realRepo.getHistory(channel, currentOutage.externalConversationId)).some(row => row.content === currentOutage.text));
-  record("technical_current_turn_postgres_restart_already_tried", { currentSymptomAndAttemptOnly: true, noRepeatedRestartOrGreeting: true, genuineOriginalRecorded: true, realMessages: 0 });
+  for (const [marker, suffix, index, text] of [
+    ["technical_current_turn_postgres_restart_already_tried", "generic", 11, "Estou sem Internet aqui, já reiniciei os equipamentos e nada de voltar"],
+    ["technical_current_turn_postgres_ont_wording", "ont", 12, "Estou sem Internet desde ontem, já reiniciei a ont mas não voltou"],
+  ]) {
+    const greetingFirst = await run(turn(`outage-report-greeting-${suffix}`, index, "Olá boa tarde"), {
+      answerText: "Boa tarde! Em que posso ajudar?",
+    });
+    assert.ok(greetingFirst.externalMessageId);
+    const currentOutage = turn(`outage-restart-reported-${suffix}`, index, text);
+    const outage = await run(currentOutage, { answerText: pgFollowup });
+    assert.equal(outage.response, pgFollowup);
+    assert.equal(outage.technicalQuestionStage, "initial");
+    const afterGreeting = modelRequests.at(-1).payload;
+    assert.equal(afterGreeting.question, "Cliente relata que está sem internet e que já reiniciou os equipamentos, sem recuperar a conexão.");
+    assert.deepEqual([afterGreeting.history, afterGreeting.facts, afterGreeting.sources], [[], [], []]);
+    assert.match(afterGreeting.task, /Não peça que reinicie novamente/);
+    assert.match(afterGreeting.task, /Não use saudação de período/);
+    assert.equal(providerRequests.at(-1).body.text.body, pgFollowup);
+    assert.ok((await realRepo.getHistory(channel, currentOutage.externalConversationId)).some(row => row.content === currentOutage.text));
+    record(marker, { currentSymptomAndAttemptOnly: true, noRepeatedRestartOrGreeting: true, genuineOriginalRecorded: true, realMessages: 0 });
+  }
 }
 
 export async function assertTechnicalContinuityAfterRestart(runtime, record) {
