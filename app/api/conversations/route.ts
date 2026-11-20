@@ -1,3 +1,4 @@
+import { pendingSince } from "@/lib/platform/conversation-state-shared";
 import { NextResponse } from "next/server";
 import { getDb } from "@/db";
 import { DbConversationsRepository, replyWindowFrom } from "@/lib/platform/conversations-service";
@@ -56,10 +57,10 @@ export async function GET(request: Request) {
     const viewer = guard.user ? { id: guard.user.id, name: guard.user.name } : null;
     const items = await repository.listConversations(LIST_LIMIT, url.searchParams.get("q"));
     // Setor e protocolo do atendimento aberto de cada conversa, numa consulta só.
-    const open = await tickets.openMany(items.map((item) => item.externalConversationId)).catch(() => new Map());
+    const open = await tickets.openMany(items.map((item) => item.externalConversationId));
     const withTickets = items.map((item) => {
       const ticket = open.get(`${item.channel}:${item.externalConversationId}`);
-      return ticket ? { ...item, ticket: { protocol: ticket.protocol, queue: ticket.queue, stage: ticket.stage } } : item;
+      return { ...item, awaitingSince: pendingSince(item, ticket), ...(ticket ? { ticket: { protocol: ticket.protocol, queue: ticket.queue, stage: ticket.stage } } : {}) };
     });
     return NextResponse.json({ available: true, items: withTickets, channelState, viewer });
   } catch {

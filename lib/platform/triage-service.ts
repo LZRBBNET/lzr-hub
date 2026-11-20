@@ -1,7 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { and, desc, eq, inArray, ne } from "drizzle-orm";
 import { supportTickets } from "../../db/schema.ts";
-import { REPLY_WINDOW_MS } from "./conversation-state-shared.ts";
 import { diagnoseConnection, type ConnectionDiagnosis, type DiagnosisInput } from "./connection-diagnosis-shared.ts";
 import type { IncidentsRepository } from "./incidents-service.ts";
 import type { TriageHooks, TriageTurn } from "./n8n-channel-service.ts";
@@ -56,20 +55,15 @@ export interface TicketRepository {
 const iso = (at: number) => new Date(at).toISOString();
 
 /**
- * O atendimento em curso, ou um novo. Aberto há mais de 24 horas sem o cliente
- * falar é fechado por inatividade: a janela da Meta já fechou, ninguém mais
- * responderia a ele, e a fala nova é outro contato — com outro protocolo.
+ * O atendimento em curso permanece aberto até resolução explícita. A janela
+ * de envio não é prazo de resolução: novo inbound preserva protocolo e contexto.
  */
 export async function openOrContinueTicket(
   repository: TicketRepository,
   input: { channel: string; conversationId: string; now?: number },
 ): Promise<{ ticket: TicketRow; created: boolean }> {
   const at = input.now ?? Date.now();
-  let open = await repository.findOpen(input.channel, input.conversationId);
-  if (open && at - Date.parse(open.lastCustomerAt) > REPLY_WINDOW_MS) {
-    await repository.update(open.id, { status: "closed", closedAt: iso(at), closedReason: "inactivity" });
-    open = undefined;
-  }
+  const open = await repository.findOpen(input.channel, input.conversationId);
   if (open) {
     await repository.update(open.id, { lastCustomerAt: iso(at) });
     return { ticket: { ...open, lastCustomerAt: iso(at) }, created: false };

@@ -113,13 +113,13 @@ test("estado ilegível cala a IA: na dúvida ela só sugere", async () => {
   assert.equal(await botMayReplyNow(repository, CHANNEL, CLIENTE), false);
 });
 
-test("a fila conta só quem espera, está aberto e ainda pode ser respondido", () => {
+test("a fila mantém pendências abertas mesmo sem permissão de envio", () => {
   const now = T0;
   const fresh = { awaitingSince: iso(-10 * 60_000), lastCustomerAt: iso(-10 * 60_000), state: effectiveState(undefined, iso(0)) };
   assert.equal(needsReply(fresh, now), true);
-  // Janela da Meta fechada: ninguém consegue responder, não entra na fila.
+  // Janela fechada bloqueia envio, não elimina a pendência.
   const stale = { awaitingSince: iso(-REPLY_WINDOW_MS - 60_000), lastCustomerAt: iso(-REPLY_WINDOW_MS - 60_000) };
-  assert.equal(needsReply(stale, now), false);
+  assert.equal(needsReply(stale, now), true);
   assert.equal(windowOpen(stale.lastCustomerAt, now), false);
   // Resolvida não está na fila, mesmo com o cliente tendo falado por último antes.
   const done = { ...fresh, state: { ...fresh.state, status: "resolved" } };

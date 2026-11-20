@@ -1,4 +1,4 @@
-import { resumeTicketForAi, type TicketRepository } from "./triage-service.ts";
+import { closeOpenTicket, resumeTicketForAi, type TicketRepository } from "./triage-service.ts";
 import { hasDelivery, lockDelivery } from "./conversation-delivery-lock.ts";
 import { randomUUID } from "node:crypto";
 import { and, eq, inArray, isNull, sql } from "drizzle-orm";
@@ -74,7 +74,7 @@ export async function changeConversationState(
     next = { status: "open", assigneeId: null, assigneeName: null, assignedAt: null, resolvedAt: null, resolvedBy: null };
     reason = `Devolveu a conversa para a IA${was}`;
   } else if (action === "resolve") {
-    if (current.status === "resolved") return { ok: true, state: current, changed: false };
+    changed = current.status !== "resolved";
     next = { status: "resolved", assigneeId: current.assigneeId, assigneeName: current.assigneeName, assignedAt: current.assignedAt, resolvedAt: at, resolvedBy: actor.name };
     reason = `Resolveu a conversa${was}`;
   } else {
@@ -97,6 +97,8 @@ export async function changeConversationStateWithTicket(
 ): Promise<StateResult> {
   const result = await changeConversationState(repository, input);
   if (!result.ok) return result;
+  // Resolution must close the ticket in this transaction, including retry after a previous partial failure.
+  if (input.action === "resolve") await closeOpenTicket(tickets, input.channel, input.conversationId.trim(), (input.now ?? Date.now)());
   // Release retries must run even when the conversation was already open/unassigned.
   // Never infer release from a stale state returned for another action.
   if ((input.action === "release" || (input.action === "reopen" && result.changed)) && result.state.status === "open" && !result.state.assigneeId) {

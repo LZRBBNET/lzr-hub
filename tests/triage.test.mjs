@@ -62,16 +62,15 @@ test("a primeira fala abre atendimento com protocolo; a seguinte continua o mesm
   assert.equal(tickets.tickets.length, 1);
 });
 
-test("24 horas sem o cliente falar encerram o atendimento; a fala nova ganha outro protocolo", async () => {
+test("24 horas sem o cliente falar preservam atendimento e protocolo", async () => {
   const tickets = new MemoryTicketRepository();
   const at = Date.parse("2026-10-14T13:00:00Z");
   const velho = (await openOrContinueTicket(tickets, { channel: CHANNEL_NAME, conversationId: CLIENTE, now: at })).ticket;
   const novo = await openOrContinueTicket(tickets, { channel: CHANNEL_NAME, conversationId: CLIENTE, now: at + REPLY_WINDOW_MS + 60_000 });
-  assert.equal(novo.created, true);
-  assert.notEqual(novo.ticket.protocol, velho.protocol);
-  const fechado = tickets.tickets.find((t) => t.id === velho.id);
-  assert.equal(fechado.status, "closed");
-  assert.equal(fechado.closedReason, "inactivity");
+  assert.equal(novo.created, false);
+  assert.equal(novo.ticket.protocol, velho.protocol);
+  assert.equal(novo.ticket.status, "open");
+  assert.equal(novo.ticket.closedReason, null);
 });
 
 test("resolver a conversa fecha o atendimento", async () => {

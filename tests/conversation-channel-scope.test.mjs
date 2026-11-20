@@ -20,6 +20,7 @@ function fixture(overrides = {}) {
     conversation_outcomes: [outcome(B, "human_handoff", true, "12"), outcome(A, "technical_no_connection", false, "09")],
     channel_contacts: [contact(A, "Perfil A"), contact(B, "Perfil B")],
     conversation_states: [state(A, "resolved", "Ana Teste", time("11")), state(B, "open", "Bia Teste")],
+    support_tickets: [],
     users: [{ email: "ana@example.test", name: "Ana Teste" }],
     ...overrides,
   };
@@ -38,7 +39,12 @@ function fixture(overrides = {}) {
         if (row.created_at > g.created_at) g.created_at = row.created_at;
         groups.set(key, g);
       }
-      return { rows: [...groups.values()].sort((a, b) => b.created_at.localeCompare(a.created_at)).slice(0, params.at(-1)).map(r => [r.channel, r.external_conversation_id, r.created_at, r.messages]) };
+      const ordered = [...groups.values()].sort((a, b) => b.created_at.localeCompare(a.created_at));
+      const selected = text.includes('"support_tickets"')
+        ? ordered.filter(g => data.support_tickets.some(t => t.channel === g.channel && t.external_conversation_id === g.external_conversation_id && t.status === "open" && t.stage === "handoff")
+          || data.conversation_states.some(t => t.channel === g.channel && t.external_conversation_id === g.external_conversation_id && t.status === "open" && t.assignee_id))
+        : ordered.slice(0, params.at(-1));
+      return { rows: selected.map(r => [r.channel, r.external_conversation_id, r.created_at, r.messages]) };
     }
     const table = / from "([a-z_]+)"/.exec(text)?.[1];
     assert.ok(Object.hasOwn(data, table), `unexpected table: ${table}`);
@@ -142,7 +148,8 @@ test("contato, estado e contexto não colidem quando campos contêm dois-pontos"
 test("lista vazia não dispara consultas auxiliares", async () => {
   const { rows, calls } = await list({ channel_messages: [] });
   assert.deepEqual(rows, []);
-  assert.equal(calls.length, 1);
+  assert.equal(calls.length, 2);
+  assert.ok(calls.every(call => call.text.includes(" group by ")));
 });
 
 test("busca numérica continua parametrizada e mantém filtro de grupos", async () => {
@@ -206,4 +213,15 @@ test("busca por nome mantém curingas escapados e valores fora do SQL", async ()
   await f.repository.listConversations(20, "Teste_%' OR 1=1");
   assert.ok(f.calls[0].params.includes("%Teste\\_\\%' OR 1=1%"));
   assert.doesNotMatch(f.calls[0].text, /Teste|1=1/);
+});
+
+
+test("pendência humana antiga permanece listada além do limite de recentes", async () => {
+  const { rows } = await list({
+    conversation_states: [],
+    support_tickets: [{ channel: A, external_conversation_id: ID, status: "open", stage: "handoff" }],
+  }, 1);
+  assert.equal(rows.length, 2);
+  assert.ok(rows.some(row => row.channel === A));
+  assert.ok(rows.some(row => row.channel === B));
 });

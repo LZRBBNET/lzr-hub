@@ -104,3 +104,55 @@ test("PostgreSQL statements condition routing and resume on the current persiste
   assert.match(statements[1].sql, /"channel" = .*"external_conversation_id" = .*"status" = .*"stage" =/);
   assert.deepEqual(statements[1].params, ["routed", CHANNEL_NAME, conversationId, "open", "handoff"]);
 });
+
+test("expired handoff retains context/protocol and new inbound while resolved cases stay out of queue", async () => {
+  const { needsReply, pendingSince, effectiveState, windowOpen, REPLY_WINDOW_MS } = await import("../lib/platform/conversation-state-shared.ts");
+  const now = Date.now();
+  const tickets = new MemoryTicketRepository();
+  const { ticket } = await openOrContinueTicket(tickets, { channel: CHANNEL_NAME, conversationId, now: now - REPLY_WINDOW_MS * 3 });
+  await tickets.update(ticket.id, { stage: "handoff", intake: { intent: entry.intent, summary: "contexto local preservado", at: ticket.openedAt } });
+  const pending = await tickets.findOpen(CHANNEL_NAME, conversationId);
+  assert.equal(needsReply({ ticket: pending }, now), true);
+  assert.equal(windowOpen(pending.lastCustomerAt, now), false);
+  assert.equal(pendingSince({ lastCustomerAt: pending.lastCustomerAt }, pending), pending.lastCustomerAt);
+  const continued = await openOrContinueTicket(tickets, { channel: CHANNEL_NAME, conversationId, now });
+  assert.equal(continued.created, false);
+  assert.equal(continued.ticket.protocol, pending.protocol);
+  assert.deepEqual(continued.ticket.intake, pending.intake);
+  const repository = new MemoryChannelRepository();
+  await processChannelMessage(repository, input, undefined, { autoReply: true, handoffRecorded: continued.ticket.stage === "handoff", send: async () => { throw Error("must not send"); } });
+  assert.equal((await repository.getHistory(CHANNEL_NAME, conversationId)).length, 1);
+  const resolved = { status: "resolved", assigneeId: null, assigneeName: null, assignedAt: null, resolvedAt: new Date(now).toISOString(), resolvedBy: "local" };
+  const state = effectiveState(resolved, pending.lastCustomerAt);
+  assert.equal(needsReply({ ticket: pending, awaitingSince: pending.lastCustomerAt, state }, now), false);
+  assert.equal(pendingSince({ awaitingSince: pending.lastCustomerAt, state }, pending), undefined);
+  const reopened = effectiveState(resolved, new Date(now + 1).toISOString());
+  assert.equal(needsReply({ awaitingSince: new Date(now + 1).toISOString(), state: reopened }, now + 1), true);
+});
+
+test("resolution failure propagates and retry closes ticket before a later inbound gets a new protocol", async () => {
+  const { tickets, ticket } = await fixture();
+  const states = new MemoryConversationStateRepository();
+  states.conversations.set(stateKey(CHANNEL_NAME, conversationId), ticket.openedAt);
+  const change = { channel: CHANNEL_NAME, conversationId, action: "resolve", actor: { id: "local", name: "Local", email: "local@example.invalid", role: "admin" } };
+  tickets.failUpdates = true;
+  await assert.rejects(changeConversationStateWithTicket(states, tickets, change), /banco fora/);
+  tickets.failUpdates = false;
+  assert.equal((await changeConversationStateWithTicket(states, tickets, change)).ok, true);
+  assert.equal(await tickets.findOpen(CHANNEL_NAME, conversationId), undefined);
+  const next = await openOrContinueTicket(tickets, { channel: CHANNEL_NAME, conversationId });
+  assert.notEqual(next.ticket.protocol, ticket.protocol);
+});
+
+test("human pendencies have a separate SQL selection without the recent-list limit", async () => {
+  const { DbConversationsRepository } = await import("../lib/platform/conversations-service.ts");
+  const statements = [];
+  const db = drizzle(async (sql) => { statements.push(sql); return { rows: [] }; });
+  assert.deepEqual(await new DbConversationsRepository(db).listConversations(40), []);
+  assert.equal(statements.length, 2);
+  assert.match(statements[0], /limit/);
+  assert.doesNotMatch(statements[1], /limit/);
+  assert.match(statements[1], /support_tickets/);
+  assert.match(statements[1], /'handoff'/);
+  assert.match(statements[1], /assignee_id.*is not null/);
+});

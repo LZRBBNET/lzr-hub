@@ -458,7 +458,7 @@ export function AttendanceModule({ initialConversation, onAwaiting }: { initialC
                 {closed && <span className="soft-chip" title="Passou de 24 h desde a última mensagem do cliente: a Meta não aceita mais texto livre">janela fechada</span>}
                 {!isOpenState(item) && <span className="soft-chip ok"><Icon name="check" size={11} />resolvida</span>}
                 {isOpenState(item) && item.ticket?.queue && <span className="soft-chip" title="Setor definido pela triagem">{queueLabel(item.ticket.queue)}</span>}
-                {isOpenState(item) && (owner ? <span className="owner-chip"><span className="owner-dot" />{owner}</span> : <span className="soft-chip"><Icon name="bot" size={11} />IA</span>)}
+                {isOpenState(item) && (owner ? <span className="owner-chip"><span className="owner-dot" />{owner}</span> : <span className="soft-chip"><Icon name="bot" size={11} />{item.ticket?.stage === "handoff" ? "Fila humana" : "IA"}</span>)}
                 {item.handoff && isOpenState(item) && !owner && <span className="soft-chip warn" title="O pipeline recomendou passar para um humano">pede humano</span>}
               </span>
             </span>

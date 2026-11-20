@@ -2,9 +2,8 @@
  * Quem cuida de cada conversa, e quando ela precisa de resposta.
  *
  * Sem dependência de servidor: a tela, a casca do app e o canal usam as mesmas
- * regras. Antes cada lugar contava "aguardando" do seu jeito, e o menu dizia
- * "2 clientes esperando" por conversas de dez dias atrás que nem podiam mais
- * ser respondidas — a janela de 24 horas da Meta já tinha fechado.
+ * regras. Pendência de atendimento e permissão de envio são independentes:
+ * uma janela de 24 horas encerrada não resolve o atendimento.
  *
  * O modelo é o das caixas de entrada de suporte (Chatwoot, Intercom, Front):
  * uma conversa está **aberta** ou **resolvida**, e aberta pode ter um
@@ -132,14 +131,17 @@ export function windowOpen(lastCustomerAt: string | null | undefined, now: numbe
   return Number.isFinite(at) && now - at <= REPLY_WINDOW_MS;
 }
 
-/**
- * Precisa de resposta de alguém: o cliente falou por último (sugestão da IA não
- * conta), a conversa está aberta e ainda dá para responder. Esperando com a
- * janela fechada não entra — ninguém consegue responder, e contar isso no menu
- * só ensina a ignorar o número.
- */
-export function needsReply(item: { awaitingSince?: string; lastCustomerAt?: string; state?: EffectiveState }, now: number) {
-  return !!item.awaitingSince && (item.state?.status ?? "open") === "open" && windowOpen(item.lastCustomerAt ?? item.awaitingSince, now);
+/** Pendência humana permanece visível mesmo após expirar a janela de envio. */
+export function needsReply(item: { awaitingSince?: string; lastCustomerAt?: string; state?: EffectiveState; ticket?: { stage?: string } }, now: number) {
+  void now; // Kept for existing UI callers; pending work does not expire with time.
+  return (item.state?.status ?? "open") === "open" && (!!item.awaitingSince || !!item.state?.assigneeId || item.ticket?.stage === "handoff");
+}
+
+/** Retains a queue timestamp even after an acknowledgement from a human. */
+export function pendingSince(item: { awaitingSince?: string; lastCustomerAt?: string; state?: EffectiveState }, ticket?: { stage?: string; openedAt?: string }): string | undefined {
+  if (item.state?.status === "resolved") return undefined;
+  return item.awaitingSince ?? ((item.state?.assigneeId || ticket?.stage === "handoff")
+    ? item.state?.assignedAt ?? item.lastCustomerAt ?? ticket?.openedAt : undefined);
 }
 
 /** Espera até 5 min é normal; até 30 min pede atenção; acima disso está atrasada. */
