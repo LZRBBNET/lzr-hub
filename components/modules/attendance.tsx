@@ -1,4 +1,5 @@
 "use client";
+import { initialConversationSelection } from "@/lib/platform/conversation-selection";
 
 import { DeliveryReconciliation } from "./delivery-reconciliation";
 import { Fragment, useEffect, useRef, useState } from "react";
@@ -14,7 +15,7 @@ import { INVOICE_INTENTS, INVOICE_STEP_LABELS } from "@/lib/platform/invoice-sel
 type ConversationSummary = {
   channel:string; externalConversationId:string; lastMessage:string; lastRole:"customer"|"agent"|"suggestion"; lastAt:string; messages:number;
   finalStatus?:string; intent?:string; handoff?:boolean; displayName?:string; awaitingSince?:string; lastSentBy?:string; lastSentByName?:string;
-  lastCustomerAt?:string; lastCustomerMessage?:string; state?:EffectiveState;
+  lastCustomerAt?:string; lastCustomerMessage?:string; deliveryStatus?:string|null; state?:EffectiveState;
   /** Atendimento aberto: protocolo e setor da triagem. */
   ticket?:{ protocol:string|null; queue:string|null; stage:string };
 };
@@ -73,7 +74,7 @@ function preview(item:ConversationSummary, viewer:Viewer|null) {
   if (item.lastRole==="agent") {
     // Resposta sem autor registrado não é atribuída a ninguém — nem à IA.
     const who = !item.lastSentBy ? "Resposta" : viewer && item.lastSentByName===viewer.name ? "Você" : firstName(item.lastSentByName);
-    return `${who}: ${item.lastMessage}`;
+    return `${item.deliveryStatus==="failed" ? "Falha de entrega · " : ""}${who}: ${item.lastMessage}`;
   }
   return item.lastMessage;
 }
@@ -108,6 +109,7 @@ function usedSuggestions(messages:ConversationMessage[]) {
 }
 
 export function AttendanceModule({ initialConversation, onAwaiting }: { initialConversation?: string; onAwaiting?: (count:number) => void }) {
+  const [initialUnavailable,setInitialUnavailable] = useState(false);
   const [items,setItems] = useState<ConversationSummary[]>([]);
   const [channelState,setChannelState] = useState<ChannelState>({enabled:false,autoReply:false,canReply:false});
   const [viewer,setViewer] = useState<Viewer|null>(null);
@@ -220,13 +222,10 @@ export function AttendanceModule({ initialConversation, onAwaiting }: { initialC
       const current = selectedRef.current;
       const fresh = current ? list.find((item) => conversationKey(item)===conversationKey(current)) : undefined;
       if (fresh) { selectedRef.current = fresh; setSelected(fresh); }
-      else if (mode==="first" && !current && list.length) {
-        // Quem tem cliente esperando começa pela fila; quem não tem, pelas abertas.
-
-        // Veio de um clique em outra tela ("Últimas conversas"): abre aquela, não a primeira da lista.
-        const wanted = initialRef.current ? list.find((item) => conversationKey(item)===initialRef.current) : undefined;
-        open(wanted ?? list[0]);
-        if (wanted) setPane("chat");
+      else if (mode==="first" && !current) {
+        const wanted = initialConversationSelection(list, initialRef.current);
+        if (wanted) { open(wanted); if (initialRef.current !== undefined) setPane("chat"); }
+        else if (initialRef.current !== undefined) setInitialUnavailable(true);
       }
     } catch {
       if (version!==requestVersion.current) return;
@@ -281,6 +280,7 @@ export function AttendanceModule({ initialConversation, onAwaiting }: { initialC
   }
 
   function open(item:ConversationSummary) {
+    setInitialUnavailable(false);
     const same = isOpen(conversationKey(item));
     selectedRef.current = item; setSelected(item);
     if (same) return;
@@ -462,6 +462,7 @@ export function AttendanceModule({ initialConversation, onAwaiting }: { initialC
             <button type="button" className={`icon-button ${notify ? "pressed" : ""}`} onClick={() => void toggleNotify()} aria-pressed={notify} aria-label={notify ? "Desligar avisos de cliente na fila" : "Avisar quando um cliente entrar na fila"} title={notify ? "Avisos ligados" : "Avisar quando um cliente entrar na fila"}><Icon name={notify ? "bell" : "bell-off"} size={17} /></button>
           </div>
         </div>
+        {initialUnavailable && <Notice tone="warn">A conversa solicitada não está disponível nesta página. Nenhum outro atendimento foi aberto. Use a busca ou navegue pela fila para localizar o alvo.</Notice>}
         <label className="search-field"><Icon name="search" size={16} /><input value={query} onChange={(e)=>setQuery(e.target.value)} placeholder="Buscar nome ou número" aria-label="Buscar conversa" /></label>
         {(hasSectors || sector!=="todos") && <label className="sector-filter"><span>Setor</span>
           <select value={sector} onChange={(e)=>changeFilters(queue,e.target.value)} aria-label="Filtrar por setor">

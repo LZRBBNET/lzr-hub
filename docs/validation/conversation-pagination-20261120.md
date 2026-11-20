@@ -21,3 +21,13 @@ Testes locais de contrato de página, sentinela, desempate entre canais, cursor 
 O volume retornado e o conteúdo carregado em Node são limitados, mas os agregados ainda examinam metadados da base no PostgreSQL. Antes de carga operacional maior, medir EXPLAIN/latência com dados autorizados em ambiente isolado e decidir índices/materialização. Não alegar custo constante. A rotina legada listConversations permanece para compatibilidade/testes, mas nenhuma rota de produção a usa após este corte.
 
 Continua separado o gate de turnos já em voo após handoff. Nada aqui o resolve, nem libera envio fora da janela, cria OS, acessa IXC/n8n ou autoriza deploy.
+
+## Correções da revisão de dc2c15e4
+
+O limite de resposta da fila agora ignora delivery_status=failed com predicado null-safe. Quando um recibo muda sent→failed, o próximo poll recalcula a espera a partir da mensagem do cliente; não se reenvia nada. Valores legados ausentes ou não reconhecidos conservam o comportamento anterior de registro de resposta, sem serem rotulados como entregue. O helper compartilhado de espera e a projeção legada de status também foram alinhados. A prévia pode mostrar a tentativa falhada, identificada como falha de entrega.
+
+A seleção inicial com alvo explícito não usa mais a primeira conversa como fallback. Alvo ausente da página, vazio, de outro canal ou ambíguo produz aviso de indisponibilidade e nenhuma abertura/consulta de cliente. O operador pode localizar o alvo pela busca/paginação; não foi adicionada rota nem lookup automático alternativo. Sem alvo explícito, permanece a abertura da primeira conversa disponível.
+
+Restaurados handoff, lastCustomerMessage e lastSentByName (e o último intent/finalStatus já usados na interface) exclusivamente para os itens limitados da página: uma mensagem de cliente, um outcome e o nome de autoria. Cada consulta lateral é correlacionada por canal+ID; autoria lê apenas nome. Prévia limitada a 500 caracteres; nenhum histórico completo ou novo dado pessoal acrescentado. Handoff persistido aberto prevalece sobre outcome ausente/desatualizado.
+
+Validação: 44 testes locais de regressão, paginação, estados e isolamento por canal; TypeScript, ESLint direcionado e diff. Casos novos cobrem mudança de sent para failed, estados legados, espera limitada por resposta válida anterior, projeções SQL, alvo explícito ausente/ambíguo e wiring da UI. Não é execução PostgreSQL nem teste visual em sessão operacional; permanecem os gates documentados.

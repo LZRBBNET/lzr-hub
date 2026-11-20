@@ -81,7 +81,7 @@ export const AI_SENDER_NAME = "IA";
 export const AI_AGENT_SENDER = "ia-agente";
 export const isAiSender = (sentBy: string | null | undefined) => sentBy === AI_SENDER || sentBy === AI_AGENT_SENDER;
 
-type SentRow = { role: string; sentBy?: string | null; createdAt?: string };
+type SentRow = { role: string; sentBy?: string | null; createdAt?: string; deliveryStatus?: string | null };
 const isAiReply = (row: SentRow) => row.role === "agent" && isAiSender(row.sentBy);
 /** Só a primeira resposta (ou a passagem para o atendente) mantém a espera. */
 const isWaitingAiReply = (row: SentRow) => row.role === "agent" && row.sentBy === AI_SENDER;
@@ -115,7 +115,7 @@ export function awaitingSinceFrom(rowsNewestFirst: SentRow[]): string | undefine
   let since: string | undefined;
   for (const row of rowsNewestFirst) {
     // A IA que atendeu (modo autônomo) respondeu de verdade: a espera para ali.
-    if (row.role === "suggestion" || isWaitingAiReply(row)) continue;
+    if (row.role === "suggestion" || isWaitingAiReply(row) || (row.role === "agent" && row.deliveryStatus === "failed")) continue;
     if (row.role !== "customer") break;
     since = row.createdAt;
   }

@@ -214,6 +214,7 @@ export class DbConversationsRepository implements ConversationsRepository {
         content: channelMessages.content,
         createdAt: channelMessages.createdAt,
         sentBy: channelMessages.sentBy,
+        deliveryStatus: channelMessages.deliveryStatus,
       }).from(channelMessages)
         .where(scope(channelMessages))
         .orderBy(desc(channelMessages.createdAt), desc(replyAfterCustomer)),

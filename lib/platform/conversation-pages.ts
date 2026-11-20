@@ -39,7 +39,7 @@ export async function conversationPage(db: { execute: (query: ReturnType<typeof 
       select m.channel, m.external_conversation_id as id, min(m.created_at) as first_at,
         max(m.created_at) as last_at, count(*) as messages,
         max(m.created_at) filter (where m.role = 'customer') as customer_at,
-        max(m.created_at) filter (where m.role not in ('customer','suggestion') and not (m.role = 'agent' and coalesce(m.sent_by,'') = 'ia')) as answer_at
+        max(m.created_at) filter (where m.role not in ('customer','suggestion') and m.delivery_status is distinct from 'failed' and not (m.role = 'agent' and coalesce(m.sent_by,'') = 'ia')) as answer_at
       from channel_messages m where m.external_conversation_id not like '%@%'
         and (${input.channel ?? null}::text is null or m.channel = ${input.channel ?? null})
       group by m.channel, m.external_conversation_id
@@ -82,14 +82,27 @@ export async function conversationPage(db: { execute: (query: ReturnType<typeof 
         'messages', p.messages, 'lastCustomerAt', p.customer_at, 'displayName', p.display_name,
         'awaitingSince', case when p.pending then p.pending_at end,
         'lastMessage', left(last_msg.content, 500), 'lastRole', last_msg.role, 'lastSentBy', last_msg.sent_by,
+        'deliveryStatus', last_msg.delivery_status,
+        'lastCustomerMessage', left(customer_msg.content, 500),
+        'lastSentByName', case when last_msg.sent_by in ('ia','ia-agente') then 'IA' else sender.name end,
+        'handoff', case when p.stage = 'handoff' and not coalesce(p.resolved,false) then true else last_outcome.handoff end, 'intent', last_outcome.intent, 'finalStatus', last_outcome.final_status,
         'stateRow', jsonb_build_object('status', p.saved_status, 'assigneeId', p.assignee_id, 'assigneeName', p.assignee_name,
           'assignedAt', p.assigned_at, 'resolvedAt', p.resolved_at, 'resolvedBy', p.resolved_by),
         'ticket', case when p.stage is not null then jsonb_build_object('protocol', p.protocol, 'queue', p.queue, 'stage', p.stage) end
       ) order by p.first_at, p.channel, p.id)
       from page p left join lateral (
-        select content, role, sent_by from channel_messages m where m.channel = p.channel and m.external_conversation_id = p.id
+        select content, role, sent_by, delivery_status from channel_messages m where m.channel = p.channel and m.external_conversation_id = p.id
         order by created_at desc, id desc limit 1
-      ) last_msg on true), '[]'::jsonb) as items
+      ) last_msg on true
+      left join lateral (
+        select content from channel_messages m where m.channel = p.channel and m.external_conversation_id = p.id and m.role = 'customer'
+        order by created_at desc, id desc limit 1
+      ) customer_msg on true
+      left join lateral (
+        select handoff, intent, final_status from conversation_outcomes o where o.channel = p.channel and o.external_conversation_id = p.id
+        order by created_at desc, id desc limit 1
+      ) last_outcome on true
+      left join lateral (select name from users u where u.email = last_msg.sent_by limit 1) sender on true), '[]'::jsonb) as items
   `);
   const row = (result as { rows: Array<Record<string, unknown>> }).rows[0];
   if (!row || !Array.isArray(row.items)) throw new Error("QUEUE_PAGE_UNAVAILABLE");
