@@ -7,7 +7,7 @@ import { conversationLabel, handoffLabel, intentLabel } from "@/components/modul
 
 type OverviewMetrics = { conversations:number; resolvedWithoutHuman:number; resolutionRate:number|null; handoffs:number; suggestionsOnly:number; handoffReasons:Record<string,number>; intents:Record<string,number>; csatAverage:number|null; csatCount:number };
 type QueueItem = { channel:string; externalConversationId:string; lastAt:string; messages:number; intent?:string; handoff?:boolean; displayName?:string; awaitingSince?:string };
-type Overview = { available:boolean; detail?:string; metrics:OverviewMetrics|null; queue:QueueItem[]; integrations:{ channel:{enabled:boolean;autoReply:boolean} } };
+type Overview = { available:boolean; detail?:string; metrics:OverviewMetrics|null; queue:QueueItem[]; queueTotal?:number; queueHasMore?:boolean; integrations:{ channel:{enabled:boolean;autoReply:boolean} } };
 type CockpitMetric = { value:number|null; detail:string };
 type Cockpit = {
   activeCustomers:CockpitMetric; openInvoices:CockpitMetric; overdueInvoices:CockpitMetric; goalProgressPercent:CockpitMetric;
@@ -120,10 +120,10 @@ export function HomeModule({ onNavigate, awaiting }: { onNavigate: Navigate; awa
       </Stats> : <Notice tone="bad">Indicadores de negócio indisponíveis agora.</Notice>}
 
       <div className="grid-2">
-        <Card title="Últimas conversas" badge={channel && <Badge tone={channel.enabled ? "ok" : "warn"} dot>{channel.enabled ? "Canal ativo" : "Canal desligado"}</Badge>}
-          actions={<button className="link-button" onClick={() => onNavigate("atendimento")}>Ver todas</button>} flush>
+        <Card title="Fila de atendimento" badge={channel && <Badge tone={channel.enabled ? "ok" : "warn"} dot>{channel.enabled ? "Canal ativo" : "Canal desligado"}</Badge>}
+          actions={<button className="link-button" onClick={() => onNavigate("atendimento")}>Ver fila{overview?.queueHasMore ? ` (${overview.queueTotal})` : ""}</button>} flush>
           {!overview?.queue.length
-            ? <Empty icon="chat" title="Nenhuma conversa registrada">{channel?.enabled ? "O canal está ligado e aguardando mensagens." : "O canal do WhatsApp está desligado."}</Empty>
+            ? overview?.available ? <Empty icon="chat" title="Nenhuma pendência">Nenhuma conversa aguardando atendimento nesta consulta.</Empty> : <Notice tone="bad">Fila indisponível. Isso não confirma ausência de pendências.</Notice>
             : <div className="list">{overview.queue.map((item) => {
                 const title = item.displayName ?? conversationLabel(item.externalConversationId);
                 return <button className="list-item" key={`${item.channel}:${item.externalConversationId}`} onClick={() => onNavigate("atendimento", { conversation: `${item.channel}:${item.externalConversationId}` })}>

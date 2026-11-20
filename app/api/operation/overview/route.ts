@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { getDb } from "@/db";
-import { DbConversationsRepository } from "@/lib/platform/conversations-service";
+import { conversationPage } from "@/lib/platform/conversation-pages";
 import { getIxcRuntime } from "@/lib/integrations/ixc/runtime";
 import { authorize } from "@/lib/platform/session-guard";
 import { DbSupportMetricsRepository, getSupportMetrics } from "@/lib/platform/support-metrics";
@@ -30,12 +30,12 @@ export async function GET(request: Request) {
 
   try {
     const db = await getDb();
-    const [metrics, queue] = await Promise.all([
+    const [metrics, page] = await Promise.all([
       getSupportMetrics(new DbSupportMetricsRepository(db), since),
-      new DbConversationsRepository(db).listConversations(QUEUE_LIMIT),
+      conversationPage(db, { view:"fila", actorId:guard.user?.id, limit:QUEUE_LIMIT }),
     ]);
     return NextResponse.json({
-      period, since, available: true, metrics, queue,
+      period, since, available: true, metrics, queue:page.items, queueTotal:page.total, queueHasMore:page.hasMore,
       // Sem instrumentação de duração por conversa ainda (depende do Langfuse, issue #6).
       averageHandlingSeconds: null,
       integrations: { ixc, channel },

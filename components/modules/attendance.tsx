@@ -5,7 +5,7 @@ import { Fragment, useEffect, useRef, useState } from "react";
 import { containsHomologationText } from "@/lib/platform/reply-templates-shared";
 import { needsReply, waitTone, windowOpen, type EffectiveState, type StateAction } from "@/lib/platform/conversation-state-shared";
 import { Icon } from "@/components/ui/icons";
-import { Avatar, Badge, Empty, InfoTip, Loading, Modal, Notice, relativeTime, useToast } from "@/components/ui/kit";
+import { Avatar, Badge, InfoTip, Loading, Modal, Notice, relativeTime, useToast } from "@/components/ui/kit";
 import { channelLabel, conversationLabel, handoffLabel, intentLabel } from "@/components/modules/labels";
 import { IDENTIFICATION_LABELS, STAGE_LABELS, TRIAGE_QUEUES, queueLabel, type TicketSummary } from "@/lib/platform/triage-shared";
 import { VERDICT_LABELS, type DiagnosisVerdict } from "@/lib/platform/connection-diagnosis-shared";
@@ -115,8 +115,19 @@ export function AttendanceModule({ initialConversation, onAwaiting }: { initialC
   const [state,setState] = useState<"loading"|"ready"|"error">("loading");
   const [syncedAt,setSyncedAt] = useState<number|null>(null);
   const [syncFailed,setSyncFailed] = useState(false);
-  const [queue,setQueue] = useState<Queue>("abertas");
+  const [queue,setQueue] = useState<Queue>("fila");
   const [query,setQuery] = useState("");
+  const [pageLoading,setPageLoading] = useState(false);
+  const confirmedPageRef = useRef<{scope:string; cursor:string|null; previous:Array<string|null>}>({scope:"",cursor:null,previous:[]});
+  const [nextCursor,setNextCursor] = useState<string|null>(null);
+  const [pageNumber,setPageNumber] = useState(1);
+  const [pageTotal,setPageTotal] = useState(0);
+  const [queueCount,setQueueCount] = useState(0);
+  const [mineCount,setMineCount] = useState(0);
+  const pageRef = useRef<{ cursor:string|null; previous:Array<string|null> }>({ cursor:null, previous:[] });
+  const filtersRef = useRef({ queue:"fila" as Queue, sector:"todos" });
+  const requestVersion = useRef(0);
+
   const [selected,setSelected] = useState<ConversationSummary|null>(null);
   const [messages,setMessages] = useState<ConversationMessage[]>([]);
   const [messagesState,setMessagesState] = useState<"idle"|"loading"|"ready"|"error">("idle");
@@ -183,32 +194,47 @@ export function AttendanceModule({ initialConversation, onAwaiting }: { initialC
     if (mode==="poll" && listBusy.current) return;
     listBusy.current = true;
     const q = queryRef.current.trim();
+    const version = ++requestVersion.current;
+    if (mode!=="poll") setPageLoading(true);
+    const filters = filtersRef.current;
+    const params = new URLSearchParams({ view:filters.queue, sector:filters.sector });
+    if (q) params.set("q",q);
+    const scope = params.toString()+"&q="+q;
+    if (pageRef.current.cursor) params.set("cursor",pageRef.current.cursor);
     try {
-      const response = await fetch(`/api/conversations${q ? `?q=${encodeURIComponent(q)}` : ""}`);
+      const response = await fetch(`/api/conversations?${params}`);
       if (!response.ok) throw new Error("falhou");
-      const payload = await response.json() as { available:boolean; items:ConversationSummary[]; channelState:ChannelState; viewer?:Viewer|null };
+      const payload = await response.json() as { available:boolean; items:ConversationSummary[]; channelState:ChannelState; viewer?:Viewer|null; nextCursor:string|null; total:number; pendingCount:number; mineCount:number };
       // A busca mudou enquanto esta resposta vinha: ela já não vale.
-      if (q!==queryRef.current.trim()) return;
+      if (q!==queryRef.current.trim() || version!==requestVersion.current) return;
+      if (!payload.available) throw new Error("fila indisponível");
       const list = payload.items ?? [];
+      confirmedPageRef.current = {scope, ...pageRef.current};
+      setNextCursor(payload.nextCursor); setPageTotal(payload.total);
+      setQueueCount(payload.pendingCount); setMineCount(payload.mineCount);
+      setPageNumber(pageRef.current.previous.length+1);
       setAvailable(payload.available); setItems(list); setViewer(payload.viewer ?? null);
       setChannelState(payload.channelState ?? {enabled:false,autoReply:false,canReply:false});
       setState("ready"); setSyncedAt(Date.now()); setSyncFailed(false);
-      if (!q) announce(list);
+      if (!q && !pageRef.current.cursor && mode!=="force") announce(list);
       const current = selectedRef.current;
       const fresh = current ? list.find((item) => conversationKey(item)===conversationKey(current)) : undefined;
       if (fresh) { selectedRef.current = fresh; setSelected(fresh); }
       else if (mode==="first" && !current && list.length) {
         // Quem tem cliente esperando começa pela fila; quem não tem, pelas abertas.
-        if (list.some((item) => needsReply(item, Date.now()))) setQueue("fila");
+
         // Veio de um clique em outra tela ("Últimas conversas"): abre aquela, não a primeira da lista.
         const wanted = initialRef.current ? list.find((item) => conversationKey(item)===initialRef.current) : undefined;
         open(wanted ?? list[0]);
         if (wanted) setPane("chat");
       }
     } catch {
+      if (version!==requestVersion.current) return;
+      const confirmed = confirmedPageRef.current;
+      pageRef.current = confirmed.scope===scope ? {cursor:confirmed.cursor,previous:confirmed.previous} : {cursor:null,previous:[]};
       // Falha de atualização não apaga o que já está na tela: avisa e tenta de novo.
       if (mode==="first") setState("error"); else setSyncFailed(true);
-    } finally { listBusy.current = false; }
+    } finally { if (version===requestVersion.current) { listBusy.current = false; setPageLoading(false); } }
   }
 
   async function loadMessages(item:ConversationSummary, mode:"open"|"poll"|"force") {
@@ -329,7 +355,7 @@ export function AttendanceModule({ initialConversation, onAwaiting }: { initialC
   }
 
   useEffect(() => {
-    void loadList("first");
+    void Promise.resolve().then(() => loadList("first"));
     fetch("/api/agent/replies").then((response) => response.ok ? response.json() : null)
       .then((payload:{ items?:QuickReply[] }|null) => { if (payload?.items) setQuickReplies(payload.items.map(({ intent, label, content }) => ({ intent, label, content }))); })
       .catch(() => undefined);
@@ -369,7 +395,7 @@ export function AttendanceModule({ initialConversation, onAwaiting }: { initialC
   useEffect(() => {
     // Espera curta: sem ela cada letra digitada viraria uma consulta.
     if (query.trim()===queryRef.current.trim()) return;
-    const timer = window.setTimeout(() => { queryRef.current = query; void loadList("force"); }, 350);
+    const timer = window.setTimeout(() => { queryRef.current = query; setItems([]); pageRef.current = {cursor:null,previous:[]}; void loadList("force"); }, 350);
     return () => window.clearTimeout(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps -- `loadList` lê a busca pela ref
   }, [query]);
@@ -379,28 +405,35 @@ export function AttendanceModule({ initialConversation, onAwaiting }: { initialC
     if (el && stickRef.current) el.scrollTop = el.scrollHeight;
   }, [messages]);
 
-  const waiting = items.filter((item) => needsReply(item, now));
-  const awaitingCount = waiting.length;
-  useEffect(() => { onAwaiting?.(awaitingCount); }, [awaitingCount, onAwaiting]);
+  function changeFilters(nextQueue:Queue, nextSector:string) {
+    setQueue(nextQueue); setSector(nextSector);
+    filtersRef.current = {queue:nextQueue,sector:nextSector};
+    setItems([]);
+    pageRef.current = {cursor:null,previous:[]};
+    void loadList("force");
+  }
 
+  function changePage(direction:"next"|"previous"|"first") {
+    if (listBusy.current) return;
+    const current = pageRef.current;
+    if (direction==="next" && nextCursor) pageRef.current = {cursor:nextCursor,previous:[...current.previous,current.cursor]};
+    else if (direction==="previous" && current.previous.length) pageRef.current = {cursor:current.previous.at(-1) ?? null,previous:current.previous.slice(0,-1)};
+    else if (direction==="first") pageRef.current = {cursor:null,previous:[]};
+    else return;
+    void loadList("force");
+  }
+  const awaitingCount = queueCount;
+  useEffect(() => { onAwaiting?.(awaitingCount); }, [awaitingCount, onAwaiting]);
   const isOpenState = (item:ConversationSummary) => (item.state?.status ?? "open")==="open";
-  const mine = items.filter((item) => isOpenState(item) && !!viewer && item.state?.assigneeId===viewer.id);
-  const resolved = items.filter((item) => !isOpenState(item));
-  const queued = queue==="fila"
-    // Na fila, quem espera há mais tempo vem primeiro.
-    ? [...waiting].sort((a,b) => (a.awaitingSince ?? "").localeCompare(b.awaitingSince ?? ""))
-    : queue==="minhas" ? mine
-    : queue==="resolvidas" ? resolved
-    : items.filter(isOpenState);
-  // O setor vem da triagem do atendimento aberto; conversa sem atendimento só aparece em "Todos".
-  const hasSectors = items.some((item) => !!item.ticket?.queue);
-  const visible = sector==="todos" ? queued : queued.filter((item) => item.ticket?.queue===sector);
+  // Filtering and ordering belong to the server, before its page boundary.
+  const hasSectors = true;
+  const visible = items;
   useEffect(() => { visibleRef.current = visible; });
 
   if (state==="loading") return <div className="inbox-state"><Loading rows={6} label="Carregando conversas" /></div>;
   if (state==="error") return <div className="inbox-state"><Notice tone="bad">Não foi possível carregar as conversas.</Notice></div>;
   if (!available) return <div className="inbox-state"><Notice tone="bad">Histórico de conversas indisponível. Nenhuma conversa de exemplo é exibida no lugar.</Notice></div>;
-  if (items.length===0 && !query.trim() && !selected) return <div className="inbox-state"><Empty icon="chat" title="Nenhuma conversa registrada">As conversas aparecem aqui assim que o canal do WhatsApp receber mensagens — esta tela se atualiza sozinha. Nada fictício é mostrado enquanto isso.</Empty></div>;
+
 
   const conversationState = selected?.state ?? null;
   const resolvedNow = conversationState?.status==="resolved";
@@ -416,7 +449,7 @@ export function AttendanceModule({ initialConversation, onAwaiting }: { initialC
   const slashMatches = slashQuery===undefined || slashClosed ? [] : quickReplies.filter((reply) => normalize(reply.label).includes(normalize(slashQuery))).slice(0, 8);
   const slashActive = Math.min(slashIndex, Math.max(slashMatches.length - 1, 0));
   const queues: Array<[Queue,string,number|null]> = [
-    ["fila","Fila",awaitingCount], ...(viewer ? [["minhas","Minhas",mine.length] as [Queue,string,number]] : []), ["abertas","Abertas",null], ["resolvidas","Resolvidas",null],
+    ["fila","Fila",awaitingCount], ...(viewer ? [["minhas","Minhas",mineCount] as [Queue,string,number]] : []), ["abertas","Abertas",null], ["resolvidas","Resolvidas",null],
   ];
 
   return <div className={`inbox pane-${pane} ${details ? "with-details" : ""}`}>
@@ -431,18 +464,19 @@ export function AttendanceModule({ initialConversation, onAwaiting }: { initialC
         </div>
         <label className="search-field"><Icon name="search" size={16} /><input value={query} onChange={(e)=>setQuery(e.target.value)} placeholder="Buscar nome ou número" aria-label="Buscar conversa" /></label>
         {(hasSectors || sector!=="todos") && <label className="sector-filter"><span>Setor</span>
-          <select value={sector} onChange={(e)=>setSector(e.target.value)} aria-label="Filtrar por setor">
+          <select value={sector} onChange={(e)=>changeFilters(queue,e.target.value)} aria-label="Filtrar por setor">
             <option value="todos">Todos</option>
             {TRIAGE_QUEUES.map((id) => <option key={id} value={id}>{queueLabel(id)}</option>)}
           </select></label>}
         <div className="queue-tabs" role="tablist" aria-label="Filas">
-          {queues.map(([id,label,total]) => <button key={id} type="button" role="tab" aria-selected={queue===id} className={queue===id ? "active" : ""} onClick={() => setQueue(id)}>
+          {queues.map(([id,label,total]) => <button key={id} type="button" role="tab" aria-selected={queue===id} className={queue===id ? "active" : ""} onClick={() => changeFilters(id,sector)}>
             {label}{total!==null && total>0 && <b className={id==="fila" ? "hot" : ""}>{total}</b>}
           </button>)}
         </div>
       </div>
       <div className="inbox-items">
-        {visible.length===0 && <p className="inbox-empty">{query.trim() ? `Nenhuma conversa para “${query.trim()}”.` : queue==="fila" ? "Ninguém esperando resposta agora." : queue==="minhas" ? "Nenhuma conversa com você. Assuma uma pela fila." : queue==="resolvidas" ? "Nenhuma conversa resolvida entre as recentes." : "Nenhuma conversa aberta."}</p>}
+        {pageLoading && <p role="status">Carregando página…</p>}
+        {!pageLoading && !syncFailed && visible.length===0 && <p className="inbox-empty">{query.trim() ? `Nenhuma conversa para “${query.trim()}”.` : queue==="fila" ? "Nenhuma pendência nesta página. Volte ao início para conferir novas entradas." : queue==="minhas" ? "Nenhuma conversa com você. Assuma uma pela fila." : queue==="resolvidas" ? "Nenhuma conversa resolvida nesta página." : "Nenhuma conversa aberta."}</p>}
         {visible.map((item)=>{
           const active = selected && conversationKey(selected)===conversationKey(item);
           const hot = needsReply(item, now);
@@ -465,6 +499,13 @@ export function AttendanceModule({ initialConversation, onAwaiting }: { initialC
           </button>;
         })}
       </div>
+      <nav className="inbox-pagination" aria-label="Páginas da fila">
+        <span>Página {pageNumber} · {pageTotal} conversas no filtro</span>
+        <button type="button" disabled={pageLoading || pageNumber===1} onClick={()=>changePage("previous")}>Anterior</button>
+        <button type="button" disabled={pageLoading || !nextCursor} onClick={()=>changePage("next")}>Próxima</button>
+        <button type="button" onClick={()=>changePage("first")}>Atualizar desde o início</button>
+        {syncFailed && <span role="alert">Página não atualizada. Tente novamente; os dados exibidos podem estar desatualizados.</span>}
+      </nav>
       <div className={`inbox-sync ${syncFailed?"stale":""}`}><i />{syncFailed ? "Falha ao atualizar — tentando de novo" : syncedAt ? `Ao vivo · ${new Date(syncedAt).toLocaleTimeString("pt-BR",{hour:"2-digit",minute:"2-digit",second:"2-digit"})}` : ""}<span className="kbd-hint" title="Alt+↑ e Alt+↓ trocam de conversa"><kbd>Alt</kbd><kbd>↑↓</kbd></span></div>
     </aside>
 

@@ -2,7 +2,6 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { canSee, navigation, parseView, sectionOf, tabOf, type NavSection, type View } from "@/lib/platform/navigation";
-import { needsReply, type EffectiveState } from "@/lib/platform/conversation-state-shared";
 import { Icon, type IconKey } from "@/components/ui/icons";
 import { Avatar, Modal, ToastProvider, Segmented } from "@/components/ui/kit";
 import { setNavCollapsed, setTheme, useHash, useNavCollapsed, useTheme, type Theme } from "@/components/ui/preferences";
@@ -84,13 +83,10 @@ export function LzrHubApp({ ixcMode = "disabled" }: { ixcMode?: string }) {
   useEffect(() => {
     if (inInbox || session?.unavailable || invalidSession || logoutState !== "idle") return;
     let active = true;
-    const load = () => fetch("/api/conversations").then((response) => response.ok ? response.json() : null)
-      .then((payload: { items?: Array<{ awaitingSince?: string; lastCustomerAt?: string; state?: EffectiveState }> } | null) => {
-        if (!active || !payload?.items) return;
-        // A mesma régua da fila: esperando, aberta e ainda dentro da janela de 24 horas.
-        const at = Date.now();
-        const since = payload.items.flatMap((item) => needsReply(item, at) && item.awaitingSince ? [item.awaitingSince] : []).sort();
-        setAwaitingPolled({ count: since.length, oldest: since[0] ?? null });
+    const load = () => fetch("/api/conversations?view=fila").then((response) => response.ok ? response.json() : null)
+      .then((payload: { available?:boolean; pendingCount?:number; oldestPendingAt?:string|null } | null) => {
+        if (!active || !payload?.available || typeof payload.pendingCount!=="number") return;
+        setAwaitingPolled({ count:payload.pendingCount, oldest:payload.oldestPendingAt ?? null });
       })
       .catch(() => undefined);
     void load();
