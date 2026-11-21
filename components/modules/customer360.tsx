@@ -1,11 +1,12 @@
 "use client";
+import type {ReactNode} from "react";
 import type {CustomerReadAccess} from "@/lib/platform/customer-session-admission";
 import {InvoicePaymentPages} from "@/components/invoice-payment-pages";
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { Customer360 } from "@/lib/platform/customer360-service";
 import type { CustomerSummary } from "@/lib/platform/types";
 import { Icon } from "@/components/ui/icons";
-import { Avatar, Badge, Card, Empty, InfoTip, Loading, Modal, Notice, Toolbar, count } from "@/components/ui/kit";
+import { Badge, Card, Empty, InfoTip, Loading, Modal, Notice, Toolbar, count } from "@/components/ui/kit";
 import { useMediaQuery } from "@/components/ui/preferences";
 
 /**
@@ -80,7 +81,7 @@ export function Customer360Module({access}:{access?:CustomerReadAccess}={}){
   // Na listagem do IXC o plano não vem — todas as linhas diriam "Abrir para consultar". Coluna repetida é ruído.
   const showPlan=items.some(c=>c.plan&&!/abrir para consultar/i.test(c.plan));
   const cols=showPlan?"minmax(0,2fr) minmax(0,1.3fr) 110px minmax(0,.9fr)":"minmax(0,2.4fr) 120px minmax(0,1fr)";
-  const detail=<CustomerDetail access={access} data={selected} loading={!!selectedId&&!selected&&!detailError} error={detailError} refreshing={refreshing} onRefresh={live?()=>void refresh():undefined} onClose={closeDetail}/>;
+  const detail=<CustomerDetail access={access} data={selected} loading={!!selectedId&&!selected&&!detailError} error={detailError} refreshing={refreshing} onRefresh={live?()=>void refresh():undefined} onClose={closeDetail} showClose={wide}/>;
 
   return <>
     <Toolbar>
@@ -97,7 +98,7 @@ export function Customer360Module({access}:{access?:CustomerReadAccess}={}){
         {!loading&&!failed&&items.length>0&&<div className="table" style={{["--cols" as string]:cols}}>
           <div className="tr head hide-sm"><span>Cliente</span>{showPlan&&<span>Plano</span>}<span>Situação</span><span>{live?"Cidade":"Risco"}</span></div>
           {items.map(c=><button type="button" className={`tr stack-sm ${selectedId===c.id?"active":""}`} key={c.id} onClick={()=>void open(c.id)}>
-            <span className="cell"><strong>{c.name}</strong><small>{c.id} · {c.maskedDocument}</small></span>
+            <span className="cell"><strong>{c.name}</strong><small>Código {c.id}</small></span>
             {showPlan&&<span className="clip" title={c.plan}>{c.plan||"—"}</span>}
             <span className={`status ${statusOf(c.status)[1]}`}>{statusOf(c.status)[0]}</span>
             <span className="muted clip">{live?c.city||"—":c.churnRisk?<i className={`severity ${c.churnRisk}`}>{c.churnRisk}</i>:"não calculado"}</span>
@@ -113,9 +114,9 @@ export function Customer360Module({access}:{access?:CustomerReadAccess}={}){
   </>;
 }
 
-export function CustomerDetail({data,loading,error,refreshing,onRefresh,onClose,embedded=false,access}:{access?:CustomerReadAccess;data:Customer360|null;loading:boolean;error:boolean;refreshing:boolean;onRefresh?:()=>void;onClose:()=>void;embedded?:boolean}){
-  if(error)return <div className="card-content"><Notice tone="bad">Não foi possível abrir este cadastro.</Notice><button type="button" className="button ghost small" onClick={onClose}>Fechar</button></div>;
-  if(loading||!data)return <><button type="button" className="button ghost small" onClick={onClose}>Fechar</button><Loading rows={6}/></>;
+export function CustomerDetail({data,loading,error,refreshing,onRefresh,onClose,embedded=false,showClose=true,access}:{showClose?:boolean;access?:CustomerReadAccess;data:Customer360|null;loading:boolean;error:boolean;refreshing:boolean;onRefresh?:()=>void;onClose:()=>void;embedded?:boolean}){
+  if(error)return <div className="card-content"><Notice tone="bad">Não foi possível abrir este cadastro.</Notice>{showClose&&<button type="button" className="button ghost small" onClick={onClose}>Fechar</button>}</div>;
+  if(loading||!data)return <>{showClose&&<button type="button" className="button ghost small" onClick={onClose}>Fechar</button>}<Loading rows={6}/></>;
   // A situação do cadastro, a mesma da lista: o contrato pode estar encerrado com o cliente ativo em outro.
   const [statusText,statusTone]=statusOf(data.customer.status);
   const ixc=data.mode==="staging-readonly";
@@ -151,17 +152,26 @@ export function CustomerDetail({data,loading,error,refreshing,onRefresh,onClose,
   const incompleteReading=live&&(!reading||data.sources.some(source=>sourcePresentation(source).tone==="warn"));
   const observedAt=reading?.observedAt??data.sources[0]?.updatedAt;
   const observed=observedAt&&Number.isFinite(new Date(observedAt).getTime())?new Date(observedAt).toLocaleString("pt-BR",{timeZone:"America/Sao_Paulo"}):"Horário não confirmado";
+  const contractSummary=!live||reading?.contractSelection==="single"
+    ?(data.contract.plan==="Não informado"?statusOf(data.contract.status)[0]:data.contract.plan)
+    :reading?.contractSelection==="none"?"Nenhum na leitura":reading?.contractSelection==="unavailable"?"Fonte indisponível":"Atual não identificado";
+  const balanceSummary=live&&!reading?.financeAvailable?"Não confirmado":currency(data.finance.overdueAmount);
+  const balanceLabel=!live?"Em atraso":!reading?.financeAvailable?"Saldo vencido"
+    :reading.financeComplete?"Saldo vencido no recorte":"Vencido · leitura parcial";
   return <>
-    <div className={embedded?"details-head customer-embedded-head":"details-head"}>
-      <Avatar size="lg" name={data.customer.name}/>
-      <h2>{data.customer.name}</h2><p>Código {data.customer.id} · {data.customer.maskedDocument}</p>
-      <div className="chips" style={{justifyContent:"center",marginTop:6}}><Badge tone={statusTone==="ok"?"ok":statusTone==="bad"?"bad":"warn"}>{live?"Cadastro: ":""}{statusText}</Badge><Badge tone={live?"info":"neutral"}>{ixc?"IXC":"Demonstração"}</Badge></div>
-      {!embedded&&<button type="button" className="icon-button details-close" onClick={onClose} aria-label="Fechar"><Icon name="x"/></button>}
+    <div className={`details-head c360-compact-head${embedded?" customer-embedded-head":""}`}>
+      <h2>{data.customer.name}</h2>
+      <div className="c360-identity"><span>Código {data.customer.id}</span><Badge tone={statusTone==="ok"?"ok":statusTone==="bad"?"bad":"warn"}>{live?"Cadastro: ":""}{statusText}</Badge><Badge tone={live?"info":"neutral"}>{ixc?"IXC":"Demonstração"}</Badge></div>
+      {!embedded&&showClose&&<button type="button" className="icon-button details-close" onClick={onClose} aria-label="Fechar"><Icon name="x"/></button>}
     </div>
-    <div className="details-body">
-      {(data.partial||incompleteReading)&&<Notice tone="warn">Leitura parcial ou com dados não confirmados. Os recortes abaixo não representam necessariamente todo o histórico.</Notice>}
-      {data.mode==="staging-readonly"&&<p className="hint">IDs mais recentes primeiro: contratos e OS até 3 páginas de 20; faturas até 5 páginas de 20. Ordem por ID não comprova data nem contrato atual. Totais são os informados pela fonte durante a consulta.</p>}
-      <Section title="Contato" rows={[["Telefone",data.contact.phone],["E-mail",data.contact.email],["Endereço",data.contact.address],["Cliente desde",data.contact.customerSince]]}/>
+    <div className="details-body c360-compact-body">
+      {(data.partial||incompleteReading)&&<p className="c360-partial">Leitura parcial. Alguns dados não foram confirmados.</p>}
+      <dl className="c360-overview" aria-label="Resumo do cliente">
+        <div><dt>Contrato</dt><dd>{contractSummary}</dd></div>
+        <div><dt>{balanceLabel}</dt><dd>{balanceSummary}</dd></div>
+        <div><dt>Sessão registrada</dt><dd>{data.network.sessionStatus??"Não verificada"}</dd></div>
+      </dl>
+      <Disclosure title="Contratos">
       {(!live||reading?.contractSelection==="single")&&<Section title={live?"Contrato único na leitura":"Contrato"} rows={[["Código",data.contract.id],["Situação do contrato",statusOf(data.contract.status)[0]],["Plano",data.contract.plan],["Mensalidade",currency(data.contract.monthlyValue)],["Vencimento",data.contract.dueDay?`Dia ${data.contract.dueDay}`:"Indisponível"]]}/>}
       {live&&reading?.contractSelection!=="single"&&<section className="details-section">
         <h3>Contratos consultados</h3>
@@ -169,6 +179,8 @@ export function CustomerDetail({data,loading,error,refreshing,onRefresh,onClose,
         {reading?.contracts.map(contract=><p className="small" key={contract.id}>Contrato {contract.id} · {statusOf(contract.status)[0]} · {contract.plan}</p>)}
       </section>}
       {live&&<p className="hint">Contratos: {coverageLabel("contracts")}</p>}
+      </Disclosure>
+      <Disclosure title="Financeiro">
       <Section title="Financeiro consultado" rows={[[live?(reading?.financeComplete?"Saldo vencido na leitura":"Subtotal vencido conhecido (parcial)"):"Em atraso",currency(data.finance.overdueAmount)],[live?"Data de pagamento mais recente no recorte":"Último pagamento",paymentDateText]]}/>
       {live&&<section className="details-section">
         <p className="hint">Faturas: {coverageLabel("invoices")}. Referência de vencimento: {reading?.referenceDate??"não confirmada"} (Brasília).</p>
@@ -189,15 +201,25 @@ export function CustomerDetail({data,loading,error,refreshing,onRefresh,onClose,
           {paymentNotice&&<p className="hint">{paymentNotice}</p>}
           {reading.payments===undefined?<p className="hint">Detalhamento indisponível nesta resposta.</p>:reading.payments.length===0?<p className="hint">{paymentsConfirmed?"Nenhum registro de pagamento no recorte validado.":"Esta leitura não permite concluir se há pagamentos."}</p>:<ul className="customer-record-list">{reading.payments.map(p=><li key={p.id}><strong>Pagamento {p.id} · Fatura {p.invoiceId}</strong><span>{p.paidOn} · {currency(p.value)}</span><small>Forma: {p.method||"não informada"}</small></li>)}</ul>}
         </section>
+      </>}
+      </Disclosure>
+      {live&&reading&&<Disclosure title="Ordens de serviço">
         <section className="details-section"><h3>Ordens de serviço do recorte</h3>
           <p className="hint">{ixc?"Origem IXC. A execução técnica acontece no SeeNet; esta leitura não confirma atualização nem completude da integração SeeNet.":"Origem sintética; ordens de serviço fictícias da demonstração."}</p>
           {reading.serviceOrders===undefined?<p className="hint">Detalhamento indisponível nesta resposta.</p>:reading.serviceOrders.length===0?<p className="hint">Nenhuma OS neste recorte; ausência de registro não comprova ausência de atendimento.</p>:<ul className="customer-record-list">{reading.serviceOrders.map(o=><li key={o.id}><strong>OS {o.id} · {o.subject||"Assunto não informado"}</strong><span>Status na fonte: {o.status} · Abertura: {o.openedAt??"não confirmada"}</span></li>)}</ul>}
         </section>
-      </>}
-      {live&&<p className="hint">Conexão do cadastro: a fonte não identifica o contrato deste login. Não associe automaticamente a uma das faturas.</p>}
-      <Section title="Conexão" rows={[["Status da ONU",data.network.onuStatus],["Sessão registrada",data.network.sessionStatus??"Não verificada"],["PPPoE (login)",data.network.pppoe],["Equipamento/OLT",data.network.equipmentDescriptor],["Tipo de conexão",data.network.connectionType],["ONU",data.network.onu],["Potência",data.network.opticalPower],["Último acesso do login",data.network.lastSessionAccessAt??"Não informado"],["Uptime do equipamento",data.network.uptime]]}/>
+        <p className="hint">Ordens de serviço: {coverageLabel("serviceOrders")}</p>
+      </Disclosure>}
+      <Disclosure title="Conexão">
+      {live&&<p className="hint">A fonte não identifica o contrato deste login. Não associe automaticamente a uma das faturas.</p>}
+      <Section title="Leitura técnica" rows={[["Status da ONU",data.network.onuStatus],["Sessão registrada",data.network.sessionStatus??"Não verificada"],["PPPoE (login)",data.network.pppoe],["Equipamento/OLT",data.network.equipmentDescriptor],["Tipo de conexão",data.network.connectionType],["ONU",data.network.onu],["Potência",data.network.opticalPower],["Último acesso do login",data.network.lastSessionAccessAt??"Não informado"],["Uptime do equipamento",data.network.uptime]]}/>
+      </Disclosure>
+      <Disclosure title="Contato e cadastro">
+        <Section title="Contato" rows={[["Telefone",data.contact.phone],["E-mail",data.contact.email],["Endereço",data.contact.address],["Cliente desde",data.contact.customerSince],["Documento",data.customer.maskedDocument]]}/>
+      </Disclosure>
+      <Disclosure title="Fontes e limites da leitura">
+      {ixc&&<p className="hint">IDs mais recentes primeiro: contratos e OS até 3 páginas de 20; faturas até 5 páginas de 20. Ordem por ID não comprova data nem contrato atual. Totais são os informados pela fonte durante a consulta.</p>}
       {data.details&&<Section title={live?"Registros consultados (não totais históricos)":"Histórico"} rows={[["Contratos",String(data.details.contracts)],["Faturas",String(data.details.invoices)],["Pagamentos",live&&!paymentsConfirmed&&paymentCount===0?"Não confirmado":String(data.details.payments)],["Ordens de serviço",String(data.details.serviceOrders)]]}/>}
-      {live&&<p className="hint">Ordens de serviço: {coverageLabel("serviceOrders")}</p>}
       {/* Saúde e risco só existem na demonstração: com o IXC real nada os calcula, e a seção seria quatro linhas de "não calculado". */}
       {!live&&<Section title="Inteligência (demonstração)" rows={[["Saúde",data.intelligence.health?`${data.intelligence.health}/100`:"Não calculada"],["Risco",data.intelligence.churnRisk],["Upgrade",data.intelligence.upgradeEligible?data.intelligence.recommendedPlan:"Não elegível"],["Motivo",data.intelligence.reason]]}/>}
       <section className="details-section">
@@ -205,8 +227,13 @@ export function CustomerDetail({data,loading,error,refreshing,onRefresh,onClose,
         {live&&<p className="hint">Leitura em {observed} (Brasília). {data.sources.some(s=>s.cache==="hit")?"Dados em cache; a hora é da consulta original.":ixc?"Consulta ao IXC, sem cache indicado.":"Fonte sintética em memória; sem consulta ao IXC."}</p>}
         <div className="chips">{data.sources.map((s,i)=>{const presentation=sourcePresentation(s);return <span key={i} className={`chip ${presentation.tone}`} title={`${s.mode==="demo"?"sintético":s.masked?"mascarado":"real"} · ${s.latencyMs??0} ms`}>{s.provider} · {presentation.label}</span>;})}</div>
       </section>
+      </Disclosure>
     </div>
   </>;
+}
+
+function Disclosure({title,children}:{title:string;children:ReactNode}) {
+  return <details className="c360-disclosure"><summary>{title}</summary><div className="c360-disclosure-content">{children}</div></details>;
 }
 
 function Section({title,rows}:{title:string;rows:[string,string][]}){

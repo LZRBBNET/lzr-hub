@@ -18,7 +18,7 @@ async function fixture({invoices=[],payments=[],partialSources=[],cache="miss"}=
 const sources=html=>html.slice(html.indexOf('<h3>Fontes')).replace(/<[^>]*>/g,'');
 test('source badges distinguish successful query from complete record coverage',async()=>{const d=await fixture(),s=sources(render(d));assert.match(s,/IXC cliente · consulta ok/);assert.match(s,/IXC contratos · leitura completa/);assert.doesNotMatch(s,/IXC contratos · ok/);});
 test('20 of 45 contracts does not show green source success as completeness',async()=>{const d=await fixture();d.reading.coverage.contracts={read:20,total:45,limit:20,complete:false};d.partial=true;const h=render(d);assert.match(sources(h),/IXC contratos · parcial/);assert.match(h,/20 lidos.*45/);assert.match(h,/chip warn[^>]*[^]*IXC contratos/);});
-test('unknown total and legacy missing reading are visibly unconfirmed',async()=>{for(const legacy of [false,true]){const d=await fixture();if(legacy)delete d.reading;else d.reading.coverage.payments={read:20,total:null,limit:100,complete:false};d.partial=false;const h=render(d);assert.match(h,/Leitura parcial ou com dados não confirmados/);assert.match(sources(h),/IXC pagamentos · cobertura não confirmada/);}});
+test('unknown total and legacy missing reading are visibly unconfirmed',async()=>{for(const legacy of [false,true]){const d=await fixture();if(legacy)delete d.reading;else d.reading.coverage.payments={read:20,total:null,limit:100,complete:false};d.partial=false;const h=render(d);assert.match(h,/Leitura parcial. Alguns dados não foram confirmados/);assert.match(sources(h),/IXC pagamentos · cobertura não confirmada/);}});
 test('cache does not override partial coverage',async()=>{const d=await fixture();d.sources.forEach(s=>s.cache='hit');d.reading.coverage.invoices={read:20,total:25,limit:20,complete:false};assert.match(sources(render(d)),/IXC financeiro · parcial · cache/);});
 test('failed source stays unavailable even if metadata says complete',async()=>{const d=await fixture();d.sources.find(s=>s.provider==='IXC pagamentos').state='error';assert.match(sources(render(d)),/IXC pagamentos · indisponível/);});
 test('contradictory complete metadata is not rendered as complete',async()=>{const d=await fixture();d.reading.coverage.invoices={read:20,total:45,limit:20,complete:true};const h=render(d);assert.match(sources(h),/IXC financeiro · cobertura não confirmada/);assert.doesNotMatch(h,/Faturas: 20 lidos de 45; leitura completa/);});
@@ -56,4 +56,21 @@ test('invoice nominal value stays unknown balance while source time and cache re
  assert.match(h,/Saldo em aberto: Não confirmado/);assert.match(h,/Origem do valor: face-value/);assert.doesNotMatch(h,/Saldo em aberto: R\$ 80,00/);
  assert.match(h,/Dados em cache; a hora é da consulta original/);assert.match(h,/03\/11\/2026/);
  assert.equal(d.reading.observedAt,'2026-11-03T12:00:00Z');assert.ok(d.sources.every(s=>s.cache==='hit'&&s.updatedAt===d.reading.observedAt));
+});
+
+test('compact summary separates disputed data and places document, financing, and sources behind native disclosures',async()=>{
+ const d=await fixture({invoices:[ownInvoice()]});
+ d.reading.contractSelection='ambiguous';
+ d.reading.financeAvailable=false;
+ d.partial=true;
+ d.network.sessionStatus='Conectada';
+ const h=render(d),overview=h.slice(0,h.indexOf('<details'));
+ assert.match(overview,/Cadastro: Ativo/);assert.match(overview,/Atual não identificado/);
+ assert.match(overview,/Saldo vencido[^]*Não confirmado/);assert.match(overview,/Sessão registrada[^]*Conectada/);
+ assert.doesNotMatch(overview,/SYNTHETIC|IDs mais recentes|CPF|Vencimento/);
+ assert.equal((h.match(/<details class="c360-disclosure">/g)||[]).length,6);
+ assert.doesNotMatch(h,/<details[^>]+\bopen(?:=|\s|>)/);
+ assert.match(h,/<summary>Financeiro<\/summary>[^]*Fatura 940001/);
+ assert.match(h,/<summary>Contato e cadastro<\/summary>[^]*Documento[^]*SYNTHETIC/);
+ assert.match(h,/<summary>Fontes e limites da leitura<\/summary>[^]*IDs mais recentes/);
 });
