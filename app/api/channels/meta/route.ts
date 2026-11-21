@@ -13,7 +13,7 @@ import { getIxcRuntime } from "@/lib/integrations/ixc/runtime";
 import { parseMetaMessages, parseMetaStatuses, parseMetaWebhook, signatureIsValid } from "@/lib/integrations/meta/webhook-parser";
 import { DbConversationStateRepository } from "@/lib/platform/conversation-state-service";
 import { DbReplyRepository } from "@/lib/platform/attendant-reply-service";
-import { metaAutoReplyOptions } from "@/lib/platform/meta-auto-reply-service";
+import { metaAutoReplyOptions, metaAutoReplySender } from "@/lib/platform/meta-auto-reply-service";
 import { metaSendConfigFromEnv, sendTextMessage } from "@/lib/integrations/meta/cloud-client";
 import { DbOutboundRepository } from "@/lib/platform/outbound-service";
 import { OPT_IN_REPLY, OPT_OUT_REPLY, canonicalPhone, isOptIn, isOptOut } from "@/lib/platform/outbound-shared";
@@ -24,6 +24,8 @@ import { hasRecentProtectedTechnicalAnchor, publicGreeting, publicTechnicalQuest
 import { extractCurrentTechnicalPilot, matchesProtectedTechnicalConversation, technicalConversationRelease, technicalPilotRoute } from "@/lib/platform/technical-conversation-pilot";
 import { currentTechnicalComplaint, currentTicketGates } from "@/lib/platform/current-support-tone";
 import { windowOpen } from "@/lib/platform/conversation-state-shared";
+import { ownerFinanceAnchor, ownerFinanceInbound, ownerFinancePilotScope, ownerFinancePilotTraffic, OWNER_FINANCE_REPLY, planOwnerFinancePilot,
+  reserveOwnerFinanceInbound, ownerFinanceScopeMaySpeak } from "@/lib/platform/owner-finance-pilot";
 import { isBusinessHours } from "@/lib/platform/triage-shared";
 import { askDoubtBot, doubtBotAnswerer, doubtBotConfigFromEnv } from "@/lib/platform/doubt-bot-service";
 import { DbKnowledgeRepository } from "@/lib/platform/knowledge-service";
@@ -129,6 +131,49 @@ export async function POST(request: Request) {
   const results = [];
   for (const message of messages) {
     const correlationId = randomUUID();
+    if (message.kind === "text" && ownerFinancePilotTraffic(process.env, message)) {
+      const pilotPlan = planOwnerFinancePilot(message.text);
+      const pilot = ownerFinancePilotScope(process.env, message, sendConfig?.phoneNumberId);
+      // A selected pilot message with missing/stale proof cannot fall through
+      // to general billing, which may execute a distinct, real Pix workflow.
+      if (!pilotPlan || !pilot || !sendConfig) { results.push({ status: "owner_finance_pilot_held" }); continue; }
+      const currentScope = () => {
+        const rechecked = ownerFinancePilotScope(process.env, message, sendConfig.phoneNumberId);
+        return !!rechecked && rechecked.startedAt === pilot.startedAt && rechecked.endsAt === pilot.endsAt;
+      };
+      try {
+        const ticket = await tickets.findOpen(CHANNEL_NAME, message.phone);
+        if (!currentScope() || !ownerFinanceScopeMaySpeak(ticket)) {
+          results.push({ status: "owner_finance_pilot_held" }); continue;
+        }
+        const anchor = pilotPlan.requiresAnchor
+          ? ownerFinanceAnchor(await channel.getHistory(CHANNEL_NAME, message.phone), message, pilot) : undefined;
+        if (pilotPlan.requiresAnchor && !anchor) { results.push({ status: "owner_finance_pilot_held" }); continue; }
+        const input = ownerFinanceInbound(message, pilotPlan.turn, correlationId);
+        if (!await reserveOwnerFinanceInbound(db, CHANNEL_NAME, input, anchor)) {
+          results.push({ status: "owner_finance_pilot_duplicate" }); continue;
+        }
+        const send = metaAutoReplySender({
+          claims: new DbReplyRepository(db), channel: CHANNEL_NAME, customerMessageAt: message.sentAt,
+          delivery: new DbConversationDelivery(db, async (tx, currentChannel, id) =>
+            currentScope() && currentChannel === CHANNEL_NAME && id === pilot.sender &&
+            ownerFinanceScopeMaySpeak(await new DbTicketRepository(tx).findOpen(CHANNEL_NAME, id))),
+          config: { ...sendConfig, fetcher: (url, init) => {
+            if (!currentScope()) return Promise.reject(Error("OWNER_FINANCE_PILOT_CLOSED"));
+            return fetch(url, { ...init, redirect: "error" });
+          } },
+        });
+        const text = OWNER_FINANCE_REPLY[pilotPlan.turn];
+        const receipt = await send({ conversationId: message.phone, inboundMessageId: message.messageId, text });
+        if (receipt.sent && receipt.messageId && /^wamid\.[A-Za-z0-9_=+\/-]{1,240}$/.test(receipt.messageId) &&
+            (!receipt.text || receipt.text === text)) {
+          await channel.saveMessages(CHANNEL_NAME, message.phone, [{ role: "agent", content: text,
+            correlationId, externalMessageId: receipt.messageId, sentBy: "ia" }]);
+          results.push({ status: "owner_finance_pilot_accepted" });
+        } else results.push({ status: "owner_finance_pilot_held" });
+      } catch { results.push({ status: "owner_finance_pilot_held" }); }
+      continue;
+    }
     const agentConfig = aiAgentConfig();
     const signedScope = {
       phone: message.phone, canonicalSender: message.canonicalSender, messageId: message.messageId,

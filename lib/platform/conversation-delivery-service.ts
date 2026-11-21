@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import type { getDb } from "../../db/index.ts";
 import { and, eq, sql } from "drizzle-orm";
 import { channelIdempotencyKeys } from "../../db/schema.ts";
 import { DbConversationStateRepository, changeConversationState, type StateActor } from "./conversation-state-service.ts";
@@ -11,11 +12,18 @@ export interface ConversationDelivery {
   finish(channel: string, conversationId: string, token: string): Promise<void>;
 }
 
+type Tx = Parameters<Parameters<Awaited<ReturnType<typeof getDb>>["transaction"]>[0]>[0];
+type AutomatonAuthority = (tx: Tx, channel: string, conversationId: string) => Promise<boolean>;
+
 /** No expiry: an interrupted or uncertain external send needs reconciliation, not automatic retry. */
 export class DbConversationDelivery implements ConversationDelivery {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   private readonly db: any;
-  constructor(db: unknown) { this.db = db; }
+  private readonly automatonAuthority?: AutomatonAuthority;
+  constructor(db: unknown, automatonAuthority?: AutomatonAuthority) {
+    this.db = db;
+    this.automatonAuthority = automatonAuthority;
+  }
   async begin(channel: string, conversationId: string, actor?: StateActor, operationKey?: string): Promise<string> {
     const token = randomUUID();
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -29,6 +37,8 @@ export class DbConversationDelivery implements ConversationDelivery {
       } else if (!botMayReply(await states.get(channel, conversationId))) {
         throw Error("DELIVERY_HUMAN_ASSIGNED");
       }
+      if (!actor && this.automatonAuthority && !await this.automatonAuthority(tx, channel, conversationId))
+        throw Error("DELIVERY_AUTHORITY_FENCED");
       const inserted = await tx.insert(channelIdempotencyKeys).values({
         idempotencyKey: deliveryKey(channel, conversationId), channel, externalConversationId: conversationId,
         responseJson: { status: "pending", token, operationKey, kind: actor ? "human" : "bot" }, createdAt: new Date().toISOString(),
