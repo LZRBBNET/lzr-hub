@@ -9,7 +9,7 @@ export interface Customer360 {
   contact: { phone:string; email:string; address:string; customerSince:string };
   contract: { id:string; plan:string; monthlyValue:number|null; dueDay:number; status:string; since:string };
   finance: { openInvoices:number; overdueAmount:number|null; lastPayment:string; paymentMethod:string };
-  network: { onu:string; onuStatus:string; pppoe:string; opticalPower:string; uptime:string; devices:number; equipmentDescriptor:string; connectionType:string };
+  network: { onu:string; onuStatus:string; pppoe:string; opticalPower:string; uptime:string; sessionStatus?:string; lastSessionAccessAt?:string; devices:number; equipmentDescriptor:string; connectionType:string };
   support: { openTickets:number; lastProtocol:string; lastReason:string; csat:number };
   intelligence: { health:number; churnRisk:string; upgradeEligible:boolean; recommendedPlan:string; reason:string };
   details?: { contracts:number; invoices:number; payments:number; serviceOrders:number };
@@ -191,7 +191,7 @@ export class Customer360Service {
       // ONU, potência óptica e quantidade de dispositivos genuinamente não vêm do endpoint
       // de conexão do IXC (confirmado consultando um cliente real) -- mensagem honesta em
       // vez de sugerir que só não perguntamos.
-      network:{onu:"Não disponibilizado pelo IXC",onuStatus:connection?.status==="N"?"Offline":connection?.status==="S"?"Online":connection?.status??"Indisponível",pppoe:connection?.login??"Indisponível",opticalPower:"Não disponibilizado pelo IXC",uptime:connection?.lastAccessAt??"—",devices:0,equipmentDescriptor:connection?.equipmentDescriptor??"Não disponibilizado pelo IXC",connectionType:connection?.connectionType??"Não informado"},
+      network:{onu:"Não disponibilizado pelo IXC",onuStatus:"Não verificado",sessionStatus:connection?.status==="N"?"Desconectada":connection?.status==="S"?"Conectada":undefined,lastSessionAccessAt:connection?.lastAccessAt,pppoe:connection?.login??"Indisponível",opticalPower:"Não disponibilizado pelo IXC",uptime:"Não verificado",devices:0,equipmentDescriptor:connection?.equipmentDescriptor??"Não disponibilizado pelo IXC",connectionType:connection?.connectionType??"Não informado"},
       support:{openTickets:orders.filter((item)=>!/[F]|fechad/i.test(item.status)).length,lastProtocol:orders[0]?.id??"—",lastReason:orders[0]?.subject??"Sem OS",csat:0},
       intelligence:{health:0,churnRisk:"não calculado",upgradeEligible:false,recommendedPlan:"—",reason:"Nenhum modelo calcula saúde ou risco: os sinais necessários não são coletados. Ver docs/telas-removidas.md"},
       details:{contracts:contracts.length,invoices:invoices.length,payments:payments.length,serviceOrders:orders.length},

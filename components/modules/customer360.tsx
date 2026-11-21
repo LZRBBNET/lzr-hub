@@ -195,7 +195,7 @@ export function CustomerDetail({data,loading,error,refreshing,onRefresh,onClose,
         </section>
       </>}
       {live&&<p className="hint">Conexão do cadastro: a fonte não identifica o contrato deste login. Não associe automaticamente a uma das faturas.</p>}
-      <Section title="Conexão" rows={[["Status",data.network.onuStatus],["PPPoE (login)",data.network.pppoe],["Equipamento/OLT",data.network.equipmentDescriptor],["Tipo de conexão",data.network.connectionType],["ONU",data.network.onu],["Potência",data.network.opticalPower],["Última conexão",data.network.uptime]]}/>
+      <Section title="Conexão" rows={[["Status da ONU",data.network.onuStatus],["Sessão registrada",data.network.sessionStatus??"Não verificada"],["PPPoE (login)",data.network.pppoe],["Equipamento/OLT",data.network.equipmentDescriptor],["Tipo de conexão",data.network.connectionType],["ONU",data.network.onu],["Potência",data.network.opticalPower],["Último acesso do login",data.network.lastSessionAccessAt??"Não informado"],["Uptime do equipamento",data.network.uptime]]}/>
       {data.details&&<Section title={live?"Registros consultados (não totais históricos)":"Histórico"} rows={[["Contratos",String(data.details.contracts)],["Faturas",String(data.details.invoices)],["Pagamentos",live&&!paymentsConfirmed&&paymentCount===0?"Não confirmado":String(data.details.payments)],["Ordens de serviço",String(data.details.serviceOrders)]]}/>}
       {live&&<p className="hint">Ordens de serviço: {coverageLabel("serviceOrders")}</p>}
       {/* Saúde e risco só existem na demonstração: com o IXC real nada os calcula, e a seção seria quatro linhas de "não calculado". */}

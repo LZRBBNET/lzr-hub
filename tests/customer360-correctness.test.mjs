@@ -185,3 +185,15 @@ test('payment history never overrides invoice balance or establishes settlement'
   assert.equal(uncertain.finance.overdueAmount,null);
   assert.equal(uncertain.reading.financeComplete,false);
 });
+
+test("Customer360 separates the last recorded login session from unknown ONU status and equipment uptime",async()=>{
+  const lastAccessAt="2026-10-22 08:31:00";
+  const result=await detail(snapshot({connection:{id:"login",customerId:id,login:"synthetic-login",status:"S",lastAccessAt}}));
+  assert.equal(result.network.lastSessionAccessAt,lastAccessAt);
+  assert.equal(result.network.sessionStatus,"Conectada");
+  assert.equal(result.network.onuStatus,"Não verificado");
+  assert.equal(result.network.uptime,"Não verificado");
+  const foreign=await detail(snapshot({connection:{id:"login",customerId:"another",login:"other",status:"S",lastAccessAt}}));
+  assert.equal(foreign.network.lastSessionAccessAt,undefined);
+  assert.equal(foreign.network.sessionStatus,undefined);
+});
