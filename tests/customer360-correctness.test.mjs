@@ -197,3 +197,29 @@ test("Customer360 separates the last recorded login session from unknown ONU sta
   assert.equal(foreign.network.lastSessionAccessAt,undefined);
   assert.equal(foreign.network.sessionStatus,undefined);
 });
+
+test("past due marker requires exact owned contract, open status, positive confirmed balance and due date",async()=>{
+ const contracts=[contract(),contract({id:"contract-2",status:"A"}),contract({id:"contract-3",status:"A"})];
+ const good=invoice({id:"positive",contractId:"contract-2"});
+ const invalid=[
+  invoice({id:"no-contract"}),invoice({id:"other-contract",contractId:"not-owned"}),
+  invoice({id:"wrong-holder",contractId:"contract-1",customerId:"someone-else"}),
+  invoice({id:"today",contractId:"contract-1",dueAt:"2026-10-26"}),
+  invoice({id:"date",contractId:"contract-1",dueAt:"2026-02-30"}),
+  invoice({id:"paid",contractId:"contract-1",status:"R"}),
+  invoice({id:"nominal",contractId:"contract-1",valueSource:"face-value"}),
+  invoice({id:"zero",contractId:"contract-1",value:0}),
+  invoice({id:"dupe",contractId:"contract-1"}),invoice({id:"dupe",contractId:"contract-1"}),
+ ];
+ const data=snapshot({contracts,invoices:[...invalid,good]});
+ const result=await detail(data);
+ assert.deepEqual(result.reading.contracts.filter(c=>c.hasConfirmedOverdue).map(c=>c.id),["contract-2"]);
+ assert.equal(result.reading.financeComplete,false);
+ assert.ok((await detail(snapshot({...data,partialSources:["invoices"]}))).reading.contracts.every(c=>!c.hasConfirmedOverdue));
+});
+
+test("IXC contract mapper never substitutes service status for missing contract lifecycle",async()=>{
+ const {IxcContractMapper}=await import("../lib/integrations/ixc/mappers.ts");
+ assert.equal(IxcContractMapper.map({id:"c",id_cliente:id,status_internet:"A"}).status,"desconhecido");
+ assert.equal(IxcContractMapper.map({id:"c",id_cliente:id,status:"I",status_internet:"A"}).status,"I");
+});

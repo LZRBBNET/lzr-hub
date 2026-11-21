@@ -63,7 +63,7 @@ export class IxcCustomerMapper {
  * contrato traz o preço embutido ("FIBRA COMBO 300MB - 69,90 - BBNET"), mas
  * extrair dinheiro de string de nome quebra no primeiro plano fora do padrão.
  */
-export class IxcContractMapper { static map(raw:Raw):IxcContractDto { const id=str(raw,"id"); const customerId=str(raw,"id_cliente"); if(!id||!customerId)throw new Error("IXC contract incompleto"); return {id,customerId,planId:str(raw,"id_vd_contrato","id_produto")||undefined,planName:str(raw,"contrato","plano","descricao")||"Plano não informado",status:str(raw,"status","status_internet")||"desconhecido",dueDay:num(raw,"dia_vencimento"),monthlyValue:undefined,activatedAt:str(raw,"data_ativacao","data_inicio")||undefined}; } }
+export class IxcContractMapper { static map(raw:Raw):IxcContractDto { const id=str(raw,"id"); const customerId=str(raw,"id_cliente"); if(!id||!customerId)throw new Error("IXC contract incompleto"); return {id,customerId,planId:str(raw,"id_vd_contrato","id_produto")||undefined,planName:str(raw,"contrato","plano","descricao")||"Plano não informado",status:str(raw,"status")||"desconhecido",dueDay:num(raw,"dia_vencimento"),monthlyValue:undefined,activatedAt:str(raw,"data_ativacao","data_inicio")||undefined}; } }
 // O valor do plano é `valor_contrato` (vem com 9 casas: "59.900000000").
 export class IxcPlanMapper { static map(raw:Raw):IxcPlanDto { const id=str(raw,"id");if(!id)throw new Error("IXC plan sem id");return{id,name:str(raw,"nome","descricao","contrato")||"Plano não informado",speed:str(raw,"velocidade","download")||undefined,value:num(raw,"valor_contrato","valor","valor_plano")}; } }
 // `valor_aberto` desconta o que já foi pago na fatura; é o número certo para

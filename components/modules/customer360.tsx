@@ -23,6 +23,19 @@ function statusOf(raw:string):[string,string]{
   return [value||"—","warn"];
 }
 
+function ContractState({status,hasConfirmedOverdue}:{status:string;hasConfirmedOverdue?:boolean}){
+  const code=status.trim().toLocaleLowerCase("pt-BR");
+  const [label,tone]=code==="a"||code==="ativo"?["Ativo","ok"]
+    :code==="i"||code==="encerrado"?["Encerrado","bad"]
+    :code==="cancelado"?["Cancelado","bad"]
+    :code==="p"||code==="pré-contrato"?["Pré-contrato",""]
+    :["Situação não confirmada",""];
+  return <span className="c360-contract-state">
+    {tone?<strong className={tone}>{label}</strong>:<span>{label}</span>}
+    {hasConfirmedOverdue&&<strong className="pending">Pendência financeira</strong>}
+  </span>;
+}
+
 export function Customer360Module({access}:{access?:CustomerReadAccess}={}){
   const [query,setQuery]=useState(""); const [term,setTerm]=useState(""); const [risk,setRisk]=useState("all"); const [page,setPage]=useState(1);
   const [items,setItems]=useState<CustomerSummary[]>([]); const [total,setTotal]=useState(0); const [pageSize,setPageSize]=useState(10);
@@ -152,6 +165,7 @@ export function CustomerDetail({data,loading,error,refreshing,onRefresh,onClose,
   const incompleteReading=live&&(!reading||data.sources.some(source=>sourcePresentation(source).tone==="warn"));
   const observedAt=reading?.observedAt??data.sources[0]?.updatedAt;
   const observed=observedAt&&Number.isFinite(new Date(observedAt).getTime())?new Date(observedAt).toLocaleString("pt-BR",{timeZone:"America/Sao_Paulo"}):"Horário não confirmado";
+  const singleContractRecord=reading?.contracts.find(contract=>contract.id===data.contract.id);
   const contractSummary=!live||reading?.contractSelection==="single"
     ?(data.contract.plan==="Não informado"?statusOf(data.contract.status)[0]:data.contract.plan)
     :reading?.contractSelection==="none"?"Nenhum na leitura":reading?.contractSelection==="unavailable"?"Fonte indisponível":"Atual não identificado";
@@ -165,18 +179,21 @@ export function CustomerDetail({data,loading,error,refreshing,onRefresh,onClose,
       {!embedded&&showClose&&<button type="button" className="icon-button details-close" onClick={onClose} aria-label="Fechar"><Icon name="x"/></button>}
     </div>
     <div className="details-body c360-compact-body">
-      {(data.partial||incompleteReading)&&<p className="c360-partial">Leitura parcial. Alguns dados não foram confirmados.</p>}
+      {(data.partial||incompleteReading||onRefresh)&&<div className="c360-reading-toolbar">
+        {(data.partial||incompleteReading)&&<p className="c360-partial">Leitura parcial. Alguns dados não foram confirmados.</p>}
+        {onRefresh&&<button type="button" className="button ghost small" disabled={refreshing} onClick={onRefresh}><Icon name="refresh" size={14}/>{refreshing?"Atualizando…":"Ler do IXC"}</button>}
+      </div>}
       <dl className="c360-overview" aria-label="Resumo do cliente">
         <div><dt>Contrato</dt><dd>{contractSummary}</dd></div>
         <div><dt>{balanceLabel}</dt><dd>{balanceSummary}</dd></div>
         <div><dt>Sessão registrada</dt><dd>{data.network.sessionStatus??"Não verificada"}</dd></div>
       </dl>
       <Disclosure title="Contratos">
-      {(!live||reading?.contractSelection==="single")&&<Section title={live?"Contrato único na leitura":"Contrato"} rows={[["Código",data.contract.id],["Situação do contrato",statusOf(data.contract.status)[0]],["Plano",data.contract.plan],["Mensalidade",currency(data.contract.monthlyValue)],["Vencimento",data.contract.dueDay?`Dia ${data.contract.dueDay}`:"Indisponível"]]}/>}
+      {(!live||reading?.contractSelection==="single")&&<Section title={live?"Contrato único na leitura":"Contrato"} rows={[["Código",data.contract.id],["Situação do contrato",ixc?<ContractState status={data.contract.status} hasConfirmedOverdue={singleContractRecord?.hasConfirmedOverdue}/>:statusOf(data.contract.status)[0]],["Plano",data.contract.plan],["Mensalidade",currency(data.contract.monthlyValue)],["Vencimento",data.contract.dueDay?`Dia ${data.contract.dueDay}`:"Indisponível"]]}/>}
       {live&&reading?.contractSelection!=="single"&&<section className="details-section">
         <h3>Contratos consultados</h3>
         <p className="hint">{reading?.contractSelection==="none"?"Nenhum contrato encontrado na leitura completa.":reading?.contractSelection==="unavailable"?"Fonte de contratos indisponível.":"Nenhum contrato escolhido automaticamente como atual. Situação do cadastro e do contrato são informações diferentes."}</p>
-        {reading?.contracts.map(contract=><p className="small" key={contract.id}>Contrato {contract.id} · {statusOf(contract.status)[0]} · {contract.plan}</p>)}
+        {reading?.contracts.map(contract=><p className="small" key={contract.id}>Contrato {contract.id} · <ContractState status={contract.status} hasConfirmedOverdue={ixc&&contract.hasConfirmedOverdue}/> · {contract.plan}</p>)}
       </section>}
       {live&&<p className="hint">Contratos: {coverageLabel("contracts")}</p>}
       </Disclosure>
@@ -223,7 +240,7 @@ export function CustomerDetail({data,loading,error,refreshing,onRefresh,onClose,
       {/* Saúde e risco só existem na demonstração: com o IXC real nada os calcula, e a seção seria quatro linhas de "não calculado". */}
       {!live&&<Section title="Inteligência (demonstração)" rows={[["Saúde",data.intelligence.health?`${data.intelligence.health}/100`:"Não calculada"],["Risco",data.intelligence.churnRisk],["Upgrade",data.intelligence.upgradeEligible?data.intelligence.recommendedPlan:"Não elegível"],["Motivo",data.intelligence.reason]]}/>}
       <section className="details-section">
-        <h3>Fontes {typeof data.totalLatencyMs==="number"&&<span className="muted" style={{fontWeight:400}}>· {data.totalLatencyMs} ms</span>}{onRefresh&&<button className="button ghost small" style={{marginLeft:"auto"}} disabled={refreshing} onClick={onRefresh}><Icon name="refresh" size={14}/>{refreshing?"Atualizando…":"Ler de novo"}</button>}</h3>
+        <h3>Fontes {typeof data.totalLatencyMs==="number"&&<span className="muted" style={{fontWeight:400}}>· {data.totalLatencyMs} ms</span>}</h3>
         {live&&<p className="hint">Leitura em {observed} (Brasília). {data.sources.some(s=>s.cache==="hit")?"Dados em cache; a hora é da consulta original.":ixc?"Consulta ao IXC, sem cache indicado.":"Fonte sintética em memória; sem consulta ao IXC."}</p>}
         <div className="chips">{data.sources.map((s,i)=>{const presentation=sourcePresentation(s);return <span key={i} className={`chip ${presentation.tone}`} title={`${s.mode==="demo"?"sintético":s.masked?"mascarado":"real"} · ${s.latencyMs??0} ms`}>{s.provider} · {presentation.label}</span>;})}</div>
       </section>
@@ -236,6 +253,6 @@ function Disclosure({title,children}:{title:string;children:ReactNode}) {
   return <details className="c360-disclosure"><summary>{title}</summary><div className="c360-disclosure-content">{children}</div></details>;
 }
 
-function Section({title,rows}:{title:string;rows:[string,string][]}){
+function Section({title,rows}:{title:string;rows:[string,ReactNode][]}){
   return <section className="details-section"><h3>{title}</h3><dl className="facts">{rows.map(([a,b])=><div key={a} className={a.length>25?"stacked":undefined}><dt>{a}</dt><dd>{b||"—"}</dd></div>)}</dl></section>;
 }

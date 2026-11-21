@@ -16,7 +16,7 @@ export interface Customer360 {
   reading?: {
     observedAt:string; referenceDate:string; paymentScope?:IxcPaymentScope;
     coverage:Record<"contracts"|"invoices"|"payments"|"serviceOrders",IxcSnapshotCoverage>;
-    contracts:Array<{id:string;status:string;plan:string}>;
+    contracts:Array<{id:string;status:string;plan:string;hasConfirmedOverdue?:boolean}>;
     invoices?:Array<{id:string;contractId:string|null;status:string;dueAt:string|null;openBalance:number|null;valueSource:"open-balance"|"face-value"|"unavailable"}>;
     payments?:Array<{id:string;invoiceId:string;paidOn:string;value:number|null;method:string}>;
     serviceOrders?:Array<{id:string;status:string;subject:string;openedAt:string|null}>;
@@ -175,6 +175,19 @@ export class Customer360Service {
     const contract=coverage.contracts.complete&&contracts.length===1?contracts[0]:undefined;
     const contractSelection=snapshot.partialSources.includes("contracts")?"unavailable":contract?"single":coverage.contracts.complete&&contracts.length===0?"none":"ambiguous";
     const finance=invoiceFinance(snapshot,invoices,coverage.invoices,today);
+    // A dívida do cadastro não identifica qual contrato está pendente. Só
+    // sinalizamos a fatura vencida, em aberto e ligada ao contrato exato.
+    const overdueContracts=new Set<string>();
+    if(finance.available){
+      for(const invoice of invoices){
+        const due=calendarDate(invoice.dueAt);
+        const amount=safeMoney(invoice.value);
+        if(invoice.contractId&&contractIds.has(invoice.contractId)&&invoice.status.trim().toUpperCase()==="A"
+          &&due&&due<today&&invoice.valueSource==="open-balance"&&amount!==null&&amount>0){
+          overdueContracts.add(invoice.contractId);
+        }
+      }
+    }
     const latestPayment=[...payments].sort((a,b)=>b.paidOn.localeCompare(a.paidOn))[0];
     const connection=snapshot.connection?.customerId===customerId?snapshot.connection:null;
     // CustomerSummary é o tipo compartilhado com a lista/modo demo -- a chave continua
@@ -195,7 +208,7 @@ export class Customer360Service {
       support:{openTickets:orders.filter((item)=>!/[F]|fechad/i.test(item.status)).length,lastProtocol:orders[0]?.id??"—",lastReason:orders[0]?.subject??"Sem OS",csat:0},
       intelligence:{health:0,churnRisk:"não calculado",upgradeEligible:false,recommendedPlan:"—",reason:"Nenhum modelo calcula saúde ou risco: os sinais necessários não são coletados. Ver docs/telas-removidas.md"},
       details:{contracts:contracts.length,invoices:invoices.length,payments:payments.length,serviceOrders:orders.length},
-      reading:{observedAt:snapshot.fetchedAt,referenceDate:today,paymentScope:snapshot.paymentScope,coverage,contracts:contracts.map(item=>({id:item.id,status:item.status,plan:item.planName})),
+      reading:{observedAt:snapshot.fetchedAt,referenceDate:today,paymentScope:snapshot.paymentScope,coverage,contracts:contracts.map(item=>({id:item.id,status:item.status,plan:item.planName,...(overdueContracts.has(item.id)?{hasConfirmedOverdue:true}:{})})),
         // A fatura pertence ao cadastro; só atribuímos contrato quando a mesma
         // leitura também comprova esse contrato. Valor nominal nunca vira saldo.
         invoices:invoices.map(item=>({id:item.id,contractId:item.contractId&&contractIds.has(item.contractId)?item.contractId:null,status:item.status,dueAt:calendarDate(item.dueAt),openBalance:item.valueSource==="open-balance"?safeMoney(item.value):null,valueSource:item.valueSource==="open-balance"||item.valueSource==="face-value"?item.valueSource:"unavailable"})),

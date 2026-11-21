@@ -74,3 +74,31 @@ test('compact summary separates disputed data and places document, financing, an
  assert.match(h,/<summary>Contato e cadastro<\/summary>[^]*Documento[^]*SYNTHETIC/);
  assert.match(h,/<summary>Fontes e limites da leitura<\/summary>[^]*IDs mais recentes/);
 });
+
+test('IXC contracts show distinct lifecycle and contract-scoped positive pending markers',async()=>{
+ const d=await fixture();
+ d.reading.contractSelection='ambiguous';
+ d.reading.contracts=[
+  {id:'a',status:'A',plan:'Plano A',hasConfirmedOverdue:true},
+  {id:'b',status:'I',plan:'Plano B'},
+  {id:'c',status:'Cancelado',plan:'Plano C',hasConfirmedOverdue:true},
+  {id:'d',status:'S',plan:'Plano D'},
+ ];
+ const h=render(d);
+ assert.match(h,/Contrato a · <span class="c360-contract-state"><strong class="ok">Ativo<\/strong><strong class="pending">Pendência financeira/);
+ assert.match(h,/Contrato b · <span class="c360-contract-state"><strong class="bad">Encerrado<\/strong><\/span>/);
+ assert.match(h,/Contrato c · <span class="c360-contract-state"><strong class="bad">Cancelado<\/strong><strong class="pending">Pendência financeira/);
+ assert.match(h,/Contrato d · <span class="c360-contract-state"><span>Situação não confirmada<\/span>/);
+});
+
+test('single closed contract with past due debt preserves both status and pending marker',async()=>{
+ const d=await fixture({invoices:[ownInvoice({status:'A',contractId:'920001'})]});
+ assert.match(render(d),/Situação do contrato[^]*<strong class="bad">Encerrado<\/strong><strong class="pending">Pendência financeira/);
+});
+
+test('live detail provides the existing safe refresh outside the disclosures',async()=>{
+ const d=await fixture();
+ const h=renderToStaticMarkup(React.createElement(compiled.exports.CustomerDetail,{data:d,loading:false,error:false,refreshing:true,onClose:()=>{},onRefresh:()=>{}}));
+ assert.match(h.slice(0,h.indexOf('<details')),/<button[^>]+disabled[^>]*>[^]*Atualizando/);
+ assert.equal((h.match(/Atualizando…/g)||[]).length,1);
+});
