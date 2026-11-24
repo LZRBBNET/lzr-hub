@@ -22,9 +22,12 @@ test("assunto da OS: sem internet, lenta, quedas e roteador; endereço e cancela
   assert.equal(aiServiceOrderSubject("sales_inquiry", "Cliente novo"), undefined);
 });
 
-function provider({ openOrders = [], contracts = [{ id: "48882", status: "A", internetStatus: "A", trustUnlockActive: false }] } = {}) {
+function provider({ openOrders = [], contracts = [{ id: "48882", status: "A", internetStatus: "A", trustUnlockActive: false }], activeComplete = true, logins = [{ id: "32844", online: false }], loginsComplete = true, readBack = true } = {}) {
   return {
     getServiceDiagnosis: async () => ({ logins: [{ id: "32844", contractId: "48882", online: false }], contracts, openServiceOrders: openOrders }),
+    listActiveContracts: async () => ({ ids: contracts.filter((c) => c.status === "A").map((c) => c.id), complete: activeComplete }),
+    listContractLogins: async () => ({ logins, complete: loginsComplete }),
+    reconcileServiceOrder: async (customerId, contractId, orderId) => { if (!readBack) throw new Error("IXC_OS_UNCONFIRMED"); return { id: orderId, customerId, contractId, status: "A" }; },
     getServiceOrderContract: async (customerId, contractId) => ({ id: contractId, customerId, status: "A" }),
     getCustomerRecord: async () => ({ id: "21857", filial_id: "1" }),
     listOsSubjects: async () => [{ id: "14" }, { id: "116" }, { id: "118" }, { id: "49" }],
@@ -59,9 +62,9 @@ test("pedido técnico pronto: abre a OS com assunto, setor, login e a ficha — 
   }
 });
 
-test("já tem OS aberta: a IA informa o número e não abre outra", async () => {
+test("já tem OS técnica aberta: a IA informa o número e não abre outra", async () => {
   let opened = 0;
-  const result = await openAiServiceOrder({ enabled: true, provider: provider({ openOrders: [{ id: "555", status: "A", subjectId: "44" }] }), ledger: new MemoryIxcWriteOperationsRepository(), open: async () => { opened++; return { raw: {} }; }, correlationId: "c" }, INPUT);
+  const result = await openAiServiceOrder({ enabled: true, provider: provider({ openOrders: [{ id: "555", status: "A", subjectId: "14" }] }), ledger: new MemoryIxcWriteOperationsRepository(), open: async () => { opened++; return { raw: {} }; }, correlationId: "c" }, INPUT);
   assert.deepEqual(result, { status: "existing", orderId: "555", detail: result.detail });
   assert.equal(opened, 0);
 });
@@ -105,3 +108,59 @@ test("classificador e copiloto só no ChatGPT quando há OPENAI_API_KEY", () => 
   assert.deepEqual(completionLimits("gpt-5.4-mini", 60, 0), { max_completion_tokens: 600, reasoning_effort: "none" });
   assert.deepEqual(completionLimits("gpt-4.1-mini", 60, 0), { temperature: 0, max_tokens: 60 });
 });
+
+/* ---------------- lições do SeeNet: lista incompleta, OS antiga de outro assunto, releitura ---------------- */
+
+async function withWrite(fn) {
+  const before = process.env.FEATURE_IXC_WRITE;
+  process.env.FEATURE_IXC_WRITE = "true";
+  try { return await fn(); } finally { if (before === undefined) delete process.env.FEATURE_IXC_WRITE; else process.env.FEATURE_IXC_WRITE = before; }
+}
+const opener = (sent) => async (order) => { sent.push(order); return { raw: { type: "success", message: "Registro inserido com sucesso!", id: "301399" } }; };
+
+test("lista de contratos incompleta: não abre (o ativo pode estar fora da página)", async () => withWrite(async () => {
+  const sent = [];
+  const result = await openAiServiceOrder({ enabled: true, provider: provider({ activeComplete: false }), ledger: new MemoryIxcWriteOperationsRepository(), open: opener(sent), correlationId: "c" }, INPUT);
+  assert.equal(result.status, "blocked");
+  assert.match(result.detail, /lista incompleta/);
+  assert.equal(sent.length, 0);
+}));
+
+test("dois contratos ativos: não escolhe por palpite", async () => withWrite(async () => {
+  const sent = [];
+  const contracts = [{ id: "36058", status: "A" }, { id: "48901", status: "A" }];
+  const result = await openAiServiceOrder({ enabled: true, provider: provider({ contracts }), ledger: new MemoryIxcWriteOperationsRepository(), open: opener(sent), correlationId: "c" }, INPUT);
+  assert.equal(result.status, "blocked");
+  assert.match(result.detail, /2 ativos/);
+  assert.equal(sent.length, 0);
+}));
+
+test("vários logins no contrato: usa o único online; sem um claro, não abre o assunto que exige login", async () => withWrite(async () => {
+  const sent = [];
+  const umOnline = [{ id: "41895", online: true }, { id: "39938", online: false }];
+  const ok = await openAiServiceOrder({ enabled: true, provider: provider({ logins: umOnline }), ledger: new MemoryIxcWriteOperationsRepository(), open: opener(sent), correlationId: "c" }, INPUT);
+  assert.equal(ok.status, "success");
+  assert.equal(sent[0].loginId, "41895");
+  const ambiguos = [{ id: "41895", online: true }, { id: "42926", online: true }];
+  const blocked = await openAiServiceOrder({ enabled: true, provider: provider({ logins: ambiguos }), ledger: new MemoryIxcWriteOperationsRepository(), open: opener(sent), correlationId: "c" }, { ...INPUT, ticketId: "t-amb" });
+  assert.equal(blocked.status, "blocked");
+  assert.match(blocked.detail, /Login do contrato/);
+}));
+
+test("OS antiga de outro assunto não bloqueia; OS técnica aberta sim", async () => withWrite(async () => {
+  const sent = [];
+  const antigas = [{ id: "209169", status: "A", subjectId: "90" }, { id: "188248", status: "A", subjectId: "33" }];
+  const abre = await openAiServiceOrder({ enabled: true, provider: provider({ openOrders: antigas }), ledger: new MemoryIxcWriteOperationsRepository(), open: opener(sent), correlationId: "c" }, INPUT);
+  assert.equal(abre.status, "success", "cobrança/retirada antigas não são o chamado deste problema");
+  const tecnica = [{ id: "300001", status: "AG", subjectId: "118" }];
+  const ja = await openAiServiceOrder({ enabled: true, provider: provider({ openOrders: tecnica }), ledger: new MemoryIxcWriteOperationsRepository(), open: opener(sent), correlationId: "c" }, { ...INPUT, ticketId: "t2" });
+  assert.deepEqual([ja.status, ja.orderId], ["existing", "300001"]);
+}));
+
+test("sem releitura confirmada, não diz ao cliente que abriu", async () => withWrite(async () => {
+  const sent = [];
+  const result = await openAiServiceOrder({ enabled: true, provider: provider({ readBack: false }), ledger: new MemoryIxcWriteOperationsRepository(), open: opener(sent), correlationId: "c" }, INPUT);
+  assert.equal(sent.length, 1, "a escrita aconteceu");
+  assert.equal(result.status, "unknown");
+  assert.match(result.detail, /não foi confirmada na releitura/);
+}));
