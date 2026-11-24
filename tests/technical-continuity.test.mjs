@@ -707,16 +707,18 @@ test("pilot accepts one neutral close router-light question on the verified foll
 
 test("three-turn pilot asks only for the label after two grounded questions and a short red LED reply", async () => {
   const label = "Você consegue ler a sigla ao lado da luz vermelha?";
-  for (const mode of ["ok", "off", "unconfirmed-first", "unconfirmed-second", "unrelated-quote", "mixed", "unsafe-output"]) {
+  for (const mode of ["ok", "explicit-red", "off", "unconfirmed-first", "unconfirmed-second", "unrelated-quote", "mixed", "negative", "contradiction", "unsafe-output"]) {
     const f = fixture({ first: "Isso acontece em outro aparelho?" });
     const opening = turn("Estou sem internet aqui, já reiniciei o roteador e nada.", "red-start");
     const device = await f.run(opening, { pilot: true });
     assert.equal(device.technicalPilotStep, "devices");
-    const light = await f.run(turn("Em todos", "red-middle"), { pilot: true });
+    const light = await f.run(turn("Sim, em todos os aparelhos", "red-middle"), { pilot: true });
     assert.equal(light.technicalPilotStep, "light");
     if (mode === "unconfirmed-first") f.receipt.set(device.externalMessageId, "sent");
     if (mode === "unconfirmed-second") f.receipt.set(light.externalMessageId, "sent");
-    const third = turn(mode === "mixed" ? "Tem uma vermelha e preciso do pix" : "Tem uma vermelha", "red-third");
+    const thirdTexts = { "explicit-red": "Tem uma vermelha", mixed: "Sim, e preciso do pix", negative: "Não", contradiction: "Sim, mas não há luz vermelha" };
+    const third = turn(thirdTexts[mode] ?? "sim", "red-third");
+    const expectsLabel = mode === "ok" || mode === "explicit-red";
     const options = {
       pilot: true, pilotRedLightLabel: mode !== "off",
       answer: async query => {
@@ -728,8 +730,8 @@ test("three-turn pilot asks only for the label after two grounded questions and 
       sentAt: new Date().toISOString(), replyToMessageId: device.externalMessageId, claimAnchor: async () => true,
     };
     const result = await f.run(third, options);
-    assert.equal(result.response, mode === "ok" ? label : null, mode);
-    if (mode === "ok") {
+    assert.equal(result.response, expectsLabel ? label : null, mode);
+    if (expectsLabel) {
       assert.equal(result.technicalPilotStep, "red-light-label");
       assert.deepEqual(f.calls.at(-1).history, []);
       assert.equal(f.calls.at(-1).question, "Cliente relata ver uma luz vermelha, sem informar a sigla ou o nome da luz.");

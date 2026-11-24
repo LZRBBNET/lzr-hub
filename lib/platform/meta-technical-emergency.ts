@@ -238,7 +238,10 @@ export async function technicalContinuity(
     || !preceding.externalMessageId || !META_ID.test(preceding.externalMessageId)
     || preceding.externalMessageId === input.idempotencyKey) return { action: "hold" };
   const accepted = await repository.findIdempotent(preceding.externalMessageId).catch(() => undefined);
-  if (pilotOnly && pilotRedLightLabel && shape.dimension === "light" && pilotReportedRedLight(input.text)
+  // A bare "sim" is evidence only for the authenticated, affirmative LED question below.
+  const affirmativeLightAnswer = shape.dimension === "light" && (pilotReportedRedLight(input.text)
+    || (shape.yesIsClear && /^sim[.!]?$/i.test(input.text.trim())));
+  if (pilotOnly && pilotRedLightLabel && affirmativeLightAnswer
     && accepted?.technicalQuestionStage === "followup" && accepted.technicalPilotStep === "light"
     && accepted.autoReply && accepted.status === "replied" && !accepted.handoff
     && accepted.correlationId === lastQuestion.correlationId && accepted.externalMessageId === lastQuestion.externalMessageId
