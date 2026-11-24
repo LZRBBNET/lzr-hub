@@ -35,6 +35,8 @@ const DOCS = [
  */
 const n8nPadrao = async (body) => {
   const task = body.task ?? "";
+  // Como o modelo real segue o roteiro STYLE: cumprimento sem assunto ganha a apresentação do suporte, sem menu.
+  if (/^(oi|ola|olá|bom dia|boa tarde|boa noite)\W*$/i.test(String(body.question).trim())) return "Olá! Aqui é o suporte da BBNET. Me conta o que está acontecendo?";
   if (task.includes("pediu para falar com uma pessoa")) return { answer: "Claro! Qual é o assunto? Muita coisa eu resolvo por aqui.", state: "ongoing" };
   if (task.includes("não está no cadastro")) {
     return /souza/i.test(body.question)

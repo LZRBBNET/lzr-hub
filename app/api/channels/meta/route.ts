@@ -400,7 +400,10 @@ export async function POST(request: Request) {
           trustActionUnavailable: trustScope !== "eligible" ? trustScope : !provider ? "ixc_provider_missing"
             : !triage ? "triage_missing" : triage.handedOff ? "ticket_handoff" : undefined,
           onTrustActionStage: (stage:TrustActionStage) => console.info(trustStageMarker(stage)),
-          technicalEmergency: protectedOptions(auto, triage?.ticket),
+          // A faixa protegida tem uma segunda porta, dentro do atendimento normal: com estas opções o canal desvia
+          // "oi", "sem internet" e qualquer intenção técnica para ela (e ela cala no que não reconhece). Desligada a
+          // chave, o atendimento normal não recebe as opções. Cliente agressivo nem chega aqui: a primeira porta o pega.
+          technicalEmergency: publicLane ? protectedOptions(auto, triage?.ticket) : undefined,
         },
         (input) => captureLeadFromContact(new DbCrmRepository(db), input, triage?.knownCustomer ?? lookupCustomer),
       ));

@@ -510,6 +510,9 @@ export function triageHooks(repository: TicketRepository, ticket: TicketRow, dia
     // Fora do horário vai como lista clicável, já dizendo quando há gente.
     clarification: (classified) => {
       if (!(ticket.stage === "new" && (classified.confidence < CLARIFY_BELOW || classified.intent === "general_information"))) return undefined;
+      // Modo autônomo é conversa: cumprimento ou pedido vago ganha "Olá! Aqui é o suporte da BBNET. Me conta o que está
+      // acontecendo?" do modelo (roteiro STYLE), não menu numerado — cliente leigo não responde "1" (pedido de 24/11).
+      if (mode.agent) return undefined;
       return mode.offHours ? { text: offHoursMenuText(at()), interactive: TRIAGE_LIST } : { text: CLARIFY_TEXT };
     },
     context: () => {

@@ -58,7 +58,7 @@ export const DEFAULT_REPLY_TEMPLATES: Record<Intent, string> = {
   unauthorized_request: "Esse pedido eu não consigo atender por aqui, por segurança: dados pessoais, como CPF, não são informados pelo WhatsApp. Posso te ajudar com internet sem conexão ou lenta, Wi-Fi, segunda via da fatura ou dúvidas sobre o seu plano.",
   out_of_scope: "Posso ajudar com internet, Wi-Fi, fatura e cadastro na BBNET. Para esse outro assunto, não consigo ajudar.",
   sales_inquiry: "Que bom que você quer conhecer a BBNET! Me diga o seu bairro e cidade, que um consultor te chama por aqui com os planos disponíveis no seu endereço.",
-  general_information: "Olá! Pode me contar o que você precisa? Por exemplo: internet sem conexão, lentidão, segunda via de fatura ou outro assunto.",
+  general_information: "Olá! Aqui é o suporte da BBNET. Me conta o que está acontecendo?",
 };
 
 export const FINANCIAL_REPLY_LOCK_REASON = "Escolha uma das respostas financeiras revisadas. O texto livre já salvo fica guardado e não é aplicado. Salvar uma nova opção substitui esse texto pelo fluxo existente.";
