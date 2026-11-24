@@ -54,3 +54,6 @@ backups/
 
 # Isolated synthetic Node build output
 /work/
+
+# Análise do backup da atendente: conversas de cliente (mesmo anonimizadas) não vão para o git
+/data/backup-analise/
