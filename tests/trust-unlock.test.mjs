@@ -41,7 +41,7 @@ function deps({ facts = base, unlock, contracts = [{ id: "48882", status: "A", i
     ledger, chamadas,
     deps: {
       enabled: true, ledger, correlationId: "c", now: () => QUARTA,
-      provider: { getServiceDiagnosis: async () => ({ logins: [], contracts, openServiceOrders: [] }), getTrustUnlockFacts: async () => facts },
+      provider: { listTrustUnlockContracts: async () => contracts, getTrustUnlockFacts: async () => ({ contractId: "48882", ...facts }) },
       unlock: unlock ?? (async (contractId) => { chamadas.push(contractId); return { raw: { type: "success" } }; }),
     },
   };
@@ -92,4 +92,62 @@ test("flag desligada ou contrato sem bloqueio: nada é chamado no IXC", async ()
   const ativo = deps({ contracts: [{ id: "48882", status: "A", internetStatus: "A", trustUnlockActive: false }] });
   assert.equal((await aiTrustUnlock(ativo.deps, ENTRADA)).status, "denied");
   assert.equal(off.chamadas.length + ativo.chamadas.length, 0);
+});
+
+test("confirma identidade antes da consulta e encontra o bloqueio na sétima posição sem misturar pagamentos", async () => {
+  const contracts = Array.from({ length: 6 }, (_, i) => ({ id: String(i + 1), status: "A", internetStatus: "A" }));
+  contracts.push({ id: "48882", status: "A", internetStatus: "CA" });
+  const { deps: d, chamadas } = deps({ contracts });
+  const reads = [];
+  d.provider.listTrustUnlockContracts = async id => { reads.push(["contracts", id]); return contracts; };
+  d.provider.getTrustUnlockFacts = async (owner, contract, _corr, allowHistory) => {
+    reads.push(["facts", owner, contract, allowHistory]);
+    return { ...base, contractId: contract };
+  };
+  const old = process.env.FEATURE_IXC_WRITE;
+  process.env.FEATURE_IXC_WRITE = "true";
+  try {
+    assert.equal((await aiTrustUnlock(d, { ...ENTRADA, holderVerified: false })).status, "needs_cpf");
+    assert.deepEqual(reads, []);
+    assert.equal((await aiTrustUnlock(d, ENTRADA)).status, "done");
+    assert.deepEqual(reads, [["contracts", ENTRADA.customerId], ["facts", ENTRADA.customerId, "48882", false]]);
+    assert.deepEqual(chamadas, ["48882"]);
+  } finally {
+    if (old === undefined) delete process.env.FEATURE_IXC_WRITE; else process.env.FEATURE_IXC_WRITE = old;
+  }
+});
+test("mais de um bloqueio, contrato divergente ou consulta incompleta nunca liberam", async () => {
+  const mix = deps({contracts: [{ id: "1", status: "A", internetStatus: "CM" }, { id: "2", status: "A", internetStatus: "FA" }]});
+  assert.equal((await aiTrustUnlock(mix.deps, ENTRADA)).reason, "multiple_blocked_contracts");
+  const wrong = deps({facts: { ...base, contractId: "999" }});
+  assert.equal((await aiTrustUnlock(wrong.deps, ENTRADA)).reason, "contract_scope_unverified");
+  const partial = deps();
+  partial.deps.provider.listTrustUnlockContracts = async () => { throw Error("IXC_CONTRACT_UNCONFIRMED"); };
+  assert.equal((await aiTrustUnlock(partial.deps, ENTRADA)).reason, "contract_evidence_unavailable");
+  assert.equal(mix.chamadas.length + wrong.chamadas.length + partial.chamadas.length, 0);
+});
+
+test("o adaptador IXC lê somente os contratos e recusa paginação parcial, outro titular e código desconhecido", async () => {
+  const { IxcReadonlyProvider } = await import("../lib/integrations/ixc/readonly-provider.ts");
+  const rows = Array.from({ length: 7 }, (_, i) => ({ id: String(i + 1), id_cliente: "10", status: "A", status_internet: i === 6 ? "CA" : "A" }));
+  for (const [records, total, expected] of [
+    [rows, 7, true], [rows.slice(0, 5), 7, false],
+    [[...rows.slice(0, 6), { ...rows[6], id_cliente: "11" }], 7, false],
+    [[...rows.slice(0, 6), { ...rows[6], status_internet: "?" }], 7, false],
+  ]) {
+    let reads = 0;
+    const provider = new IxcReadonlyProvider({ baseUrl:"https://test.example.invalid", token:"synthetic", allowedCustomerIds:["10"], retryLimit:0,
+      fetcher: async (url, init) => {
+        reads++;
+        assert.match(url, /\/cliente_contrato$/);
+        assert.equal(new Headers(init.headers).get("ixcsoft"), "listar");
+        const body=JSON.parse(init.body);
+        assert.equal(body.qtype,"cliente_contrato.id_cliente");
+        assert.equal(body.query,"10");
+        return Response.json({ registros:records,total,page:1 });
+      } });
+    if (expected) assert.deepEqual((await provider.listTrustUnlockContracts("10","fixture")).at(-1), { id:"7",status:"A",internetStatus:"CA" });
+    else await assert.rejects(provider.listTrustUnlockContracts("10","fixture"), /IXC_CONTRACT_UNCONFIRMED/);
+    assert.equal(reads,1);
+  }
 });

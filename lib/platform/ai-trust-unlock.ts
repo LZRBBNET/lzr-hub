@@ -1,4 +1,4 @@
-import type { IxcServiceDiagnosisData, IxcTrustUnlockFacts } from "../integrations/ixc/types.ts";
+import type { IxcTrustUnlockFacts } from "../integrations/ixc/types.ts";
 import type { IxcWriteOperationsRepository } from "./ixc-write-service.ts";
 import { DEBT_BLOCK_STATUSES, TRUST_UNLOCK_TEXT, trustUnlockDecision, type TrustUnlockReason } from "./trust-unlock-shared.ts";
 
@@ -21,8 +21,8 @@ export type TrustUnlockOutcome =
 export interface AiTrustUnlockDeps {
   enabled: boolean;
   provider: {
-    getServiceDiagnosis(customerId: string, correlationId: string): Promise<IxcServiceDiagnosisData>;
-    getTrustUnlockFacts(customerId: string, contractId: string, correlationId: string): Promise<IxcTrustUnlockFacts>;
+    listTrustUnlockContracts(customerId: string, correlationId: string): Promise<Array<{ id: string; status: string; internetStatus: string }>>;
+    getTrustUnlockFacts(customerId: string, contractId: string, correlationId: string, allowCustomerPaymentHistory: boolean): Promise<IxcTrustUnlockFacts>;
   };
   ledger: IxcWriteOperationsRepository;
   unlock: (contractId: string, correlationId: string) => Promise<{ raw: Record<string, unknown> }>;
@@ -31,6 +31,8 @@ export interface AiTrustUnlockDeps {
 }
 
 export interface AiTrustUnlockInput { customerId: string; ticketId: string; holderVerified: boolean; promisedDate?: string }
+
+const CONTRACT_REVIEW_TEXT = "Não consegui confirmar com segurança qual contrato pode ser liberado. Posso orientar você a falar com a equipe para conferir o contrato certo.";
 
 const DENIAL_TEXT: Partial<Record<TrustUnlockReason, string>> = {
   not_blocked: TRUST_UNLOCK_TEXT.notBlocked, manual_block: TRUST_UNLOCK_TEXT.manualBlock,
@@ -44,17 +46,18 @@ export async function aiTrustUnlock(deps: AiTrustUnlockDeps, input: AiTrustUnloc
   const key = `ai-unlock:${input.ticketId}`;
   try {
     const previous = await deps.ledger.findByIdempotencyKey(TRUST_UNLOCK_OPERATION, key);
-    if (previous?.status === "success") return { status: "done", text: TRUST_UNLOCK_TEXT.done, contractId: previous.invoiceId ?? "" };
+    if (previous?.status === "success" && previous.customerId === input.customerId) return { status: "done", text: TRUST_UNLOCK_TEXT.done, contractId: previous.invoiceId ?? "" };
     if (previous) return { status: "refused", text: TRUST_UNLOCK_TEXT.refused, reason: "Já houve uma tentativa neste atendimento." };
 
-    const data = await deps.provider.getServiceDiagnosis(input.customerId, deps.correlationId);
-    const blocked = data.contracts.filter((contract) => DEBT_BLOCK_STATUSES.has(contract.internetStatus) || contract.internetStatus === "CM");
-    const contract = blocked.length === 1 ? blocked[0] : undefined;
-    if (!contract) {
-      const reason = blocked.length > 1 ? "Mais de um contrato bloqueado." : "not_blocked";
-      return { status: "denied", text: blocked.length > 1 ? TRUST_UNLOCK_TEXT.manualBlock : TRUST_UNLOCK_TEXT.notBlocked, reason };
-    }
-    const facts = await deps.provider.getTrustUnlockFacts(input.customerId, contract.id, deps.correlationId);
+    const contracts = await deps.provider.listTrustUnlockContracts(input.customerId, deps.correlationId);
+    const blocked = contracts.filter((contract) => contract.status === "A" &&
+      (DEBT_BLOCK_STATUSES.has(contract.internetStatus) || contract.internetStatus === "CM"));
+    if (blocked.length > 1) return { status: "denied", text: CONTRACT_REVIEW_TEXT, reason: "multiple_blocked_contracts" };
+    const contract = blocked[0];
+    if (!contract) return { status: "denied", text: TRUST_UNLOCK_TEXT.notBlocked, reason: "not_blocked" };
+    if (contract.internetStatus === "CM") return { status: "denied", text: TRUST_UNLOCK_TEXT.manualBlock, reason: "manual_block" };
+    const facts = await deps.provider.getTrustUnlockFacts(input.customerId, contract.id, deps.correlationId, contracts.length === 1);
+    if (facts.contractId !== contract.id) return { status: "denied", text: CONTRACT_REVIEW_TEXT, reason: "contract_scope_unverified" };
     const decision = trustUnlockDecision(facts, (deps.now ?? (() => new Date()))());
     const ledgerEntry = { operation: TRUST_UNLOCK_OPERATION, idempotencyKey: key, customerId: input.customerId, invoiceId: contract.id, requestedBy: "ia@lzr-hub", correlationId: deps.correlationId };
     if (!decision.allowed) {
@@ -81,6 +84,6 @@ export async function aiTrustUnlock(deps: AiTrustUnlockDeps, input: AiTrustUnloc
       return { status: refused ? "refused" : "failed", text: refused ? TRUST_UNLOCK_TEXT.refused : TRUST_UNLOCK_TEXT.failed, reason: message.slice(0, 120) };
     }
   } catch {
-    return { status: "failed", text: TRUST_UNLOCK_TEXT.failed };
+    return { status: "failed", text: CONTRACT_REVIEW_TEXT, reason: "contract_evidence_unavailable" };
   }
 }

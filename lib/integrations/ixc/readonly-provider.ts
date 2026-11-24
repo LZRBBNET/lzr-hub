@@ -528,16 +528,30 @@ export class IxcReadonlyProvider {
     return records.map((raw)=>({id:String(raw.id),name:text(raw,"nome_social")||text(raw,"razao"),mobile:text(raw,"telefone_celular"),whatsapp:text(raw,"whatsapp"),
       active:text(raw,"ativo")!=="N",neighborhood:text(raw,"bairro"),city:names.get(text(raw,"cidade"))??""}));
   }
+  /** Lê até 50 contratos e exige comprovação de que a lista do titular está completa. */
+  async listTrustUnlockContracts(customerId:string,correlationId:string){
+    this.guard.assertCustomer(customerId);
+    if(!/^[1-9]\d{0,31}$/.test(customerId))throw new IxcReadonlyError("IXC_CONTRACT_UNCONFIRMED");
+    const {records,coverage}=await this.readPage("listContracts",endpoints.listContracts,"cliente_contrato.id_cliente",customerId,correlationId,50,customerId,
+      {oper:"=",page:1,sortname:"cliente_contrato.id",sortorder:"asc"});
+    if(!coverage.complete||records.some(row=>String(row.id_cliente??"")!==customerId||!/^[1-9]\d{0,31}$/.test(String(row.id??""))||
+      typeof row.status!=="string"||!row.status.trim()||(row.status==="A"&&(typeof row.status_internet!=="string"||!/^(A|D|CM|CA|FA|AA)$/.test(row.status_internet)))))
+      throw new IxcReadonlyError("IXC_CONTRACT_UNCONFIRMED");
+    return records.map(row=>({id:String(row.id),status:String(row.status),internetStatus:String(row.status_internet??"")}));
+  }
   /**
    * O que a regra do desbloqueio de confiança precisa: situação da internet no contrato, se o
    * desbloqueio está valendo, a data do último uso (`dt_ult_des_bloq_conf`) e as faturas pagas
    * depois dele — para saber se aquela vez foi paga em dia.
    */
-  async getTrustUnlockFacts(customerId:string,contractId:string,correlationId:string):Promise<IxcTrustUnlockFacts>{
-    const contract=(await this.read("listContracts",endpoints.listContracts,"cliente_contrato.id",contractId,correlationId,1,customerId))[0];
-    if(!contract||String(contract.id)!==contractId||String(contract.id_cliente)!==customerId)throw new IxcReadonlyError("IXC_CONTRACT_UNCONFIRMED");
+  async getTrustUnlockFacts(customerId:string,contractId:string,correlationId:string,allowCustomerPaymentHistory=false):Promise<IxcTrustUnlockFacts>{
+    const {records,coverage}=await this.readPage("listContracts",endpoints.listContracts,"cliente_contrato.id",contractId,correlationId,2,customerId);
+    const contract=records[0];
+    if(!coverage.complete||records.length!==1)throw new IxcReadonlyError("IXC_CONTRACT_UNCONFIRMED");
+    if(!contract||String(contract.id)!==contractId||String(contract.id_cliente)!==customerId||contract.status!=="A")throw new IxcReadonlyError("IXC_CONTRACT_UNCONFIRMED");
     const date=(value:unknown)=>{const v=String(value??"").trim();return v&&!v.startsWith("0000-00-00")?v:null;};
     const lastUnlockAt=date(contract.dt_ult_des_bloq_conf);
+    if(lastUnlockAt&&!allowCustomerPaymentHistory)throw new IxcReadonlyError("IXC_CONTRACT_PAYMENT_HISTORY_UNCONFIRMED");
     const paid=lastUnlockAt?await this.read("listInvoices",endpoints.listInvoices,"fn_areceber.id_cliente",customerId,correlationId,12,customerId,
       {oper:"=",sortname:"fn_areceber.pagamento_data",sortorder:"desc",gridParam:[{TB:"fn_areceber.status",OP:"=",P:"R"}]}):[];
     return {
