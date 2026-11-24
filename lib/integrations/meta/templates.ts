@@ -49,6 +49,43 @@ export async function getPhoneLimits(config: MetaTemplatesConfig, phoneNumberId:
   }
 }
 
+/**
+ * Para onde a Meta entrega as mensagens do número. Há três níveis, do mais forte ao mais fraco:
+ * URL do **número**, URL da **conta do WhatsApp** (`override_callback_uri` em `subscribed_apps`) e URL do **app**.
+ * Só o app aparece no painel de desenvolvedores; os outros dois substituem a URL dele em silêncio, e só a API mostra.
+ * Só leitura; nunca lança e nunca devolve o token.
+ */
+export interface WebhookRouting {
+  apps: Array<{ appId: string | null; appName: string | null; overrideCallbackUri: string | null }>;
+  phoneOverrideUri: string | null;
+}
+
+export async function getWebhookRouting(config: MetaTemplatesConfig, phoneNumberId?: string): Promise<{ ok: true; routing: WebhookRouting; notes: string[] } | { ok: false; reason: string }> {
+  const fetcher = config.fetcher ?? fetch;
+  const headers = { Authorization: `Bearer ${config.accessToken}` };
+  const base = `https://graph.facebook.com/${config.graphVersion}`;
+  const notes: string[] = [];
+  try {
+    const response = await fetcher(`${base}/${encodeURIComponent(config.wabaId)}/subscribed_apps`, { headers, signal: AbortSignal.timeout(10000) });
+    const body = await response.json().catch(() => ({})) as { data?: Array<{ whatsapp_business_api_data?: { id?: string; name?: string }; override_callback_uri?: string }>; error?: { message?: string } };
+    if (!response.ok) return { ok: false, reason: `A Meta recusou a consulta: ${String(body.error?.message ?? response.status).slice(0, 200)}` };
+    const apps = (body.data ?? []).map((item) => ({
+      appId: item.whatsapp_business_api_data?.id ?? null, appName: item.whatsapp_business_api_data?.name ?? null, overrideCallbackUri: item.override_callback_uri ?? null,
+    }));
+    let phoneOverrideUri: string | null = null;
+    if (phoneNumberId) {
+      // A URL do número vem em outro campo; se a Meta não o expuser a este token, é dito, não presumido.
+      const phone = await fetcher(`${base}/${encodeURIComponent(phoneNumberId)}?fields=webhook_configuration`, { headers, signal: AbortSignal.timeout(10000) }).catch(() => undefined);
+      const phoneBody = phone ? await phone.json().catch(() => ({})) as { webhook_configuration?: { phone_number?: string }; error?: { message?: string } } : {};
+      if (phone?.ok) phoneOverrideUri = phoneBody.webhook_configuration?.phone_number ?? null;
+      else notes.push("Não consegui ler a URL própria do número (a Meta recusou o campo). Só a da conta e a do app foram conferidas.");
+    }
+    return { ok: true, routing: { apps, phoneOverrideUri }, notes };
+  } catch {
+    return { ok: false, reason: "Não consegui falar com a Meta agora." };
+  }
+}
+
 export async function createMetaTemplate(config: MetaTemplatesConfig, definition: TemplateDefinition): Promise<{ ok: true; status: string } | { ok: false; reason: string }> {
   try {
     const response = await (config.fetcher ?? fetch)(url(config), {
