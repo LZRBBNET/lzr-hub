@@ -197,7 +197,10 @@ test("com o titular confirmado, o rascunho leva o PIX copia e cola da fatura que
   await receber(CPF);
   assert.deepEqual(pedidos, ["77"], "PIX só da que vence primeiro, e só depois do titular confirmado");
   assert.equal(ticket().selfService.pix.copyPaste, PIX);
-  assert.match(enviados[1], /PIX copia e cola da que vence primeiro \(R\$\s?99,90\):\n0002012697/);
+  assert.match(enviados[1], /PIX copia e cola da que vence primeiro \(R\$\s?99,90\):$/);
+  assert.equal(enviados[2], PIX, "o código sai numa mensagem só dele, para copiar sem o texto junto");
+  assert.match(enviados[1], /Pix Copia e Cola\* \(não é link\)/, "o cliente do backup achava que o código era link");
+  assert.match(ticket().selfService.draft, /:\n0002012697/, "o rascunho guardado continua inteiro");
   assert.doesNotMatch(enviados[1], /Linha digitável/, "com PIX, a linha digitável não vai junto");
 });
 

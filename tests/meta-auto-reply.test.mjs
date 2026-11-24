@@ -347,3 +347,19 @@ test("o webhook traz a hora em que o cliente escreveu, que é de onde conta a ja
   });
   assert.equal(semHora.sentAt, undefined);
 });
+
+/* ------------------------------------------------ PIX numa mensagem só --- */
+
+test("código PIX no fim sai numa mensagem só dele (copiar a mensagem inteira levaria o texto junto)", async () => {
+  const { chamadas, deps } = montar();
+  const codigo = "00020126970014br.gov.bcb.pix2575qrcode.exemplo.com5204000053039865406099.905802BR6304ABCD";
+  const enviar = metaAutoReplySender(deps);
+  const result = await enviar({ conversationId: CLIENTE, text: `Titular confirmado!\nPIX copia e cola da que vence primeiro (R$ 99,90):\n${codigo}`, inboundMessageId: "wamid.PIX1" });
+  assert.equal(result.sent, true);
+  assert.equal(chamadas.length, 2);
+  assert.equal(chamadas[0].body.text.body, "Titular confirmado!\nPIX copia e cola da que vence primeiro (R$ 99,90):");
+  assert.equal(chamadas[1].body.text.body, codigo, "o código vai sozinho");
+  const semPix = await enviar({ conversationId: CLIENTE, text: "Olá! Aqui é o suporte da BBNET.", inboundMessageId: "wamid.PIX2" });
+  assert.equal(semPix.sent, true);
+  assert.equal(chamadas.length, 3, "texto sem código continua numa mensagem só");
+});

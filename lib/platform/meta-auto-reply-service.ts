@@ -6,6 +6,7 @@ import type { ConversationStateRepository } from "./conversation-state-service.t
 import { autoReplyUsed, botMayReply, windowOpen } from "./conversation-state-shared.ts";
 import type { AutoReplyDelivery, AutoReplySender, ChannelOptions, ChannelRepository } from "./n8n-channel-service.ts";
 import { containsHomologationText } from "./reply-templates-shared.ts";
+import { splitPixCode } from "./invoice-self-service-shared.ts";
 
 /**
  * A IA responde ao cliente pela **Cloud API da Meta**, sozinha.
@@ -79,10 +80,16 @@ export function metaAutoReplySender(deps: MetaAutoReplyDeps): AutoReplySender {
     }
     const finish = () => deps.delivery!.finish(deps.channel, conversationId, deliveryToken).catch(() => undefined);
 
-    // 3. Chamada.
+    // 3. Chamada. Código PIX no fim vai numa segunda mensagem, sozinho, para o cliente copiar só ele.
+    const pix = interactive ? undefined : splitPixCode(text);
     const sent = interactive
       ? await sendInteractiveList(config, { to: conversationId, body: text, button: interactive.button, rows: interactive.rows })
-      : await sendTextMessage(config, { to: conversationId, text });
+      : await sendTextMessage(config, { to: conversationId, text: pix ? pix.body : text });
+    if (sent.ok && pix) {
+      // Melhor esforço, com uma nova tentativa: a primeira parte já saiu e não pode ser desfeita.
+      const code = await sendTextMessage(config, { to: conversationId, text: pix.code });
+      if (!code.ok) await sendTextMessage(config, { to: conversationId, text: pix.code });
+    }
     if (!sent.ok) {
       // Ambiguous transport/provider outcomes keep the durable reservation.
       if (["timeout", "unreachable", "rejected"].includes(sent.kind)) {
