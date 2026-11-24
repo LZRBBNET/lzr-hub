@@ -430,5 +430,6 @@ test("faixa protegida do fluxo técnico: ligada por padrão, desligável por cha
   assert.equal(protectedLaneEnabled({}), true, "padrão: como antes");
   assert.equal(protectedLaneEnabled({ FEATURE_PROTECTED_TECHNICAL_LANE: "true" }), true);
   assert.equal(protectedLaneEnabled({ FEATURE_PROTECTED_TECHNICAL_LANE: "false" }), false);
-  assert.equal(protectedLaneEnabled({ FEATURE_PROTECTED_TECHNICAL_LANE: "0" }), true, "só 'false' desliga: valor estranho não muda o comportamento");
+  for (const desligado of ["false", "False", "FALSE", " false ", "\"false\"", "'false'", "0", "off", "no"]) assert.equal(protectedLaneEnabled({ FEATURE_PROTECTED_TECHNICAL_LANE: desligado }), false, `desliga com ${JSON.stringify(desligado)}`);
+  for (const ligado of ["", "true", "abc", "1", undefined]) assert.equal(protectedLaneEnabled({ FEATURE_PROTECTED_TECHNICAL_LANE: ligado }), true, `mantém ligada com ${JSON.stringify(ligado)}`);
 });
