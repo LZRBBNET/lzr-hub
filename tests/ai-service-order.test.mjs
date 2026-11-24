@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { AI_OS_SUBJECTS, aiServiceOrderSubject, openAiServiceOrder } from "../lib/platform/ai-service-order.ts";
 import { MemoryIxcWriteOperationsRepository } from "../lib/platform/ixc-write-service.ts";
 import { requestFooter } from "../lib/platform/triage-service.ts";
+import { MemoryTechnicianRoutesRepository } from "../lib/platform/technician-routes-service.ts";
 import { completionLimits, llmConfigFromEnv } from "../lib/agent/llm-classifier.ts";
 import { copilotLlmConfigFromEnv } from "../lib/platform/copilot-service.ts";
 
@@ -22,15 +23,24 @@ test("assunto da OS: sem internet, lenta, quedas e roteador; endereço e cancela
   assert.equal(aiServiceOrderSubject("sales_inquiry", "Cliente novo"), undefined);
 });
 
-function provider({ openOrders = [], contracts = [{ id: "48882", status: "A", internetStatus: "A", trustUnlockActive: false }], activeComplete = true, logins = [{ id: "32844", online: false }], loginsComplete = true, readBack = true } = {}) {
+const FORMATO = "#uf# #cidade# #cep# #bairro# - #endereco#, #numero#";
+function provider({ openOrders = [], contracts = [{ id: "48882", status: "A", internetStatus: "A", trustUnlockActive: false }], activeComplete = true, logins = [{ id: "32844", online: false }], loginsComplete = true, readBack = true, loginFlag = "N", loads = {}, closedOrders = [], fiber = [] } = {}) {
   return {
-    getServiceDiagnosis: async () => ({ logins: [{ id: "32844", contractId: "48882", online: false }], contracts, openServiceOrders: openOrders }),
+    getServiceDiagnosis: async () => ({ logins: [{ id: "32844", contractId: "48882", online: false }], contracts, openServiceOrders: openOrders, fiber }),
     listActiveContracts: async () => ({ ids: contracts.filter((c) => c.status === "A").map((c) => c.id), complete: activeComplete }),
     listContractLogins: async () => ({ logins, complete: loginsComplete }),
-    reconcileServiceOrder: async (customerId, contractId, orderId) => { if (!readBack) throw new Error("IXC_OS_UNCONFIRMED"); return { id: orderId, customerId, contractId, status: "A" }; },
+    reconcileServiceOrder: async (customerId, contractId, orderId) => { if (!readBack) throw new Error("IXC_OS_UNCONFIRMED"); return { id: orderId, customerId, contractId, status: closedOrders.includes(orderId) ? "F" : "A" }; },
+    getServiceOrderAddressSources: async () => ({
+      customer: { id: "21857", endereco: "Rua do Cliente", numero: "1", bairro: "Centro", cep: "49500-000", cidade: "1771" },
+      contract: { id: "48882", endereco: "Rua do Contrato", numero: "2", bairro: "Bairro C", cep: "49500-222", cidade: "1771" },
+      login: { id: "32844", endereco_padrao_cliente: loginFlag, endereco: "Rua do Login", numero: "7", bairro: "Bairro L", cep: "49500-111", cidade: "1771", latitude: "-10.7", longitude: "-37.4" },
+    }),
+    getCityAndState: async () => ({ name: "Campo do Brito", state: "SE" }),
+    getOsSubjectConfig: async (id) => ({ id, addressOrigin: "L", addressFormat: FORMATO, loginRequired: ["9", "14", "49"].includes(id), active: true }),
+    countOpenOrdersOfTechnician: async (id) => loads[id] ?? 0,
     getServiceOrderContract: async (customerId, contractId) => ({ id: contractId, customerId, status: "A" }),
     getCustomerRecord: async () => ({ id: "21857", filial_id: "1" }),
-    listOsSubjects: async () => [{ id: "14" }, { id: "116" }, { id: "118" }, { id: "49" }],
+    listOsSubjects: async () => [{ id: "9" }, { id: "14" }, { id: "116" }, { id: "118" }, { id: "49" }],
     listSectors: async () => [{ id: "1" }],
   };
 }
@@ -44,7 +54,7 @@ test("pedido técnico pronto: abre a OS com assunto, setor, login e a ficha — 
     const sent = [];
     const open = async (order) => { sent.push(order); return { raw: { type: "success", message: "Registro inserido com sucesso!", id: "301041" } }; };
     const result = await openAiServiceOrder({ enabled: true, provider: provider(), ledger, open, correlationId: "c1" }, INPUT);
-    assert.deepEqual(result, { status: "success", orderId: "301041", detail: result.detail });
+    assert.deepEqual([result.status, result.orderId, result.vehicle], ["success", "301041", "carro"], "LOS vermelha: carro");
     assert.equal(sent[0].subjectId, "14");
     assert.equal(sent[0].sectorId, "1");
     assert.equal(sent[0].priority, "N");
@@ -94,7 +104,7 @@ test("IXC recusa (HTTP 200 com type error): bloqueado no ledger, sem afirmar OS 
 
 test("o que o cliente lê: OS aberta com número, OS já existente, ou pedido registrado", () => {
   const tarde = new Date("2026-11-18T17:00:00Z"); // quarta, 14h em Brasília
-  assert.equal(requestFooter("P1", "tecnico", tarde, { id: "301041" }), "Abri a ordem de serviço nº 301041 (protocolo P1) para a equipe de suporte técnico, que entra em contato ainda hoje, por aqui.");
+  assert.equal(requestFooter("P1", "tecnico", tarde, { id: "301041" }), "Abri a ordem de serviço nº 301041 (protocolo P1). Antes de sair para o atendimento, o técnico vai entrar em contato para confirmar se tem alguém em casa.");
   assert.match(requestFooter("P1", "tecnico", tarde, { id: "555", existing: true }), /Você já tem uma ordem de serviço aberta, nº 555/);
   assert.match(requestFooter("P1", "comercial", tarde), /Seu pedido ficou registrado no protocolo P1, e a equipe de comercial dá continuidade/);
 });
@@ -163,4 +173,79 @@ test("sem releitura confirmada, não diz ao cliente que abriu", async () => with
   assert.equal(sent.length, 1, "a escrita aconteceu");
   assert.equal(result.status, "unknown");
   assert.match(result.detail, /não foi confirmada na releitura/);
+}));
+
+/* ---------------- OS igual à de atendente: assunto do veículo, endereço, técnico, horário, protocolo ---------------- */
+
+const ROTAS = () => new MemoryTechnicianRoutesRepository([
+  { cityId: "1771", cityName: "Campo do Brito", vehicle: "moto", technicianId: "43", technicianName: "Moto A", active: true },
+  { cityId: "1771", cityName: "Campo do Brito", vehicle: "moto", technicianId: "49", technicianName: "Moto B", active: true },
+  { cityId: "1771", cityName: "Campo do Brito", vehicle: "carro", technicianId: "6", technicianName: "Carro A", active: true },
+]);
+const SEG = () => new Date("2026-11-23T15:00:00Z");
+const DENTRO = { ...INPUT, summary: "Sem internet desde ontem\nPrecisa subir em poste ou telhado: não\nRoteador travado\nMelhor período: manhã" };
+
+test("dentro de casa: assunto 9 (moto), técnico moto com menos OS, endereço do login, horário e protocolo", async () => withWrite(async () => {
+  const sent = [];
+  const routes = ROTAS();
+  const result = await openAiServiceOrder({ enabled: true, provider: provider({ loads: { 43: 3, 49: 1 } }), ledger: new MemoryIxcWriteOperationsRepository(), open: opener(sent), routes, now: SEG, correlationId: "c" }, DENTRO);
+  assert.equal(result.status, "success");
+  assert.equal(sent[0].subjectId, "9", "SEM FUNCIONAR/TÉC. MOTO");
+  assert.equal(sent[0].technicianId, "49", "o de menos OS aberta");
+  assert.equal(sent[0].bestTime, "M");
+  assert.equal(sent[0].protocol, "20261118000001");
+  assert.equal(sent[0].address.text, "SE Campo do Brito 49500-111 Bairro L - Rua do Login, 7");
+  assert.equal(sent[0].address.cityId, "1771");
+  assert.match(sent[0].message, /Equipe indicada: moto/);
+  assert.equal(await routes.lastAssigned("1771", "moto"), "49", "guardado para alternar");
+}));
+
+test("fio caído: assunto 14 (carro) e técnico de carro", async () => withWrite(async () => {
+  const sent = [];
+  const fio = { ...INPUT, summary: "Sem internet\nO fio caiu do poste\nPrecisa subir em poste ou telhado: sim" };
+  const result = await openAiServiceOrder({ enabled: true, provider: provider(), ledger: new MemoryIxcWriteOperationsRepository(), open: opener(sent), routes: ROTAS(), now: SEG, correlationId: "c" }, fio);
+  assert.equal(result.status, "success");
+  assert.equal(sent[0].subjectId, "14");
+  assert.equal(sent[0].technicianId, "6");
+  assert.equal(result.vehicle, "carro");
+}));
+
+test("empate alterna entre os técnicos", async () => withWrite(async () => {
+  const routes = ROTAS();
+  const first = [], second = [];
+  await openAiServiceOrder({ enabled: true, provider: provider(), ledger: new MemoryIxcWriteOperationsRepository(), open: opener(first), routes, now: SEG, correlationId: "c" }, { ...DENTRO, customerId: "21857", ticketId: "a" });
+  await openAiServiceOrder({ enabled: true, provider: provider(), ledger: new MemoryIxcWriteOperationsRepository(), open: opener(second), routes, now: SEG, correlationId: "c" }, { ...DENTRO, ticketId: "b" });
+  assert.deepEqual([first[0].technicianId, second[0].technicianId], ["43", "49"]);
+}));
+
+test("login S: o endereço vem do cadastro do cliente, não do login", async () => withWrite(async () => {
+  const sent = [];
+  await openAiServiceOrder({ enabled: true, provider: provider({ loginFlag: "S" }), ledger: new MemoryIxcWriteOperationsRepository(), open: opener(sent), routes: ROTAS(), now: SEG, correlationId: "c" }, DENTRO);
+  assert.equal(sent[0].address.text, "SE Campo do Brito 49500-000 Centro - Rua do Cliente, 1");
+}));
+
+test("cidade sem rota: a OS sai completa, mas sem técnico — o setor distribui", async () => withWrite(async () => {
+  const sent = [];
+  const result = await openAiServiceOrder({ enabled: true, provider: provider(), ledger: new MemoryIxcWriteOperationsRepository(), open: opener(sent), routes: new MemoryTechnicianRoutesRepository([]), now: SEG, correlationId: "c" }, DENTRO);
+  assert.equal(result.status, "success");
+  assert.equal(sent[0].technicianId, undefined);
+  assert.match(sent[0].message, /sem técnico definido: o setor distribui/);
+  assert.ok(sent[0].address.text, "endereço continua indo");
+}));
+
+test("reserva cliente+assunto: OS anterior fechada no IXC libera; aberta mantém o bloqueio", async () => withWrite(async () => {
+  const ledger = new MemoryIxcWriteOperationsRepository();
+  const sent = [];
+  const first = await openAiServiceOrder({ enabled: true, provider: provider(), ledger, open: opener(sent), routes: ROTAS(), now: SEG, correlationId: "c" }, { ...DENTRO, ticketId: "antigo" });
+  assert.equal(first.status, "success");
+  // Mesma OS ainda aberta no IXC: o escopo não cai.
+  const blocked = await openAiServiceOrder({ enabled: true, provider: provider(), ledger, open: opener(sent), routes: ROTAS(), now: SEG, correlationId: "c" }, { ...DENTRO, ticketId: "novo-1" });
+  assert.equal(blocked.status, "blocked");
+  assert.match(blocked.detail, /Já existe tentativa reservada/);
+  // A OS anterior foi fechada (F): a reserva é aposentada com rastro e a nova OS sai.
+  const reopened = await openAiServiceOrder({ enabled: true, provider: provider({ closedOrders: ["301399"] }), ledger, open: opener(sent), routes: ROTAS(), now: SEG, correlationId: "c" }, { ...DENTRO, ticketId: "novo-2" });
+  assert.equal(reopened.status, "success");
+  const retired = ledger.rows.filter((row) => row.operation === "service_order.scope" && /:encerrada:/.test(row.idempotencyKey));
+  assert.equal(retired.length, 1, "a reserva antiga continua no ledger, renomeada");
+  assert.match(retired[0].detail, /o IXC confirmou a OS anterior fechada/);
 }));

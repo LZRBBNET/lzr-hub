@@ -423,7 +423,8 @@ export function requestFooter(protocol: string | null, queue: string | null, at:
   const when = isBusinessHours(at) ? "ainda hoje, por aqui" : `${nextOpeningText(at)}, por aqui`;
   const proto = protocol ? ` (protocolo ${protocol})` : "";
   if (order?.existing) return `Você já tem uma ordem de serviço aberta, nº ${order.id}${proto}: ${team} segue com ela e retorna ${when}.`;
-  if (order) return `Abri a ordem de serviço nº ${order.id}${proto} para ${team}, que entra em contato ${when}.`;
+  // Pedido da operação (24/11): o técnico liga antes de sair, para não ir à toa a uma casa vazia.
+  if (order) return `Abri a ordem de serviço nº ${order.id}${proto}. Antes de sair para o atendimento, o técnico vai entrar em contato para confirmar se tem alguém em casa.`;
   return `${protocol ? `Seu pedido ficou registrado no protocolo ${protocol}` : "Seu pedido ficou registrado"}, e ${team} dá continuidade ${when}.`;
 }
 

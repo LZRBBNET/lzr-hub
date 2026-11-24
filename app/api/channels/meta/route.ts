@@ -33,6 +33,7 @@ import { askDoubtBot, doubtBotAnswerer, doubtBotConfigFromEnv } from "@/lib/plat
 import { DbKnowledgeRepository } from "@/lib/platform/knowledge-service";
 import { openAiServiceOrder } from "@/lib/platform/ai-service-order";
 import { DbIxcWriteOperationsRepository } from "@/lib/platform/ixc-write-service";
+import { DbTechnicianRoutesRepository } from "@/lib/platform/technician-routes-service";
 import { openServiceOrder, trustUnlock } from "@/lib/integrations/ixc/write-client";
 import { aiTrustUnlock } from "@/lib/platform/ai-trust-unlock";
 import { logUnauthenticatedAction } from "@/lib/platform/audit-log";
@@ -298,6 +299,8 @@ export async function POST(request: Request) {
       serviceOrder: agentConfig && provider ? async (input) => {
         const result = await openAiServiceOrder({
           enabled: aiServiceOrderEnabled(), provider, ledger: new DbIxcWriteOperationsRepository(db), correlationId,
+          // Cidade → técnicos (tabela da operação, no banco): sem linha para a cidade, a OS nasce sem técnico.
+          routes: new DbTechnicianRoutesRepository(db),
           open: (order, corr) => openServiceOrder({ baseUrl: ixcConfig.ixcBaseUrl!, token: ixcConfig.ixcToken! }, order, corr),
         }, input);
         if (result && result.status !== "skipped") {

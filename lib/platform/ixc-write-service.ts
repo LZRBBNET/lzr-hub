@@ -104,6 +104,12 @@ export interface IxcWriteOperationsRepository {
   finishClaim(key: string, status: IxcWriteStatus, detail: string, operation?: string): Promise<void>;
   lastSuccessAt(operation: string, invoiceId: string): Promise<string | null>;
   listSince(sinceIso: string): Promise<IxcWriteLedgerRow[]>;
+  /**
+   * Aposenta uma reserva que terminou: a chave ganha o sufixo `:encerrada:<instante>` e a linha
+   * continua no ledger (auditoria prova a decisão). Só para reserva de escopo cuja OS o IXC
+   * confirmou fechada — sem isso, a reserva cliente+assunto prendia o cliente para sempre.
+   */
+  retireClaim?(operation: string, key: string, detail: string): Promise<void>;
 }
 
 export class DbIxcWriteOperationsRepository implements IxcWriteOperationsRepository {
@@ -136,6 +142,11 @@ export class DbIxcWriteOperationsRepository implements IxcWriteOperationsReposit
     await this.db.update(ixcWriteOperations).set({ status, detail, updatedAt: new Date().toISOString() })
       .where(and(eq(ixcWriteOperations.operation, operation), eq(ixcWriteOperations.idempotencyKey, key), eq(ixcWriteOperations.status, "pending")));
   }
+  async retireClaim(operation: string, key: string, detail: string): Promise<void> {
+    const now = new Date().toISOString();
+    await this.db.update(ixcWriteOperations).set({ idempotencyKey: `${key}:encerrada:${now}`, detail, updatedAt: now })
+      .where(and(eq(ixcWriteOperations.operation, operation), eq(ixcWriteOperations.idempotencyKey, key)));
+  }
 
   async lastSuccessAt(operation: string, invoiceId: string): Promise<string | null> {
     const rows = await this.db.select().from(ixcWriteOperations)
@@ -167,6 +178,10 @@ export class MemoryIxcWriteOperationsRepository implements IxcWriteOperationsRep
   async finishClaim(key: string, status: IxcWriteStatus, detail: string, operation = "service_order.open"): Promise<void> {
     const row = this.rows.find(row => row.operation === operation && row.idempotencyKey === key && row.status === "pending");
     if (row) { row.status = status; row.detail = detail; }
+  }
+  async retireClaim(operation: string, key: string, detail: string): Promise<void> {
+    const row = this.rows.find(row => row.operation === operation && row.idempotencyKey === key);
+    if (row) { row.idempotencyKey = `${key}:encerrada:${new Date().toISOString()}`; row.detail = detail; }
   }
 
   async lastSuccessAt(operation: string, invoiceId: string) {
@@ -300,6 +315,11 @@ export interface ServiceOrderRequest {
   knownSectorIds: Set<string>;
   /** Assuntos das OS ainda abertas deste cliente, lidos do IXC agora. */
   openSubjects: Set<string>;
+  /**
+   * Prova de que a tentativa anterior deste cliente+assunto ACABOU (a OS dela está fechada no IXC).
+   * Só quem passa a prova libera a reserva antiga; a tela de atendimento não passa, e segue como antes.
+   */
+  settleStaleScope?: (previous: IxcWriteLedgerRow) => Promise<boolean>;
 }
 
 /**
@@ -354,10 +374,20 @@ export async function requestServiceOrderOpen(
   // A second key/device must not bypass the first reservation. This gate is
   // deliberately durable until an audited remote reconciliation can release it.
   const scopeKey = createHash("sha256").update(JSON.stringify([request.customerId, request.subjectId])).digest("hex");
-  if (!await repository.claim({ operation: "service_order.scope", idempotencyKey: scopeKey,
-    customerId: request.customerId, invoiceId: `assunto:${request.subjectId}`, status: "pending",
+  const scopeEntry = { operation: "service_order.scope", idempotencyKey: scopeKey,
+    customerId: request.customerId, invoiceId: `assunto:${request.subjectId}`, status: "pending" as const,
     requestedBy: request.requestedBy, correlationId: request.correlationId,
-    detail: "Escopo reservado para abertura de OS; liberação exige reconciliação auditada." })) {
+    detail: "Escopo reservado para abertura de OS; liberação exige reconciliação auditada." };
+  let scoped = await repository.claim(scopeEntry);
+  if (!scoped && request.settleStaleScope && repository.retireClaim) {
+    // A reserva antiga só cai com prova do IXC de que a OS dela acabou — é a reconciliação auditada.
+    const previous = await repository.findByIdempotencyKey("service_order.scope", scopeKey);
+    if (previous && await request.settleStaleScope(previous).catch(() => false)) {
+      await repository.retireClaim("service_order.scope", scopeKey, `${previous.detail} | Encerrada: o IXC confirmou a OS anterior fechada (${request.correlationId}).`);
+      scoped = await repository.claim(scopeEntry);
+    }
+  }
+  if (!scoped) {
     const detail = "Já existe tentativa reservada para este cliente e assunto. Confira a OS original; não abra outra.";
     await repository.finishClaim(request.idempotencyKey, "blocked", detail);
     return { status: "blocked", detail };
@@ -369,6 +399,8 @@ export async function requestServiceOrderOpen(
     if (!/^[1-9]\d{0,31}$/.test(id)) throw new Error("UNCONFIRMED_RESPONSE");
     const detail = `OS retornada pelo IXC: ${id}. Confira o vínculo e estado no ERP.`;
     await repository.finishClaim(request.idempotencyKey, "success", JSON.stringify({ detail, serviceOrderId: id, contractId: request.contractId }));
+    // A reserva de escopo guarda QUAL OS ela gerou: é o que permite provar, depois, que ela acabou.
+    await repository.finishClaim(scopeKey, "success", JSON.stringify({ serviceOrderId: id, contractId: request.contractId }), "service_order.scope").catch(() => undefined);
     return { status: "success", detail, raw: { id } };
   } catch {
     // Includes lost responses and ledger failure after a remote success.

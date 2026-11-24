@@ -165,6 +165,38 @@ export interface ServiceOrderInput {
    * técnico não sabe qual conexão olhar. Só vai no corpo quando conhecido.
    */
   loginId?: string;
+  /** Técnico (`funcionarios.id`). Sem ele a OS não aparece no celular de ninguém (o SeeNet lista por técnico): o setor atribui. */
+  technicianId?: string;
+  /** `melhor_horario_agenda`: M manhã, T tarde, Q qualquer. */
+  bestTime?: "M" | "T" | "Q";
+  /** Protocolo do atendimento do LZR — o número que o cliente recebeu no WhatsApp. */
+  protocol?: string;
+  /** Endereço como a tela do IXC grava: texto no molde do assunto, da fonte que o login manda usar. */
+  address?: { text: string; neighborhood: string; cityId: string; complement: string; reference: string; latitude: string; longitude: string };
+}
+
+/**
+ * Campos que a tela do IXC grava em toda OS e a API não: medidos no registro de inserção de 26 OS de
+ * 9 atendentes (24/11/2026). Sem `liberado = 1` a OS fica de fora do que a operação considera liberado.
+ * `gera_comissao = S` igual às atendentes: os assuntos técnicos têm comissão R$ 0,00, então é só contagem.
+ */
+const ATTENDANT_DEFAULTS = { liberado: "1", impresso: "N", status_assinatura: "A", gera_comissao: "S" } as const;
+const IXC_ID = /^[1-9]\d{0,31}$/;
+
+function serviceOrderExtras(input: ServiceOrderInput): Record<string, string> {
+  const extras: Record<string, string> = { ...ATTENDANT_DEFAULTS, melhor_horario_agenda: input.bestTime ?? "Q" };
+  if (input.technicianId && IXC_ID.test(input.technicianId)) extras.id_tecnico = input.technicianId;
+  if (input.protocol && /^\d{6,30}$/.test(input.protocol)) extras.protocolo = input.protocol;
+  const address = input.address;
+  if (address?.text) {
+    extras.endereco = address.text.slice(0, 250);
+    if (address.neighborhood) extras.bairro = address.neighborhood.slice(0, 120);
+    if (IXC_ID.test(address.cityId)) extras.id_cidade = address.cityId;
+    if (address.complement) extras.complemento = address.complement.slice(0, 120);
+    if (address.reference) extras.referencia = address.reference.slice(0, 250);
+    if (address.latitude && address.longitude) { extras.latitude = address.latitude; extras.longitude = address.longitude; }
+  }
+  return extras;
 }
 
 export async function openServiceOrder(
@@ -192,6 +224,7 @@ export async function openServiceOrder(
         id_filial: input.branchId, origem_endereco: input.loginId ? "L" : "M", prioridade: input.priority,
         setor: input.sectorId, status: "A", mensagem: input.message,
         ...(input.loginId && /^[1-9]\d{0,31}$/.test(input.loginId) ? { id_login: input.loginId } : {}),
+        ...serviceOrderExtras(input),
       }),
       signal: controller.signal,
     });
