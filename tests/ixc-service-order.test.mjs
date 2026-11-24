@@ -230,3 +230,34 @@ test("different keys for one customer/subject cannot race or bypass an uncertain
   assert.equal(calls,1);
  } finally {delete process.env.FEATURE_IXC_WRITE;}
 });
+
+test("campos que a tela do IXC grava e a API não: liberado, impresso, comissão, horário, técnico, protocolo e endereço", async () => {
+  let captured;
+  const fetcher = async (_url, init) => { captured = JSON.parse(init.body); return new Response(JSON.stringify({ id: "1" }), { status: 200 }); };
+  await openServiceOrder(options(fetcher), input({
+    loginId: "32844", technicianId: "43", bestTime: "T", protocol: "20261124000001",
+    address: { text: "SE Campo do Brito 49500-000 Centro - Rua A, 12", neighborhood: "Centro", cityId: "1771", complement: "", reference: "Praça", latitude: "-10.7", longitude: "-37.4" },
+  }), "corr-1");
+  assert.deepEqual(
+    [captured.liberado, captured.impresso, captured.status_assinatura, captured.gera_comissao, captured.melhor_horario_agenda],
+    ["1", "N", "A", "S", "T"], "como as 26 OS de atendentes medidas em 24/11",
+  );
+  assert.equal(captured.id_tecnico, "43");
+  assert.equal(captured.protocolo, "20261124000001");
+  assert.equal(captured.endereco, "SE Campo do Brito 49500-000 Centro - Rua A, 12");
+  assert.equal(captured.bairro, "Centro");
+  assert.equal(captured.id_cidade, "1771");
+  assert.equal(captured.referencia, "Praça");
+  assert.equal(captured.complemento, undefined, "vazio não sobrescreve");
+  assert.deepEqual([captured.latitude, captured.longitude], ["-10.7", "-37.4"]);
+  assert.equal(captured.origem_endereco, "L");
+});
+
+test("técnico ou protocolo inválidos não vão ao IXC", async () => {
+  let captured;
+  const fetcher = async (_url, init) => { captured = JSON.parse(init.body); return new Response(JSON.stringify({ id: "1" }), { status: 200 }); };
+  await openServiceOrder(options(fetcher), input({ technicianId: "abc", protocol: "P-1" }), "corr-1");
+  assert.equal(captured.id_tecnico, undefined);
+  assert.equal(captured.protocolo, undefined);
+  assert.equal(captured.melhor_horario_agenda, "Q", "sem pedido do cliente, qualquer horário");
+});

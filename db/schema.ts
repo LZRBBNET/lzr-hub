@@ -660,3 +660,29 @@ export const whatsappOptOuts = pgTable("whatsapp_opt_outs", {
   source: text("source").notNull(),
   ...auditColumns,
 });
+
+/**
+ * Para quem a IA manda a OS, por cidade (código interno do IXC) e tipo de equipe (moto ou carro).
+ * Mora no banco, não no código: o repositório é público e aqui há nome de funcionário. Uma cidade
+ * atendida pelos técnicos de outra (Feira Nova → Glória) tem as próprias linhas, com os técnicos de lá.
+ * Cidade sem linha (Itabaiana) → a OS nasce sem técnico e o setor técnico distribui.
+ */
+export const technicianRoutes = pgTable("technician_routes", {
+  id: text("id").primaryKey(),
+  cityId: text("city_id").notNull(),
+  cityName: text("city_name").notNull(),
+  vehicle: text("vehicle").notNull(),
+  technicianId: text("technician_id").notNull(),
+  technicianName: text("technician_name").notNull(),
+  active: boolean("active").notNull().default(true),
+  updatedBy: text("updated_by"),
+  ...auditColumns,
+}, (table) => [uniqueIndex("technician_routes_unique_idx").on(table.cityId, table.vehicle, table.technicianId)]);
+
+/** Quem recebeu a última OS da cidade e tipo: é o que faz o empate alternar entre os técnicos. */
+export const technicianRouteState = pgTable("technician_route_state", {
+  cityId: text("city_id").notNull(),
+  vehicle: text("vehicle").notNull(),
+  lastTechnicianId: text("last_technician_id").notNull(),
+  updatedAt: text("updated_at").notNull(),
+}, (table) => [primaryKey({ columns: [table.cityId, table.vehicle] })]);

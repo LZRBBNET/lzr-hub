@@ -6,7 +6,7 @@ import type { IxcCityDto, IxcCollectionWalletDto, IxcCustomerDto, IxcCustomerPag
 
 // `listOsCatalog` fica de fora porque não tem um endpoint só: a mesma operação
 // lê `su_oss_assunto` e `empresa_setor`, e o recurso vai explícito na chamada.
-const endpoints:Record<Exclude<IxcReadOperation,"testConnection"|"findCustomer"|"getCustomer"|"listCustomers"|"listOsCatalog"|"listFinanceCatalog">,string>={listContracts:"cliente_contrato",getPlan:"vd_contratos",listInvoices:"fn_areceber",listPayments:"fn_movim_finan",listServiceOrders:"su_oss_chamado",getConnection:"radusuarios",getCity:"cidade",getRecordHistory:"ixc_logs",getFiberSignal:"radpop_radio_cliente_fibra"};
+const endpoints:Record<Exclude<IxcReadOperation,"testConnection"|"findCustomer"|"getCustomer"|"listCustomers"|"listOsCatalog"|"listFinanceCatalog">,string>={listContracts:"cliente_contrato",getPlan:"vd_contratos",listInvoices:"fn_areceber",listPayments:"fn_movim_finan",listServiceOrders:"su_oss_chamado",getConnection:"radusuarios",getCity:"cidade",getRecordHistory:"ixc_logs",getFiberSignal:"radpop_radio_cliente_fibra",getTechnicianWorkload:"su_oss_chamado"};
 export interface IxcTrace { event:string; correlationId:string; durationMs:number; status:"success"|"failed"|"cache-hit"|"blocked"; attributes:Record<string,unknown> }
 export interface IxcReadonlyOptions { baseUrl:string; token:string; allowedCustomerIds:string[]; fullBase?:boolean; timeoutMs?:number; retryLimit?:0|1; cacheTtlMs?:number; cityCacheTtlMs?:number; rateLimitPerMinute?:number; fetcher?:typeof fetch; trace?:(event:IxcTrace)=>void; now?:()=>number }
 interface ReadOptions { oper?:string; page?:number; sortname?:string; sortorder?:"asc"|"desc"; gridParam?:GridFilter[] }
@@ -24,7 +24,7 @@ export interface GridFilter { TB:string; OP:string; P:string }
  * não dado de ninguém: a allowlist protege cadastro de cliente, e checá-la
  * contra um código de cidade nunca fez sentido.
  */
-const GLOBAL_SCOPE_OPERATIONS = new Set<IxcReadOperation>(["testConnection","listCustomers","listOsCatalog","listFinanceCatalog","getCity"]);
+const GLOBAL_SCOPE_OPERATIONS = new Set<IxcReadOperation>(["testConnection","listCustomers","listOsCatalog","listFinanceCatalog","getCity","getTechnicianWorkload"]);
 
 /**
  * Traduz o que a pessoa digitou na busca para o filtro do IXC.
@@ -712,6 +712,50 @@ export class IxcReadonlyProvider {
       {oper:"=",gridParam:[{TB:"radusuarios.id_contrato",OP:"=",P:contractId}]});
     const logins=page.records.filter((raw)=>String(raw.id_contrato)===contractId).map((raw)=>({id:String(raw.id??""),online:raw.online==="S"?true:raw.online==="N"?false:null})).filter((login)=>login.id);
     return {logins,complete:page.coverage.complete&&page.coverage.total===page.records.length&&logins.length===page.records.length};
+  }
+  /**
+   * As três fontes de endereço da OS. O login diz qual vale em `endereco_padrao_cliente`:
+   * S = do cliente, C = do contrato, N = o próprio login (lição do SeeNet: o "C" existia e ninguém sabia).
+   * Cada registro é conferido como sendo DESTE cliente antes de servir de endereço.
+   */
+  async getServiceOrderAddressSources(customerId:string,contractId:string,loginId:string|undefined,correlationId:string){
+    const ids=[contractId,loginId].filter(Boolean) as string[];
+    if(!ids.every((id)=>/^[1-9]\d{0,31}$/.test(id)))throw new IxcReadonlyError("IXC_ADDRESS_UNCONFIRMED");
+    const [customer,contractRows,loginRows]=await Promise.all([
+      this.getCustomerRecord(customerId,correlationId),
+      this.read("listContracts",endpoints.listContracts,"cliente_contrato.id",contractId,correlationId,2,customerId),
+      loginId?this.read("getConnection",endpoints.getConnection,"radusuarios.id",loginId,correlationId,2,customerId):Promise.resolve([]),
+    ]);
+    const contract=contractRows.find((row)=>String(row.id)===contractId&&String(row.id_cliente)===customerId);
+    const login=loginRows.find((row)=>String(row.id)===loginId&&String(row.id_cliente)===customerId);
+    if(!customer||String(customer.id)!==customerId||!contract||(loginId&&!login))throw new IxcReadonlyError("IXC_ADDRESS_UNCONFIRMED");
+    return {customer,contract,login};
+  }
+  /** Nome da cidade e sigla da UF (o molde de endereço do IXC começa por `#uf# #cidade#`). */
+  async getCityAndState(cityId:string,correlationId:string){
+    if(!/^[1-9]\d{0,31}$/.test(cityId))return undefined;
+    const [city]=await this.read("getCity",endpoints.getCity,"cidade.id",cityId,correlationId,1,"");
+    if(!city)return undefined;
+    const ufId=String(city.uf??"");
+    const [state]=/^[1-9]\d{0,31}$/.test(ufId)?await this.read("getCity","uf","uf.id",ufId,correlationId,1,""):[];
+    return {name:String(city.nome??"").trim(),state:String(state?.sigla??"").trim()};
+  }
+  /** Configuração do assunto que a tela do IXC aplica ao abrir a OS: de onde vem o endereço e em que molde. */
+  async getOsSubjectConfig(subjectId:string,correlationId:string){
+    if(!/^[1-9]\d{0,31}$/.test(subjectId))return undefined;
+    const {records}=await this.readPage("listOsCatalog","su_oss_assunto","su_oss_assunto.id",subjectId,correlationId,1,"");
+    const row=records.find((item)=>String(item.id)===subjectId);
+    if(!row)return undefined;
+    return {id:subjectId,addressOrigin:String(row.endereco_padrao??"").trim(),addressFormat:String(row.formato_endereco??"").trim(),loginRequired:row.login_obrigatorio==="S",active:row.ativo!=="N"};
+  }
+  /** OS abertas (não F nem C) de um técnico — o mesmo filtro com que o SeeNet monta a lista do celular dele. */
+  async countOpenOrdersOfTechnician(technicianId:string,correlationId:string){
+    if(!/^[1-9]\d{0,31}$/.test(technicianId))throw new IxcReadonlyError("IXC_TECHNICIAN_INVALID");
+    const page=await this.readPage("getTechnicianWorkload",endpoints.listServiceOrders,"su_oss_chamado.id_tecnico",technicianId,correlationId,1,"",
+      {oper:"=",gridParam:[{TB:"su_oss_chamado.status",OP:"!=",P:"F"},{TB:"su_oss_chamado.status",OP:"!=",P:"C"}]});
+    // Sem total o IXC não disse quantas são: melhor não escolher técnico do que escolher às cegas.
+    if(typeof page.coverage.total!=="number")throw new IxcReadonlyError("IXC_WORKLOAD_UNKNOWN");
+    return page.coverage.total;
   }
   /** Reconcile a known OS only; a missing/ambiguous response never releases a reservation. */
   async reconcileServiceOrder(customerId:string,contractId:string,orderId:string,correlationId:string){

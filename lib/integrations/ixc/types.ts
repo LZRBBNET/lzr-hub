@@ -17,7 +17,9 @@ export type IxcReadOperation =
   /** Log de alterações do IXC (`ixc_logs`): quem inseriu ou editou cada registro, e quando. */
   | "getRecordHistory"
   /** Sinal óptico da ONU (`radpop_radio_cliente_fibra`): o que o suporte de fibra olha primeiro. */
-  | "getFiberSignal";
+  | "getFiberSignal"
+  /** Quantas OS abertas cada técnico tem: é o "disponível" na hora de a IA escolher quem recebe a OS. */
+  | "getTechnicianWorkload";
 
 /** Assunto de ordem de serviço (`su_oss_assunto`) — é o `id_assunto` que a OS exige. */
 export interface IxcOsSubjectDto { id:string; name:string }

@@ -2,6 +2,11 @@ import { sanitizeHandoffText } from "../agent/handoff.ts";
 import type { ServiceOrderInput } from "../integrations/ixc/write-client.ts";
 import type { IxcServiceDiagnosisData } from "../integrations/ixc/types.ts";
 import { requestServiceOrderOpen, type IxcWriteOperationsRepository } from "./ixc-write-service.ts";
+import {
+  NO_CONNECTION_SUBJECT, addressPartsFrom, addressSourceOf, bestTimeCode, isSaturdayInBrasilia, needsClimb, pickTechnician,
+  renderAddress, technicianCandidates, vehicleFor, type Vehicle,
+} from "./os-dispatch-shared.ts";
+import type { TechnicianRoutesRepository } from "./technician-routes-service.ts";
 
 /**
  * A IA abre a ordem de serviço no IXC sozinha (modo autônomo), quando o atendimento
@@ -27,11 +32,9 @@ import { requestServiceOrderOpen, type IxcWriteOperationsRepository } from "./ix
 
 export const AI_OS_SECTOR = "1";
 export const AI_OS_PRIORITY = "N";
-export const AI_OS_SUBJECTS = { noConnection: "14", slow: "116", drops: "118", equipment: "49" } as const;
+export const AI_OS_SUBJECTS = { noConnection: "14", noConnectionMoto: "9", slow: "116", drops: "118", equipment: "49" } as const;
 /** A família técnica que a IA abre: uma OS aberta de qualquer um deles já é "o chamado do problema". */
 const AI_OS_FAMILY: ReadonlySet<string> = new Set(Object.values(AI_OS_SUBJECTS));
-/** Assuntos com `login_obrigatorio = S` no IXC: sem um login certo, não abre. */
-const LOGIN_REQUIRED: ReadonlySet<string> = new Set([AI_OS_SUBJECTS.noConnection, AI_OS_SUBJECTS.equipment]);
 
 const normalize = (text: string) => text.normalize("NFD").replace(/[̀-ͯ]/g, "").toLowerCase();
 
@@ -53,7 +56,7 @@ export function aiServiceOrderSubject(intent: string, summary: string): string |
 }
 
 export type AiServiceOrderResult =
-  | { status: "success"; orderId: string; detail: string }
+  | { status: "success"; orderId: string; detail: string; technicianId?: string; vehicle?: Vehicle }
   /** Já havia OS aberta: a IA informa o número e não abre outra (roteiro da BBNET). */
   | { status: "existing"; orderId: string; detail: string }
   | { status: "skipped" | "blocked" | "failed" | "unknown"; detail: string };
@@ -69,7 +72,14 @@ export interface AiServiceOrderDeps {
     listActiveContracts(customerId: string, correlationId: string): Promise<{ ids: string[]; complete: boolean }>;
     listContractLogins(customerId: string, contractId: string, correlationId: string): Promise<{ logins: Array<{ id: string; online: boolean | null }>; complete: boolean }>;
     reconcileServiceOrder(customerId: string, contractId: string, orderId: string, correlationId: string): Promise<{ id: string; customerId: string; contractId: string; status: string }>;
+    getServiceOrderAddressSources(customerId: string, contractId: string, loginId: string | undefined, correlationId: string): Promise<{ customer: Record<string, unknown>; contract: Record<string, unknown>; login?: Record<string, unknown> }>;
+    getCityAndState(cityId: string, correlationId: string): Promise<{ name: string; state: string } | undefined>;
+    getOsSubjectConfig(subjectId: string, correlationId: string): Promise<{ id: string; addressOrigin: string; addressFormat: string; loginRequired: boolean; active: boolean } | undefined>;
+    countOpenOrdersOfTechnician(technicianId: string, correlationId: string): Promise<number>;
   };
+  /** Cidade → técnicos. Sem ele (ou cidade sem linha), a OS nasce sem técnico e o setor distribui. */
+  routes?: TechnicianRoutesRepository;
+  now?: () => Date;
   ledger: IxcWriteOperationsRepository;
   open: (input: ServiceOrderInput, correlationId: string) => Promise<{ raw: Record<string, unknown> }>;
   correlationId: string;
@@ -78,50 +88,97 @@ export interface AiServiceOrderDeps {
 export interface AiServiceOrderInput { customerId: string; ticketId: string; intent: string; summary: string; protocol: string | null }
 
 export async function openAiServiceOrder(deps: AiServiceOrderDeps, input: AiServiceOrderInput): Promise<AiServiceOrderResult | undefined> {
-  const subjectId = aiServiceOrderSubject(input.intent, input.summary);
-  if (!subjectId) return undefined;
+  const baseSubject = aiServiceOrderSubject(input.intent, input.summary);
+  if (!baseSubject) return undefined;
   if (!deps.enabled) return { status: "skipped", detail: "FEATURE_AI_SERVICE_ORDER desligada: a ficha fica para a equipe abrir a OS." };
+  const corr = deps.correlationId;
   try {
     // Lido agora, não do diagnóstico guardado: OS aberta há um minuto conta.
-    const data = await deps.provider.getServiceDiagnosis(input.customerId, deps.correlationId);
+    const data = await deps.provider.getServiceDiagnosis(input.customerId, corr);
     // Só a família técnica conta como "já existe": OS antiga de outro assunto (cobrança, retirada)
     // não é o chamado deste problema — e bloquearia a OS para sempre (o 24088 tem 7 assim, de 2024).
     const open = data.openServiceOrders.find((item) => AI_OS_FAMILY.has(item.subjectId ?? ""));
     if (open) return { status: "existing", orderId: open.id, detail: `Já existe OS técnica aberta (nº ${open.id}); não abri outra.` };
     // Contrato e login lidos com prova de lista completa — o diagnóstico só traz 5 de cada.
-    const active = await deps.provider.listActiveContracts(input.customerId, deps.correlationId);
+    const active = await deps.provider.listActiveContracts(input.customerId, corr);
     if (!active.complete || active.ids.length !== 1) return { status: "blocked", detail: `Contrato ativo único não confirmado (${active.complete ? `${active.ids.length} ativos` : "lista incompleta"}): a equipe abre a OS no contrato certo.` };
     const contract = { id: active.ids[0] };
-    const ofContract = await deps.provider.listContractLogins(input.customerId, contract.id, deps.correlationId);
+    const ofContract = await deps.provider.listContractLogins(input.customerId, contract.id, corr);
     const online = ofContract.logins.filter((item) => item.online === true);
     const login = !ofContract.complete ? undefined : ofContract.logins.length === 1 ? ofContract.logins[0] : online.length === 1 ? online[0] : undefined;
-    if (!login && LOGIN_REQUIRED.has(subjectId)) return { status: "blocked", detail: `Login do contrato ${contract.id} não ficou claro (${ofContract.logins.length} logins): a equipe abre a OS no login certo.` };
+
+    // Moto ou carro: poste/telhado (ou fibra sem sinal) é carro; dentro de casa é moto; sem saber, carro.
+    const fiberRx = data.fiber?.find((item) => item.loginId === login?.id)?.rxDbm ?? null;
+    const climb = needsClimb(input.summary, fiberRx);
+    const vehicle = vehicleFor(climb);
+    const subjectId = baseSubject === AI_OS_SUBJECTS.noConnection ? NO_CONNECTION_SUBJECT[vehicle] : baseSubject;
+    // A configuração do assunto é a que a tela do IXC aplica: login obrigatório, de onde vem o endereço e o molde.
+    const config = await deps.provider.getOsSubjectConfig(subjectId, corr);
+    if (!config?.active) return { status: "blocked", detail: `Assunto ${subjectId} inativo ou não encontrado no IXC: a equipe abre a OS.` };
+    if (!login && config.loginRequired) return { status: "blocked", detail: `Login do contrato ${contract.id} não ficou claro (${ofContract.logins.length} logins): a equipe abre a OS no login certo.` };
+
     const [confirmed, record, subjects, sectors] = await Promise.all([
-      deps.provider.getServiceOrderContract(input.customerId, contract.id, deps.correlationId),
-      deps.provider.getCustomerRecord(input.customerId, deps.correlationId),
-      deps.provider.listOsSubjects(deps.correlationId),
-      deps.provider.listSectors(deps.correlationId),
+      deps.provider.getServiceOrderContract(input.customerId, contract.id, corr),
+      deps.provider.getCustomerRecord(input.customerId, corr),
+      deps.provider.listOsSubjects(corr),
+      deps.provider.listSectors(corr),
     ]);
     const branchId = String(record?.filial_id ?? "").trim() || undefined;
+
+    // Endereço como a tela grava (100% das OS de atendente têm): fonte pelo login (S/C/N), texto pelo molde do assunto.
+    // Falhou a leitura? A OS sai sem endereço — como antes —, e o detalhe diz isso.
+    let address: ServiceOrderInput["address"];
+    try {
+      const sources = await deps.provider.getServiceOrderAddressSources(input.customerId, contract.id, login?.id, corr);
+      const which = addressSourceOf(sources.login?.endereco_padrao_cliente as string | undefined);
+      const source = which === "customer" ? sources.customer : which === "contract" ? sources.contract : (sources.login ?? sources.customer);
+      const parts = addressPartsFrom(source, sources.login, await deps.provider.getCityAndState(String(source.cidade ?? ""), corr));
+      if (parts.street) address = { text: renderAddress(config.addressFormat, parts), neighborhood: parts.neighborhood, cityId: parts.cityId, complement: parts.complement, reference: parts.reference, latitude: parts.latitude, longitude: parts.longitude };
+    } catch { address = undefined; }
+
+    // Técnico: os da cidade e do tipo, o com menos OS aberta, alternando no empate. Cidade sem rota → setor distribui.
+    let technicianId: string | undefined;
+    if (deps.routes && address?.cityId) {
+      const candidates = technicianCandidates(await deps.routes.list(), address.cityId, climb, isSaturdayInBrasilia((deps.now ?? (() => new Date()))()));
+      const loads = new Map<string, number>();
+      for (const id of candidates) { try { loads.set(id, await deps.provider.countOpenOrdersOfTechnician(id, corr)); } catch { /* sem carga conhecida, fica de fora */ } }
+      technicianId = pickTechnician(candidates, loads, await deps.routes.lastAssigned(address.cityId, vehicle));
+    }
+
     // O técnico lê isto na OS: sem CPF, e-mail ou telefone, e dizendo quem abriu e por quê.
-    const message = sanitizeHandoffText(`Aberta pela IA do LZR HUB${input.protocol ? ` (protocolo ${input.protocol})` : ""}, depois de tentar resolver com o cliente pelo WhatsApp.\n${input.summary}`).slice(0, 1800);
-    const order: ServiceOrderInput = { customerId: input.customerId, contractId: contract.id, subjectId, sectorId: AI_OS_SECTOR, branchId: branchId ?? "", priority: AI_OS_PRIORITY, message, loginId: login?.id };
+    const team = `Equipe indicada: ${vehicle === "carro" ? "carro (precisa subir em poste ou telhado, ou não deu para saber)" : "moto (serviço dentro de casa)"}${technicianId ? "" : " — sem técnico definido: o setor distribui"}.`;
+    const message = sanitizeHandoffText(`Aberta pela IA do LZR HUB${input.protocol ? ` (protocolo ${input.protocol})` : ""}, depois de tentar resolver com o cliente pelo WhatsApp.\n${input.summary}\n${team}`).slice(0, 1800);
+    const order: ServiceOrderInput = {
+      customerId: input.customerId, contractId: contract.id, subjectId, sectorId: AI_OS_SECTOR, branchId: branchId ?? "", priority: AI_OS_PRIORITY, message,
+      loginId: login?.id, technicianId, bestTime: bestTimeCode(input.summary), protocol: input.protocol ?? undefined, address,
+    };
     const result = await requestServiceOrderOpen({
       customerId: input.customerId, contractId: contract.id, confirmedContract: confirmed, subjectId, sectorId: AI_OS_SECTOR, branchId,
-      priority: AI_OS_PRIORITY, message, idempotencyKey: `ai-os:${input.ticketId}`, correlationId: deps.correlationId, requestedBy: "ia@lzr-hub",
+      priority: AI_OS_PRIORITY, message, idempotencyKey: `ai-os:${input.ticketId}`, correlationId: corr, requestedBy: "ia@lzr-hub",
       knownSubjectIds: new Set(subjects.map((item) => item.id)), knownSectorIds: new Set(sectors.map((item) => item.id)),
       openSubjects: new Set(data.openServiceOrders.map((item) => item.subjectId ?? "").filter(Boolean)),
+      // A reserva cliente+assunto de uma OS antiga só cai se o IXC confirmar que aquela OS foi fechada.
+      settleStaleScope: async (previous) => {
+        let recorded: { serviceOrderId?: unknown; contractId?: unknown } = {};
+        try { recorded = JSON.parse(previous.detail ?? "{}"); } catch { return false; }
+        const previousId = String(recorded.serviceOrderId ?? ""), previousContract = String(recorded.contractId ?? "");
+        if (!/^[1-9]\d*$/.test(previousId) || !/^[1-9]\d*$/.test(previousContract)) return false;
+        const state = await deps.provider.reconcileServiceOrder(input.customerId, previousContract, previousId, corr);
+        return state.status === "F" || state.status === "C";
+      },
     }, deps.ledger, (correlationId) => deps.open(order, correlationId));
     // Primeira abertura traz o número em `raw.id`; reentrega do webhook (mesma chave) traz em `serviceOrderId`.
     const orderId = String((result.raw as { id?: unknown } | undefined)?.id ?? (result as { serviceOrderId?: unknown }).serviceOrderId ?? "");
+    const where = `assunto ${subjectId}, ${vehicle}, técnico ${technicianId ?? "não definido"}, endereço ${address ? "preenchido" : "não preenchido"}`;
     if (result.status === "success" && /^[1-9]\d*$/.test(orderId)) {
       // Lê de volta antes de dizer ao cliente: a OS existe, é deste cliente e deste contrato. Sem isso,
       // "Abri a OS nº X" dependeria só da resposta da escrita — o IXC já respondeu 200 com erro no corpo.
-      const back = await deps.provider.reconcileServiceOrder(input.customerId, contract.id, orderId, deps.correlationId).catch(() => undefined);
-      if (!back) return { status: "unknown", detail: `${result.detail} A OS nº ${orderId} não foi confirmada na releitura do IXC; confira antes de informar o cliente.` };
-      return { status: "success", orderId, detail: result.detail };
+      const back = await deps.provider.reconcileServiceOrder(input.customerId, contract.id, orderId, corr).catch(() => undefined);
+      if (!back) return { status: "unknown", detail: `${result.detail} (${where}) A OS nº ${orderId} não foi confirmada na releitura do IXC; confira antes de informar o cliente.` };
+      if (technicianId && address?.cityId) await deps.routes?.setLastAssigned(address.cityId, vehicle, technicianId).catch(() => undefined);
+      return { status: "success", orderId, detail: `${result.detail} (${where})`, technicianId, vehicle };
     }
-    return { status: result.status === "success" ? "unknown" : result.status, detail: result.detail } as AiServiceOrderResult;
+    return { status: result.status === "success" ? "unknown" : result.status, detail: `${result.detail} (${where})` } as AiServiceOrderResult;
   } catch {
     // IXC fora, contrato não confirmado: a ficha continua valendo, a equipe abre a OS.
     return { status: "failed", detail: "Não consegui abrir a OS no IXC agora; a ficha ficou para a equipe." };
