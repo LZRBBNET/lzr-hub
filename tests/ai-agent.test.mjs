@@ -97,7 +97,7 @@ test("a IA conversa: responde uma fala depois da outra, sem esperar ninguém cli
   await receber("minha internet ta muito lenta");
   const enviados = textos();
   assert.equal(enviados.length, 3, "menu, horário e lentidão: as três saíram");
-  assert.match(enviados[0], /assistente virtual da BBNET/);
+  assert.match(enviados[0], /suporte da BBNET/);
   assert.match(enviados[1], /segunda a sexta/);
   assert.match(enviados[2], /teste de velocidade/);
   const rows = await historico();
@@ -292,4 +292,47 @@ test("número sem cadastro pede desbloqueio: a IA explica e o IXC nem é consult
   await receber("libera minha internet por favor");
   assert.equal(chamadas, 0);
   assert.match(textos()[1], /não está no cadastro/);
+});
+
+test("depois do pedido registrado, 'ok' é despedida: não repete a ficha, não chama o modelo e a conversa fica na fila (caso 1289)", async () => {
+  const { receber, textos, chamadasN8n, ticket, historico } = await montar();
+  await receber("estou sem internet");
+  await receber("a luz LOS ta vermelha");
+  await receber("de tarde");
+  const antes = chamadasN8n.length;
+  await receber("Ok");
+  assert.equal(chamadasN8n.length, antes, "despedida não vai ao modelo");
+  assert.match(textos().at(-1), /Combinado/);
+  assert.doesNotMatch(textos().at(-1), /protocolo/i);
+  assert.equal(ticket().stage, "handoff");
+  const rows = await historico();
+  assert.equal(rows.at(-1).sentBy, AI_SENDER, "a despedida não tira o pedido da fila da equipe");
+});
+
+test("o modelo repetindo 'pedido pronto' não registra nem confirma de novo", async () => {
+  const sempre = async () => ({ answer: "Entendi tudo, registrei de novo.", state: "request_complete", summary: "Assunto: sem internet" });
+  const { receber, textos, ticket } = await montar({ n8n: sempre });
+  await receber("estou sem internet");
+  const intake = ticket().intake;
+  await receber("mais uma coisa: ta sem internet ainda");
+  assert.match(textos().at(-1), /Já está anotado/);
+  assert.deepEqual(ticket().intake, intake);
+});
+
+test("assunto resolvido fecha o atendimento: a próxima fala abre outro, com protocolo novo", async () => {
+  const resolve = async () => ({ answer: "Que bom que voltou! Qualquer coisa me chame.", state: "resolved" });
+  const { receber, tickets } = await montar({ n8n: resolve });
+  await receber("minha internet ta lenta");
+  const primeiro = tickets.tickets[0];
+  assert.equal(primeiro.status, "closed");
+  assert.equal(primeiro.closedReason, "resolved");
+  await receber("oi de novo");
+  assert.notEqual(tickets.tickets.at(-1).id, primeiro.id);
+});
+
+test("a IA fala simples e se apresenta como suporte da BBNET", () => {
+  const tarefa = agentTask("technical_no_connection");
+  assert.match(tarefa, /frases curtas/);
+  assert.match(tarefa, /caixinha da internet/);
+  assert.match(agentTask("general_information"), /Aqui é o suporte da BBNET/);
 });

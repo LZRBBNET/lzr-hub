@@ -221,7 +221,7 @@ test("cumprimento no horário comercial: o robô pergunta o assunto com o menu d
   assert.equal(result.status, "clarifying");
   assert.equal(result.autoReply, true);
   assert.equal(enviados.length, 1);
-  assert.match(enviados[0].text.body, /assistente virtual da BBNET/);
+  assert.match(enviados[0].text.body, /suporte da BBNET/);
   assert.match(enviados[0].text.body, /Protocolo do atendimento:/);
   // A resposta ao menu vira assunto e segue para o atendente: nada novo sai.
   const escolha = await receber("3");

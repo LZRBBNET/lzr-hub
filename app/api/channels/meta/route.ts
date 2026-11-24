@@ -11,10 +11,12 @@ import { DbSupportMetricsRepository } from "@/lib/platform/support-metrics";
 import { DbCrmRepository, captureLeadFromContact } from "@/lib/platform/crm-service";
 import { getIxcRuntime } from "@/lib/integrations/ixc/runtime";
 import { parseMetaMessages, parseMetaStatuses, parseMetaWebhook, signatureIsValid } from "@/lib/integrations/meta/webhook-parser";
-import { DbConversationStateRepository } from "@/lib/platform/conversation-state-service";
+import { DbConversationStateRepository, botMayReplyNow } from "@/lib/platform/conversation-state-service";
 import { DbReplyRepository } from "@/lib/platform/attendant-reply-service";
 import { metaAutoReplyOptions, metaAutoReplySender } from "@/lib/platform/meta-auto-reply-service";
 import { metaSendConfigFromEnv, sendTextMessage } from "@/lib/integrations/meta/cloud-client";
+import { downloadMetaMedia } from "@/lib/integrations/meta/media";
+import { transcribeAudio, transcriptionConfigFromEnv } from "@/lib/integrations/openai/transcription";
 import { DbOutboundRepository } from "@/lib/platform/outbound-service";
 import { OPT_IN_REPLY, OPT_OUT_REPLY, canonicalPhone, isOptIn, isOptOut } from "@/lib/platform/outbound-shared";
 import { fetchPixCode } from "@/lib/integrations/ixc/write-client";
@@ -45,6 +47,10 @@ import { logUnauthenticatedAction } from "@/lib/platform/audit-log";
  * `FEATURE_META_WHATSAPP` liga esta rota. A flag existia no `.env` desde o
  * início do projeto sem nada por trás; agora tem.
  */
+/** O cliente mandou áudio e a IA não o ouve: pede para escrever, em linguagem simples. */
+/** Marca na tela que a fala do cliente era áudio: o atendente sabe que pode haver erro de transcrição. */
+const AUDIO_TRANSCRIBED_PREFIX = "[Áudio transcrito]";
+const AUDIO_REPLY = "Recebi seu áudio, mas aqui eu só consigo ler mensagem escrita. Pode me escrever rapidinho o que está acontecendo?";
 const metaEnabled = () => process.env.FEATURE_META_WHATSAPP === "true";
 const autoReplyEnabled = () => process.env.FEATURE_N8N_AUTOREPLY === "true";
 /** A IA manda vencimento, valor e linha digitável ao cliente. Nasce desligada, como toda flag com efeito no mundo. */
@@ -124,12 +130,33 @@ export async function POST(request: Request) {
   const db = await getDb();
   const channel = new D1ChannelRepository(db);
   const updated = statuses.length > 0 ? await applyStatuses(new DbDeliveryRepository(db), statuses) : 0;
-  const templates = messages.some((message) => message.kind === "text") ? await loadOverrides(new DbReplyTemplatesRepository(db)) : undefined;
+  const transcription = transcriptionConfigFromEnv();
+  const templates = messages.some((message) => message.kind === "text" || (message.kind === "audio" && transcription)) ? await loadOverrides(new DbReplyTemplatesRepository(db)) : undefined;
   const sendConfig = metaSendConfigFromEnv();
   const tickets = new DbTicketRepository(db);
 
   const results = [];
-  for (const message of messages) {
+  for (const original of messages) {
+    let message = original;
+    // Áudio do cliente (FEATURE_AUDIO_TRANSCRIPTION): vira texto e segue o caminho de qualquer fala. O arquivo não é gravado.
+    // Reentrega do webhook não baixa nem transcreve de novo; falha cai no caminho do áudio sem texto (a IA pede para escrever).
+    let storedText: string | undefined;
+    if (message.kind === "audio" && message.mediaId && sendConfig && transcription) {
+      const done = await channel.findIdempotent(message.messageId);
+      if (done) { results.push(done); continue; }
+      const file = await downloadMetaMedia(sendConfig, message.mediaId);
+      const spoken = file.ok ? await transcribeAudio(transcription, file) : undefined;
+      if (spoken?.ok) {
+        const text = spoken.text.slice(0, MAX_MESSAGE_LENGTH);
+        message = { ...message, kind: "text", text };
+        storedText = `${AUDIO_TRANSCRIBED_PREFIX} ${text}`;
+      } else {
+        await logUnauthenticatedAction({
+          action: "whatsapp.audio.transcription_failed", entity: `conversation:${message.phone}`, result: "failed", correlationId: message.messageId, actorNotApplicable: true,
+          reason: `Áudio do cliente sem transcrição: ${file.ok ? spoken?.reason : file.reason}`,
+        }).catch(() => undefined);
+      }
+    }
     const correlationId = randomUUID();
     if (message.kind === "text" && ownerFinancePilotTraffic(process.env, message)) {
       const pilotPlan = planOwnerFinancePilot(message.text);
@@ -336,7 +363,7 @@ export async function POST(request: Request) {
       }, message.phone);
       results.push(await processChannelMessage(
         channel,
-        { externalConversationId: message.phone, text: message.text, idempotencyKey: message.messageId, correlationId },
+        { externalConversationId: message.phone, text: message.text, idempotencyKey: message.messageId, correlationId, storedText },
         new DbSupportMetricsRepository(db),
         {
           // Com o robô de dúvidas ligado e a IA sem falar por outro caminho, `send` é só do robô: o resto segue como sugestão.
@@ -351,9 +378,17 @@ export async function POST(request: Request) {
         (input) => captureLeadFromContact(new DbCrmRepository(db), input, triage?.knownCustomer ?? lookupCustomer),
       ));
     } else {
+      const firstDelivery = !(await channel.findIdempotent(message.messageId));
       results.push(await recordUnsupportedMessage(channel, {
         externalConversationId: message.phone, idempotencyKey: message.messageId, correlationId, kind: message.kind, caption: message.caption,
       }));
+      // Áudio: a IA ainda não o transcreve. No modo autônomo ela avisa e pede para escrever, em vez de deixar o cliente sem resposta.
+      // Só na primeira entrega do webhook e sem humano à frente da conversa.
+      if (firstDelivery && message.kind === "audio" && agentConfig && sendConfig && await botMayReplyNow(new DbConversationStateRepository(db), CHANNEL_NAME, message.phone).catch(() => false)) {
+        const reply = AUDIO_REPLY;
+        const sent = await sendTextMessage(sendConfig, { to: message.phone, text: reply });
+        if (sent.ok) await channel.saveMessages(CHANNEL_NAME, message.phone, [{ role: "agent", content: reply, correlationId, externalMessageId: sent.messageId, sentBy: "ia-agente" }]);
+      }
     }
     await rememberContactName(new DbContactsRepository(db), CHANNEL_NAME, message.phone, message.profileName);
   }

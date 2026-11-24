@@ -65,7 +65,7 @@ export const TRIAGE_LIST: InteractiveList = {
 /** Como a lista aparece no histórico da tela: o atendente lê o que o cliente viu. */
 export const listAsText = (list: InteractiveList) => list.rows.map((row, index) => `${index + 1}. ${row.title}`).join("\n");
 
-export const CLARIFY_TEXT = `Olá! Sou a assistente virtual da BBNET. Para te ajudar mais rápido, responda com o número do assunto:
+export const CLARIFY_TEXT = `Olá! Aqui é o suporte da BBNET. Para te ajudar mais rápido, responda com o número do assunto:
 
 ${TRIAGE_MENU.map((option, index) => `${index + 1}. ${option.label}`).join("\n")}
 
@@ -198,7 +198,7 @@ function holidayPrefix(at: Date): string {
 
 /** A abertura do atendimento fora do horário: quem é, quando há gente, e a lista. */
 export function offHoursMenuText(at: Date = new Date()): string {
-  return `Olá! Sou a assistente virtual da BBNET. Nosso atendimento com pessoas funciona de segunda a sexta, das 8h às 12h e das 14h às 18h. ${holidayPrefix(at)}Ele volta ${nextOpeningText(at)}. Enquanto isso, posso resolver várias coisas por aqui: toque em "${TRIAGE_LIST.button}" e escolha o assunto, ou escreva o que precisa.`;
+  return `Olá! Aqui é o suporte da BBNET. Nosso atendimento com pessoas funciona de segunda a sexta, das 8h às 12h e das 14h às 18h. ${holidayPrefix(at)}Ele volta ${nextOpeningText(at)}. Enquanto isso, posso resolver várias coisas por aqui: toque em "${TRIAGE_LIST.button}" e escolha o assunto, ou escreva o que precisa.`;
 }
 
 /** Vai no fim das respostas fora do horário: a promessa "um atendente retorna" ganha data. */
