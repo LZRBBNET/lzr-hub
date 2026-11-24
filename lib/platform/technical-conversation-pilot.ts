@@ -29,7 +29,11 @@ type Environment = Record<string, string | undefined>;
  * Com `FEATURE_PROTECTED_TECHNICAL_LANE=false` esses três casos seguem o caminho normal (IA conversando, atendimento, ficha e OS).
  * Cliente agressivo ou ameaçando continua sempre na faixa: texto assim nunca vai ao modelo. Padrão: ligada, como antes.
  */
-export function protectedLaneEnabled(env: Environment): boolean { return env.FEATURE_PROTECTED_TECHNICAL_LANE !== "false"; }
+export function protectedLaneEnabled(env: Environment): boolean {
+  // Valor digitado à mão no painel: "False", " false", "\"false\"" e "0" também desligam. Vazio ou desconhecido mantém ligada.
+  const value = String(env.FEATURE_PROTECTED_TECHNICAL_LANE ?? "").trim().replace(/^["']|["']$/g, "").trim().toLowerCase();
+  return !["false", "0", "off", "no", "nao", "não", "desligada", "desligado"].includes(value);
+}
 export function technicalPilotEnabled(env: Environment, input: MetaConversationScope, now = Date.now()): boolean {
   const permitted = env.META_CONVERSATION_PILOT_SENDER;
   const until = env.META_CONVERSATION_PILOT_UNTIL;
