@@ -169,7 +169,9 @@ export const promisesHuman = (text: string) => /\b(um|uma) atendente\b|\ba equip
 
 /** Agradecimento ou "ok" no fim da conversa: no modo autônomo a IA responde com cortesia em vez do menu de assuntos. */
 const THANKS = /^(muito\s+)?(obrigad[oa]|obg|brigad[oa]|valeu|vlw|agrade[cç]o)\b[^?]{0,40}$/i;
-const ACK = /^(ok|okay|blz|beleza|certo|entendi|show|perfeito|t[aá] bom|tudo bem|combinado)[!.\s]*$/i;
+const ACK = /^(ok|okay|blz|beleza|certo|entendi|show|perfeito|t[aá] bom|tudo bem|combinado|sim|isso|pode ser|ta|tá)[!.\s]*$/i;
+/** Depois de a IA fechar o assunto, "ok" e "obrigado" são despedida, não resposta a uma pergunta. */
+export const isFarewell = (text: string) => THANKS.test(text.trim()) || ACK.test(text.trim());
 export function courtesyReply(text: string): string | undefined {
   const value = text.trim();
   if (THANKS.test(value)) return "Por nada! Se precisar de mais alguma coisa, é só chamar por aqui.";
@@ -199,7 +201,9 @@ export interface TriageHooks {
    */
   footer(context?: { clarifying?: boolean; handoff?: boolean; request?: string; serviceOrder?: { id: string; existing?: boolean } }): string | undefined;
   /** Modo autônomo: o assunto do atendimento, se o cliente é identificado e o que o sistema sabe (diagnóstico, pedido já feito). */
-  context?(): { topic: string | null; identified: boolean; facts: string[] };
+  context?(): { topic: string | null; identified: boolean; facts: string[]; registered?: boolean };
+  /** Modo autônomo: a IA resolveu o assunto — fecha o atendimento, para a próxima fala abrir outro em vez de continuar um já encerrado. */
+  closeTicket?(): Promise<void>;
   /** Modo autônomo: grava o pedido que a IA deixou pronto para a equipe. */
   registerRequest?(summary: string, intent: string): Promise<void>;
   /**
@@ -229,6 +233,8 @@ export interface TriageTurn {
   interactive?: InteractiveList;
   /** A frase passa para o atendente. Sem valor, vale `promisesHuman(text)`. */
   handoff?: boolean;
+  /** O atendimento já tem pedido registrado: a despedida não tira a conversa da fila da equipe. */
+  keepInQueue?: boolean;
   after?(delivered: boolean): Promise<void>;
 }
 
@@ -313,7 +319,11 @@ export interface ChannelRepository {
 
 export interface ChannelAuditEntry { correlationId: string; entity: string; result: string; reason: string; action?: string }
 
-export interface ChannelMessageInput { externalConversationId: string; text: string; idempotencyKey: string; correlationId: string }
+export interface ChannelMessageInput {
+  externalConversationId: string; text: string; idempotencyKey: string; correlationId: string;
+  /** O que fica gravado como fala do cliente, quando difere do texto que a IA lê (áudio transcrito: "[Áudio transcrito] …"). */
+  storedText?: string;
+}
 
 /**
  * Captação de lead (issue #17): chamada quando chega mensagem de quem **não é
@@ -407,7 +417,7 @@ export async function processChannelMessage(
     // automática desligada, a nota é registrada e nada sai daqui.
     const thanks = await deliver(options, input, CSAT_THANKS);
     await repository.saveMessages(CHANNEL_NAME, input.externalConversationId, [
-      { role: "customer", content: input.text, correlationId: input.correlationId, externalMessageId: input.idempotencyKey },
+      { role: "customer", content: input.storedText ?? input.text, correlationId: input.correlationId, externalMessageId: input.idempotencyKey },
       { role: thanks.sent ? "agent" : SUGGESTION_ROLE, content: thanks.sent ? thanks.text ?? CSAT_THANKS : CSAT_THANKS, correlationId: input.correlationId, ...sentFields(thanks) },
     ]);
     const rated: ChannelResponse = {
@@ -439,9 +449,11 @@ export async function processChannelMessage(
 
   // Modo autônomo: "obrigado" e "ok" ganham cortesia, não o menu de assuntos.
   // Só agradecimento: "ok"/"sim" no meio da triagem é resposta a uma pergunta da IA, e quem tem o contexto é o modelo.
-  const courtesy = !menuIntent && agentMode(options) && THANKS.test(input.text.trim()) ? courtesyReply(input.text) : undefined;
+  // Com o pedido já registrado, "ok" também é despedida: sem isso o modelo recebia o "ok" e repetia a ficha inteira.
+  const registered = !!options.triage?.context?.().registered;
+  const courtesy = !menuIntent && agentMode(options) && (THANKS.test(input.text.trim()) || (registered && isFarewell(input.text))) ? courtesyReply(input.text) ?? "Combinado! Se precisar de mais alguma coisa, é só me chamar." : undefined;
   if (courtesy) {
-    return triageTurn(repository, input, metrics, options, { text: courtesy, status: AUTO_REPLIED_STATUS, intent: "general_information", label: "Resposta de cortesia", handoff: false }, { intent: "general_information", confidence: 1, source: "flow" });
+    return triageTurn(repository, input, metrics, options, { text: courtesy, status: AUTO_REPLIED_STATUS, intent: "general_information", label: "Resposta de cortesia", handoff: false, keepInQueue: registered }, { intent: "general_information", confidence: 1, source: "flow" });
   }
   // Classifica antes de rodar o pipeline: sem chave configurada isto cai na
   // regex e o comportamento é idêntico ao de antes. O contexto é o que o
@@ -578,12 +590,15 @@ async function doubtBotTurn(
 
   // Pedido pronto (modo autônomo): a ficha vai para o atendimento antes de a confirmação sair — o
   // "ficou registrado" do rodapé só é dito depois de gravado. Daí a conversa fica na fila da equipe.
+  // Pedido já registrado neste atendimento: não registra de novo nem repete a ficha, só confirma que está anotado.
+  const already = !!bot.agent && result.state === "request_complete" && !!options.triage?.context?.().registered;
+  if (already) result = { ...result, text: "Já está anotado, tá bom? A equipe da BBNET continua por aqui. Se precisar de mais alguma coisa, é só me chamar.", state: "ongoing" };
   const request = !!bot.agent && result.state === "request_complete";
   if (request) await options.triage?.registerRequest?.(result.summary ?? result.text, classified.intent).catch(() => undefined);
   // Pedido técnico pronto: a OS sai no IXC antes da confirmação — o "abri a OS nº X" só é dito com o número na mão.
   const serviceOrder = request ? await options.triage?.openServiceOrder?.(classified.intent).catch(() => undefined) : undefined;
   // A resposta pode prometer um atendente mesmo sem pedido completo: isso também deixa a conversa na fila.
-  const handoff = !!bot.agent && (request || promisesHuman(result.text));
+  const handoff = !!bot.agent && (request || already || promisesHuman(result.text));
   // Pedido de desbloqueio: o desfecho real (liberou, negou pela regra, falta o CPF) vem do sistema, não do modelo.
   const unlock = bot.agent && result.action === "trust_unlock" ? await options.triage?.trustUnlock?.(result.promisedDate).catch(() => undefined) : undefined;
   if (unlock) result = { ...result, text: `${result.text}\n\n${unlock.text}` };
@@ -603,6 +618,8 @@ ${footer}` : result.text;
     sender: agentSender(options, handoff),
   });
   await options.triage?.record({ intent: classified.intent, source: classified.source, confidence: classified.confidence, clarifying: false, delivered: delivery.sent, protocolIncluded: !!footer, handoff });
+  // Assunto resolvido e mensagem entregue: o atendimento termina aqui. Se o cliente falar de novo, abre outro, com protocolo novo.
+  if (bot.agent && result.state === "resolved" && delivery.sent) await options.triage?.closeTicket?.().catch(() => undefined);
   return response;
 }
 
@@ -626,7 +643,7 @@ async function triageTurn(
   const response = await recordTurn(repository, input, metrics, {
     content: delivery.sent ? delivery.text ?? shown : shown, delivery, status: delivery.sent ? turn.status : SUGGESTED_STATUS,
     intent: turn.intent, handoff: false, handoffReason: null, classified, label: turn.label,
-    sender: agentSender(options, handoff),
+    sender: agentSender(options, handoff || !!turn.keepInQueue),
   });
   await options.triage?.record({ intent: turn.intent, source: classified.source, confidence: classified.confidence, clarifying: !!turn.clarifying, delivered: delivery.sent, protocolIncluded: !!footer, handoff: agent && handoff });
   await turn.after?.(delivery.sent).catch(() => undefined);
@@ -646,7 +663,7 @@ async function recordTurn(
 ): Promise<ChannelResponse> {
   const { content, delivery } = turn;
   await repository.saveMessages(CHANNEL_NAME, input.externalConversationId, [
-    { role: "customer", content: input.text, correlationId: input.correlationId, externalMessageId: input.idempotencyKey },
+    { role: "customer", content: input.storedText ?? input.text, correlationId: input.correlationId, externalMessageId: input.idempotencyKey },
     // O `wamid` da resposta é o que casa o recibo de entrega com esta linha.
     { role: delivery.sent ? "agent" : SUGGESTION_ROLE, content, correlationId: input.correlationId, ...sentFields(delivery, turn.sender) },
   ]);

@@ -134,6 +134,8 @@ export interface MetaInbound {
   text: string;
   /** Legenda de foto, vídeo ou documento — mostrada ao atendente, nunca tratada como fala. */
   caption?: string;
+  /** Identificador da mídia na Meta (áudio, imagem…): é por ele que o arquivo se baixa. */
+  mediaId?: string;
   profileName?: string;
   phoneNumberId?: string;
   canonicalSender?: boolean;
@@ -201,8 +203,9 @@ export function parseMetaMessages(payload: unknown, options?: { reportCanonicalS
       const seconds = Number(message.timestamp);
       const quoted = bag(message.context).id;
       const hasQuote = Object.prototype.hasOwnProperty.call(message, "context");
+      const mediaId = kind === "text" ? undefined : String(bag(message[type]).id ?? "").trim() || undefined;
       result.push({
-        phone, messageId, kind, text, caption,
+        phone, messageId, kind, text, caption, mediaId,
         ...(options?.reportCanonicalSender ? { canonicalSender: typeof message.from === "string" && message.from === phone && /^[1-9]\d{9,14}$/.test(phone) } : {}),
         ...(options?.reportReplyContext && hasQuote ? { replyToMessageId: typeof quoted === "string" && /^wamid\.[A-Za-z0-9_=+\/-]{1,240}$/.test(quoted) ? quoted : null } : {}),
         profileName: typeof name === "string" && name.trim() ? name.trim() : undefined,
