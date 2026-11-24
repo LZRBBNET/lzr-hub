@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { createMetaTemplate, getPhoneLimits, listMetaTemplates, metaTemplatesConfigFromEnv } from "@/lib/integrations/meta/templates";
+import { createMetaTemplate, getPhoneLimits, getWebhookRouting, listMetaTemplates, metaTemplatesConfigFromEnv } from "@/lib/integrations/meta/templates";
 import { TEMPLATES } from "@/lib/platform/outbound-shared";
 import { logUnauthenticatedAction } from "@/lib/platform/audit-log";
 import { authorize } from "@/lib/platform/session-guard";
@@ -21,7 +21,14 @@ export async function GET(request: Request) {
   const phoneId = process.env.META_PHONE_NUMBER_ID?.trim();
   // O limite diário de conversas iniciadas e a qualidade do número: o teto real da cobrança.
   const phone = phoneId ? await getPhoneLimits(config, phoneId) : { ok: false as const, reason: "Falta META_PHONE_NUMBER_ID" };
+  // Para onde a Meta entrega as mensagens: a URL do app, a da conta e a do número. A esperada é a deste próprio LZR.
+  const expectedCallback = `${new URL(request.url).origin}/api/channels/meta`;
+  const routing = await getWebhookRouting(config, phoneId);
+  const overrides = routing.ok ? [...routing.routing.apps.map((app) => app.overrideCallbackUri), routing.routing.phoneOverrideUri].filter((uri): uri is string => !!uri) : [];
   return NextResponse.json({
+    webhook: routing.ok
+      ? { expectedCallback, ...routing.routing, notes: routing.notes, verdict: overrides.length === 0 ? "sem URL própria: vale a URL do app" : overrides.every((uri) => uri === expectedCallback) ? "há URL própria e ela aponta para este LZR" : "ATENÇÃO: há URL própria que NÃO aponta para este LZR" }
+      : { error: routing.reason },
     phone,
     dailyCap: Number(process.env.OUTBOUND_DAILY_CAP) || 900,
     templates: Object.values(TEMPLATES).map((template) => ({
