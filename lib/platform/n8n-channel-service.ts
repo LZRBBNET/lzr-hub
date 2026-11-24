@@ -212,7 +212,7 @@ export interface TriageHooks {
    */
   openServiceOrder?(intent: string): Promise<{ id: string; existing?: boolean } | undefined>;
   /** Modo autônomo: o modelo pediu o desbloqueio de confiança; a triagem confere tudo e devolve o texto do desfecho. */
-  trustUnlock?(promisedDate?: string): Promise<{ status: string; text: string } | undefined>;
+  trustUnlock?(promisedDate?: string, currentText?: string): Promise<{ status: string; text: string } | undefined>;
   record(entry: { intent: string; source: string; confidence: number; clarifying: boolean; delivered: boolean; protocolIncluded: boolean; handoff?: boolean }): Promise<void>;
 }
 
@@ -235,7 +235,8 @@ export interface TriageTurn {
   handoff?: boolean;
   /** O atendimento já tem pedido registrado: a despedida não tira a conversa da fila da equipe. */
   keepInQueue?: boolean;
-  after?(delivered: boolean): Promise<void>;
+  storedCustomerText?: string;
+  after?(delivered: boolean, messageId?: string): Promise<void>;
 }
 
 type Delivery = { sent: true; messageId?: string; text?: string } | { sent: false; failure?: Extract<AutoReplyDelivery, { sent: false }> };
@@ -442,7 +443,7 @@ export async function processChannelMessage(
 
   // A resposta a um pedido da IA (o CPF) é conduzida pela triagem, sem classificador.
   const intercepted = await options.triage?.intercept?.(input.text, { autoReply: options.autoReply });
-  if (intercepted) return triageTurn(repository, input, metrics, options, intercepted, { intent: intercepted.intent, confidence: 1, source: "flow" });
+  if (intercepted) return triageTurn(repository, intercepted.storedCustomerText ? { ...input, storedText: intercepted.storedCustomerText } : input, metrics, options, intercepted, { intent: intercepted.intent, confidence: 1, source: "flow" });
 
   // O assunto escolhido no menu da triagem dispensa o classificador: o cliente disse.
   const menuIntent = options.triage?.menuChoice(input.text);
@@ -591,17 +592,18 @@ async function doubtBotTurn(
   // Pedido pronto (modo autônomo): a ficha vai para o atendimento antes de a confirmação sair — o
   // "ficou registrado" do rodapé só é dito depois de gravado. Daí a conversa fica na fila da equipe.
   // Pedido já registrado neste atendimento: não registra de novo nem repete a ficha, só confirma que está anotado.
-  const already = !!bot.agent && result.state === "request_complete" && !!options.triage?.context?.().registered;
+  const trustAction = !!bot.agent && result.action === "trust_unlock";
+  const already = !trustAction && !!bot.agent && result.state === "request_complete" && !!options.triage?.context?.().registered;
   if (already) result = { ...result, text: "Já está anotado, tá bom? A equipe da BBNET continua por aqui. Se precisar de mais alguma coisa, é só me chamar.", state: "ongoing" };
-  const request = !!bot.agent && result.state === "request_complete";
+  const request = !trustAction && !!bot.agent && result.state === "request_complete";
   if (request) await options.triage?.registerRequest?.(result.summary ?? result.text, classified.intent).catch(() => undefined);
   // Pedido técnico pronto: a OS sai no IXC antes da confirmação — o "abri a OS nº X" só é dito com o número na mão.
   const serviceOrder = request ? await options.triage?.openServiceOrder?.(classified.intent).catch(() => undefined) : undefined;
   // A resposta pode prometer um atendente mesmo sem pedido completo: isso também deixa a conversa na fila.
-  const handoff = !!bot.agent && (request || already || promisesHuman(result.text));
+  const handoff = !trustAction && !!bot.agent && (request || already || promisesHuman(result.text));
   // Pedido de desbloqueio: o desfecho real (liberou, negou pela regra, falta o CPF) vem do sistema, não do modelo.
-  const unlock = bot.agent && result.action === "trust_unlock" ? await options.triage?.trustUnlock?.(result.promisedDate).catch(() => undefined) : undefined;
-  if (unlock) result = { ...result, text: `${result.text}\n\n${unlock.text}` };
+  const unlock = trustAction ? await options.triage?.trustUnlock?.(result.promisedDate, input.text).catch(() => undefined) : undefined;
+  if (trustAction) result = { ...result, text: unlock?.text ?? "Não consegui confirmar a liberação por aqui.", sources: [] };
   const footer = options.triage?.footer(request ? { request: classified.intent, serviceOrder } : bot.agent ? { handoff } : undefined);
   const text = footer ? `${result.text}
 
@@ -646,7 +648,7 @@ async function triageTurn(
     sender: agentSender(options, handoff || !!turn.keepInQueue),
   });
   await options.triage?.record({ intent: turn.intent, source: classified.source, confidence: classified.confidence, clarifying: !!turn.clarifying, delivered: delivery.sent, protocolIncluded: !!footer, handoff: agent && handoff });
-  await turn.after?.(delivery.sent).catch(() => undefined);
+  await turn.after?.(delivery.sent, delivery.sent ? delivery.messageId : undefined).catch(() => undefined);
   return response;
 }
 

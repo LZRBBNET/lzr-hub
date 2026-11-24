@@ -11,6 +11,8 @@ import { doubtBotAnswerer, doubtBotConfigFromEnv } from "../lib/platform/doubt-b
 import { AI_AGENT_SENDER, AI_SENDER, awaitingSinceFrom } from "../lib/platform/conversation-state-shared.ts";
 import { DEFAULT_LLM_MODEL, completionLimits, llmConfigFromEnv } from "../lib/agent/llm-classifier.ts";
 import { diagnoseConnection } from "../lib/platform/connection-diagnosis-shared.ts";
+import { aiTrustUnlock } from "../lib/platform/ai-trust-unlock.ts";
+import { MemoryIxcWriteOperationsRepository } from "../lib/platform/ixc-write-service.ts";
 import { agentTask } from "../lib/platform/agent-playbook-shared.ts";
 
 /**
@@ -51,7 +53,7 @@ const n8nPadrao = async (body) => {
   return "NAO_SEI";
 };
 
-async function montar({ n8n = n8nPadrao, lookup = async () => undefined, diagnose, serviceOrder, trustUnlock } = {}) {
+async function montar({ n8n = n8nPadrao, lookup = async () => undefined, diagnose, serviceOrder, trustUnlock, invoice, trustIdentity, trustPromptDelivered, trustSentAt } = {}) {
   const docs = new MemoryKnowledgeRepository();
   for (const [title, content] of DOCS) { const doc = await docs.create({ title, category: "geral", content }); await docs.publish(doc.id); }
   const channel = new MemoryChannelRepository();
@@ -66,7 +68,7 @@ async function montar({ n8n = n8nPadrao, lookup = async () => undefined, diagnos
   // Reproduz a rota da Meta com FEATURE_AI_AGENT: a IA fala sempre, em modo conversa.
   const receber = async (text) => {
     const wamid = `wamid.A${++n}`;
-    const triage = await startTriage(tickets, { channel: CHANNEL_NAME, conversationId: CLIENTE, lookup, diagnose, serviceOrder, trustUnlock, offHours: false, agent: true });
+    const triage = await startTriage(tickets, { channel: CHANNEL_NAME, conversationId: CLIENTE, lookup, diagnose, serviceOrder, trustUnlock, invoice, trustIdentity, trustPromptDelivered, trustInboundAt:trustSentAt ? trustSentAt(n) : new Date(Date.now() + n * 1000 - 500).toISOString(), now:Date.now() + n * 1000, offHours: false, agent: true });
     const auto = await metaAutoReplyOptions({
       enabled: true, states, messages: channel, claims, config: metaConfig, channel: CHANNEL_NAME,
       delivery: { begin: async () => "t", finish: async () => {}, settleUncertain: async () => {} },
@@ -269,7 +271,7 @@ test("desbloqueio de confiança: o modelo pede, o sistema decide e a mensagem di
   assert.equal(pedidos.length, 1);
   assert.equal(pedidos[0].promisedDate, "sexta");
   assert.equal(pedidos[0].holderVerified, false, "o CPF ainda não foi conferido neste atendimento");
-  assert.match(textos()[1], /Vou verificar a liberação/);
+  assert.doesNotMatch(textos()[1], /Vou verificar a liberação/);
   assert.match(textos()[1], /liberei sua internet em confiança/);
 });
 
@@ -335,4 +337,69 @@ test("a IA fala simples e se apresenta como suporte da BBNET", () => {
   assert.match(tarefa, /frases curtas/);
   assert.match(tarefa, /caixinha da internet/);
   assert.match(agentTask("general_information"), /Aqui é o suporte da BBNET/);
+});
+
+test("confirma CPF só para desbloqueio e aguarda nova solicitação antes de atuar no único contrato bloqueado", async () => {
+  const customerId = "80", blockedId = "207", reads = [], writes = [];
+  const deps = {
+    enabled:true, ledger:new MemoryIxcWriteOperationsRepository(), correlationId:"synthetic",
+    provider:{
+      async listTrustUnlockContracts(owner) {
+        reads.push(["contracts",owner]);
+        return Array.from({length:7},(_,i)=>({id:String(201+i),status:"A",internetStatus:i===6?"CA":"A"}));
+      },
+      async getTrustUnlockFacts(owner,contract) {
+        reads.push(["facts",owner,contract]);
+        return {contractId:contract,internetStatus:"CA",trustUnlockActive:false,lastUnlockAt:null,overdueCount:1,paidAfterUnlock:[]};
+      },
+    },
+    unlock:async id=>{writes.push(id);return {raw:{type:"success"}};},
+  };
+  const n8n = async body => /libera/i.test(body.question) ? { answer:"Vou passar para um atendente.",state:"request_complete",summary:"Crie OS.",action:"trust_unlock" } : n8nPadrao(body);
+  let serviceOrders = 0;
+  const f = await montar({n8n,serviceOrder:async()=>{serviceOrders++;return undefined;},lookup:async()=>({id:customerId}),trustIdentity:async()=>({id:customerId}),trustPromptDelivered:async id=>id==="wamid.S3",trustUnlock:input=>aiTrustUnlock(deps,input),
+    invoice:{sendData:false,lookup:{documentOf:async()=>"52998224725",openInvoices:async()=>{ throw Error("unexpected finance read"); }}}});
+  const previous=process.env.FEATURE_IXC_WRITE;
+  process.env.FEATURE_IXC_WRITE="true";
+  try {
+    await f.receber("oi");
+    await f.receber("libera minha internet por favor");
+    assert.equal(f.ticket().selfService.step,"awaiting_cpf");
+    assert.deepEqual(reads,[]);
+    await f.receber("52998224725");
+    assert.equal(f.ticket().selfService.step,"verified");
+    assert.deepEqual(writes,[]);
+    assert.match(f.textos().at(-1),/Pode liberar minha internet/);
+    assert.doesNotMatch(JSON.stringify(await f.historico()), /52998224725/);
+    await f.receber("Pode liberar minha internet");
+    assert.deepEqual(reads,[["contracts",customerId],["facts",customerId,blockedId]]);
+    assert.deepEqual(writes,[blockedId]);
+    assert.equal(serviceOrders,0);
+    assert.doesNotMatch(f.textos().join(" "), /Vou passar para um atendente|Crie OS/);
+  } finally {
+    if (previous === undefined) delete process.env.FEATURE_IXC_WRITE;
+    else process.env.FEATURE_IXC_WRITE=previous;
+  }
+});
+
+test("a solicitação anterior ao comprovante, sem entrega ou com titular alterado não consulta nem libera contrato", async () => {
+  for (const mode of ["old", "unconfirmed", "holder_changed"]) {
+    let approved = false, owner = "80", reads = 0;
+    const n8n = async body => /libera/i.test(body.question) ? { answer:"Vou conferir.",state:"ongoing",action:"trust_unlock" } : n8nPadrao(body);
+    const f = await montar({ n8n, lookup:async()=>({id:"80"}), trustIdentity:async()=>({id:owner}),
+      trustPromptDelivered:async()=>mode!=="unconfirmed", trustSentAt:n=>new Date(Date.now()+(mode==="old"&&n===4 ? 1000 : n*1000-500)).toISOString(),
+      trustUnlock:async input=>{ if(input.holderVerified){approved=true;reads++;} return {status:"needs_cpf",text:"Confirme o titular."}; },
+      invoice:{ sendData:false, lookup:{ documentOf:async()=>"52998224725", openInvoices:async()=>{throw Error("financial read");} } },
+    });
+    await f.receber("oi");
+    await f.receber("libera minha internet por favor");
+    await f.receber("52998224725");
+    assert.equal(f.ticket().selfService.step,"verified");
+
+    if(mode==="holder_changed")owner="81";
+    await f.receber("Pode liberar minha internet");
+    assert.equal(approved,false,mode);
+    assert.equal(reads,0,mode);
+    assert.doesNotMatch(f.textos().join(" "),/Já liberei/);
+  }
 });

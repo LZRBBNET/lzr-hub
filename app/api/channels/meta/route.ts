@@ -25,7 +25,7 @@ import { DbIncidentsRepository } from "@/lib/platform/incidents-service";
 import { hasRecentProtectedTechnicalAnchor, publicGreeting, publicTechnicalQuestion } from "@/lib/platform/meta-technical-emergency";
 import { extractCurrentTechnicalPilot, matchesProtectedTechnicalConversation, technicalConversationRelease, technicalPilotRoute } from "@/lib/platform/technical-conversation-pilot";
 import { currentTechnicalComplaint, currentTicketGates } from "@/lib/platform/current-support-tone";
-import { windowOpen } from "@/lib/platform/conversation-state-shared";
+import { botMayReply, windowOpen } from "@/lib/platform/conversation-state-shared";
 import { ownerFinanceAnchor, ownerFinanceInbound, ownerFinancePilotScope, ownerFinancePilotTraffic, OWNER_FINANCE_REPLY, planOwnerFinancePilot,
   reserveOwnerFinanceInbound, ownerFinanceScopeMaySpeak } from "@/lib/platform/owner-finance-pilot";
 import { isBusinessHours } from "@/lib/platform/triage-shared";
@@ -290,6 +290,10 @@ export async function POST(request: Request) {
     const botSpeaks = !!agentConfig || autoReplyEnabled() || (offHoursAutoReplyEnabled() && offHours);
     // Robô de dúvidas (n8n): no modo autônomo, sempre; senão, só no horário comercial e só quando a IA não fala por outro caminho.
     const doubtBotConfig = agentConfig ?? (!botSpeaks && !offHours ? doubtBotConfigFromEnv() : undefined);
+    const officialTrustMessage = message.kind === "text" && !storedText && !!sendConfig &&
+      message.canonicalSender === true && message.phoneNumberId === sendConfig.phoneNumberId &&
+      /^wamid\.[A-Za-z0-9_=+\/-]{1,240}$/.test(message.messageId) &&
+      !!message.sentAt && Date.parse(message.sentAt) <= Date.now() && windowOpen(message.sentAt, Date.now());
     const triage = await startTriage(tickets, {
       offHours: offHours && botSpeaks,
       // Modo autônomo: o diagnóstico vira dado para a IA conduzir o suporte, antes da resposta.
@@ -311,10 +315,24 @@ export async function POST(request: Request) {
         }
         return result;
       } : undefined,
-      trustUnlock: agentConfig && provider ? async (input) => {
+      trustIdentity: officialTrustMessage ? async (phone) => botMayReply(await new DbConversationStateRepository(db).get(CHANNEL_NAME, phone))
+        ? lookupCustomer(phone) : undefined : undefined,
+      trustInboundAt: officialTrustMessage ? message.sentAt : undefined,
+      trustPromptDelivered: officialTrustMessage ? async (promptId) => {
+        const lastVisible = (await channel.getHistory(CHANNEL_NAME, message.phone)).filter(row=>row.role!=="suggestion").at(-1);
+        return lastVisible?.role==="agent" && lastVisible.externalMessageId===promptId &&
+          (lastVisible.deliveryStatus==="delivered"||lastVisible.deliveryStatus==="read");
+      } : undefined,
+      trustUnlock: agentConfig && provider && officialTrustMessage ? async (input) => {
         const outcome = await aiTrustUnlock({
           enabled: aiTrustUnlockEnabled(), provider, ledger: new DbIxcWriteOperationsRepository(db), correlationId,
-          unlock: (contractId, corr) => trustUnlock({ baseUrl: ixcConfig.ixcBaseUrl!, token: ixcConfig.ixcToken! }, contractId, corr),
+          unlock: async (contractId, corr) => {
+            const [owner, ticket] = await Promise.all([new DbConversationStateRepository(db).get(CHANNEL_NAME, message.phone), tickets.findOpen(CHANNEL_NAME, message.phone)]);
+            if (!botMayReply(owner) || ticket?.id !== input.ticketId || ticket.ixcCustomerId !== input.customerId ||
+                ticket.stage === "handoff" || (await lookupCustomer(message.phone))?.id !== input.customerId)
+              throw new Error("TRUST_UNLOCK_SCOPE_CHANGED");
+            return trustUnlock({ baseUrl: ixcConfig.ixcBaseUrl!, token: ixcConfig.ixcToken! }, contractId, corr);
+          },
         }, input);
         if (outcome.status !== "needs_cpf" && outcome.status !== "skipped") {
           await logUnauthenticatedAction({

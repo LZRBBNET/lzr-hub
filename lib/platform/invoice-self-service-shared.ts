@@ -26,6 +26,9 @@ export interface InvoiceSelfService {
   step: InvoiceStep;
   at: string;
   attempts: number;
+  purpose?: "trust_unlock";
+  verifiedHolderId?: string;
+  unlockPromptMessageId?: string;
   /** Faturas em aberto do titular confirmado. Ausente antes da confirmação. */
   invoices?: InvoicePreviewItem[];
   /** PIX copia-e-cola da fatura que vence primeiro. Nulo = o IXC não devolveu (o rascunho segue sem ele). */

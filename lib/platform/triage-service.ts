@@ -411,6 +411,9 @@ export interface TriageMode {
   serviceOrder?: ServiceOrderOpener;
   /** Modo autônomo: desbloqueio de confiança pedido na conversa (`FEATURE_AI_TRUST_UNLOCK`). */
   trustUnlock?: TrustUnlocker;
+  trustIdentity?: CustomerLookup;
+  trustInboundAt?: string;
+  trustPromptDelivered?: (messageId: string) => Promise<boolean>;
   now?: () => number;
 }
 
@@ -436,6 +439,17 @@ export function requestFooter(protocol: string | null, queue: string | null, at:
 export function triageHooks(repository: TicketRepository, ticket: TicketRow, diagnose?: Diagnose, invoice?: InvoiceOptions, mode: TriageMode = {}): TriageHooks {
   const at = () => new Date((mode.now ?? Date.now)());
   const invoiceHooks = invoiceSteps(repository, ticket, invoice);
+  const trustState = ticket.selfService?.purpose === "trust_unlock" ? ticket.selfService : undefined;
+  const fresh = (state: InvoiceSelfService) => {
+    const stamp = Date.parse(state.at);
+    return Number.isFinite(stamp) && stamp <= at().valueOf() && at().valueOf() - stamp < 5 * 60_000;
+  };
+  const sameHolder = async () => {
+    if (!mode.trustIdentity || ticket.identification !== "identified" || !ticket.ixcCustomerId) return false;
+    const current = await repository.findOpen(ticket.channel, ticket.conversationId);
+    return current?.id === ticket.id && current.stage !== "handoff" && current.ixcCustomerId === ticket.ixcCustomerId &&
+      (await mode.trustIdentity(ticket.conversationId))?.id === ticket.ixcCustomerId;
+  };
   // Diagnóstico feito para responder ao cliente não se repete no registro do turno.
   let diagnosedNow = false;
   // O protocolo só conta como informado se esteve no texto — o rodapé pode ter só o aviso de horário.
@@ -444,9 +458,33 @@ export function triageHooks(repository: TicketRepository, ticket: TicketRow, dia
   let diagnosisNow: ConnectionDiagnosis | null = ticket.diagnosis;
   let intakeNow: TicketIntake | null = ticket.intake ?? null;
   return {
-    intercept: invoiceHooks.intercept,
+    intercept: async (text, context) => {
+      if (!trustState) return invoiceHooks.intercept?.(text, context);
+      if (!awaitingCpf(ticket)) return undefined;
+      const found = extractDocument(text);
+      if (!/^\s*[\d.\/ -]{11,22}\s*$/.test(text) && !found.digits) return undefined;
+      const stamp = at().toISOString();
+      let verified = false;
+      if (context.autoReply && ticket.stage !== "handoff" && fresh(trustState) && found.digits && invoice && ticket.ixcCustomerId) {
+        try {
+          verified = await withinBudget(sameHolder(), DIAGNOSIS_BUDGET_MS) &&
+            (await withinBudget(invoice.lookup.documentOf(ticket.ixcCustomerId), DIAGNOSIS_BUDGET_MS))?.replace(/\D/g, "") === found.digits;
+        } catch { /* no verified identity */ }
+      }
+      const eligible = verified && /^\s*[\d.\/ -]{11,22}\s*$/.test(text);
+      return {
+        text: eligible ? 'Titular confirmado. Para eu conferir a liberação, responda “Pode liberar minha internet”.'
+          : "Não consegui confirmar o titular para a liberação com segurança.",
+        status: eligible ? "waiting_customer" : "replied", intent: "financial_unlock",
+        label: "Conferência do titular para desbloqueio", handoff: false, clarifying: eligible,
+        storedCustomerText: "[documento omitido]",
+        after: async (sent, messageId) => repository.update(ticket.id, { selfService: eligible && sent && messageId
+          ? {purpose:"trust_unlock",step:"verified",at:at().toISOString(),attempts:1,verifiedHolderId:ticket.ixcCustomerId!,unlockPromptMessageId:messageId}
+          : {purpose:"trust_unlock",step:"mismatch",at:stamp,attempts:1} }),
+      };
+    },
     afterClassify: async (classified, context) => {
-      const step = await invoiceHooks.afterClassify?.(classified, context);
+      const step = trustState ? undefined : await invoiceHooks.afterClassify?.(classified, context);
       if (step || !context.autoReply) return step;
       if (!DIAGNOSABLE_INTENTS.has(classified.intent)) return undefined;
       const diagnosis = await diagnoseTicket(repository, ticket, classified.intent, diagnose);
@@ -487,13 +525,25 @@ export function triageHooks(repository: TicketRepository, ticket: TicketRow, dia
       intakeNow = { intent, summary: sanitizeHandoffText(summary).slice(0, 1500), at: at().toISOString() };
       await repository.update(ticket.id, { intake: intakeNow, queue: queueForIntent(intent) });
     },
-    trustUnlock: async (promisedDate) => {
+    trustUnlock: async (promisedDate, currentText) => {
       if (!mode.trustUnlock) return undefined;
       if (ticket.identification !== "identified" || !ticket.ixcCustomerId) return { status: "denied", text: TRUST_UNLOCK_TEXT.unidentified };
-      const outcome = await mode.trustUnlock({ customerId: ticket.ixcCustomerId, ticketId: ticket.id, holderVerified: ticket.selfService?.step === "verified", promisedDate })
+      if (mode.trustIdentity && ticket.stage === "handoff") return undefined;
+      const explicit = /^(?:pode liberar minha internet|quero desbloquear minha internet)[.!?]?$/iu.test(currentText?.trim() ?? "");
+      let holderVerified = false;
+      if (mode.trustIdentity && trustState?.step === "verified" && fresh(trustState) && trustState.verifiedHolderId === ticket.ixcCustomerId) {
+        if (!explicit) return { status:"denied", text:"Para conferir a liberação deste atendimento, responda “Pode liberar minha internet”." };
+        const inboundAt = Date.parse(mode.trustInboundAt ?? "");
+        const proofAt = Date.parse(trustState.at);
+        if (!Number.isFinite(inboundAt) || inboundAt <= proofAt || inboundAt > at().valueOf() || !trustState.unlockPromptMessageId
+            || !await mode.trustPromptDelivered?.(trustState.unlockPromptMessageId).catch(() => false))
+          return { status:"denied", text:"Ainda não consegui confirmar essa solicitação. Responda à mensagem de confirmação mais recente." };
+        try { holderVerified = await withinBudget(sameHolder(), DIAGNOSIS_BUDGET_MS); } catch { /* fail closed */ }
+      } else if (!mode.trustIdentity) holderVerified = ticket.selfService?.step === "verified";
+      const outcome = await mode.trustUnlock({ customerId: ticket.ixcCustomerId, ticketId: ticket.id, holderVerified, promisedDate })
         .catch((): TrustUnlockOutcome => ({ status: "failed", text: TRUST_UNLOCK_TEXT.failed }));
       // Falta o CPF: a próxima fala do cliente é o documento, e a conferência da segunda via cuida dela.
-      if (outcome.status === "needs_cpf") await repository.update(ticket.id, { selfService: { step: "awaiting_cpf", at: at().toISOString(), attempts: 0 } }).catch(() => undefined);
+      if (outcome.status === "needs_cpf") await repository.update(ticket.id, { selfService: { step: "awaiting_cpf", at: at().toISOString(), attempts: 0, ...(mode.trustIdentity ? {purpose:"trust_unlock" as const} : {}) } }).catch(() => undefined);
       return outcome;
     },
     openServiceOrder: async (intent) => {
@@ -536,13 +586,13 @@ export function triageHooks(repository: TicketRepository, ticket: TicketRow, dia
  */
 export async function startTriage(
   repository: TicketRepository,
-  input: { channel: string; conversationId: string; lookup: CustomerLookup; diagnose?: Diagnose; invoice?: InvoiceOptions; offHours?: boolean; internalDiagnosisOnly?: boolean; agent?: boolean; serviceOrder?: ServiceOrderOpener; trustUnlock?: TrustUnlocker; now?: number },
+  input: { channel: string; conversationId: string; lookup: CustomerLookup; diagnose?: Diagnose; invoice?: InvoiceOptions; offHours?: boolean; internalDiagnosisOnly?: boolean; agent?: boolean; serviceOrder?: ServiceOrderOpener; trustUnlock?: TrustUnlocker; trustIdentity?: CustomerLookup; trustInboundAt?: string; trustPromptDelivered?: (messageId: string) => Promise<boolean>; now?: number },
 ): Promise<{ ticket: TicketRow; hooks: TriageHooks; knownCustomer: CustomerLookup; awaitingAnswer: boolean; handedOff: boolean } | undefined> {
   try {
     const { ticket: opened } = await openOrContinueTicket(repository, input);
     const ticket = await identifyTicketCustomer(repository, opened, input.lookup);
     return {
-      ticket, hooks: triageHooks(repository, ticket, input.diagnose, input.invoice, { offHours: input.offHours, internalDiagnosisOnly: input.internalDiagnosisOnly, agent: input.agent, serviceOrder: input.serviceOrder, trustUnlock: input.trustUnlock, now: input.now === undefined ? undefined : () => input.now as number }), knownCustomer: knownCustomer(ticket),
+      ticket, hooks: triageHooks(repository, ticket, input.diagnose, input.invoice, { offHours: input.offHours, internalDiagnosisOnly: input.internalDiagnosisOnly, agent: input.agent, serviceOrder: input.serviceOrder, trustUnlock: input.trustUnlock, trustIdentity: input.trustIdentity, trustInboundAt: input.trustInboundAt, trustPromptDelivered: input.trustPromptDelivered, now: input.now === undefined ? undefined : () => input.now as number }), knownCustomer: knownCustomer(ticket),
       // A IA perguntou algo (assunto ou CPF): a resposta do cliente merece resposta.
       awaitingAnswer: ticket.stage === "clarifying" || awaitingCpf(ticket),
       // A IA passou para o atendente neste atendimento: no modo autônomo, ela não volta a falar sozinha.
