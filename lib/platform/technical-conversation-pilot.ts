@@ -21,6 +21,15 @@ type MetaConversationScope = {
   phone: string; canonicalSender?: boolean; actualPhoneNumberId?: string; expectedPhoneNumberId?: string; messageId: string;
 };
 type Environment = Record<string, string | undefined>;
+
+/**
+ * A faixa protegida do fluxo técnico atende **sozinha** cumprimento, "estou sem internet" e o piloto de perguntas fixas:
+ * só faz as perguntas aprovadas e, diante de qualquer resposta fora delas ("a luz está desligada"), fica **calada** e
+ * deixa para revisão manual. Para o cliente isso é uma conversa que morre no meio, e nada abre atendimento, ficha nem OS.
+ * Com `FEATURE_PROTECTED_TECHNICAL_LANE=false` esses três casos seguem o caminho normal (IA conversando, atendimento, ficha e OS).
+ * Cliente agressivo ou ameaçando continua sempre na faixa: texto assim nunca vai ao modelo. Padrão: ligada, como antes.
+ */
+export function protectedLaneEnabled(env: Environment): boolean { return env.FEATURE_PROTECTED_TECHNICAL_LANE !== "false"; }
 export function technicalPilotEnabled(env: Environment, input: MetaConversationScope, now = Date.now()): boolean {
   const permitted = env.META_CONVERSATION_PILOT_SENDER;
   const until = env.META_CONVERSATION_PILOT_UNTIL;

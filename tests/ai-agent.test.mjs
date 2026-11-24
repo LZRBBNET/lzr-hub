@@ -424,3 +424,11 @@ test("roteiro de desbloqueio aceita intenção relativa sem transformar promessa
     assert.doesNotMatch(task,/em que data vai pagar/);
   }
 });
+
+test("faixa protegida do fluxo técnico: ligada por padrão, desligável por chave", async () => {
+  const { protectedLaneEnabled } = await import("../lib/platform/technical-conversation-pilot.ts");
+  assert.equal(protectedLaneEnabled({}), true, "padrão: como antes");
+  assert.equal(protectedLaneEnabled({ FEATURE_PROTECTED_TECHNICAL_LANE: "true" }), true);
+  assert.equal(protectedLaneEnabled({ FEATURE_PROTECTED_TECHNICAL_LANE: "false" }), false);
+  assert.equal(protectedLaneEnabled({ FEATURE_PROTECTED_TECHNICAL_LANE: "0" }), true, "só 'false' desliga: valor estranho não muda o comportamento");
+});

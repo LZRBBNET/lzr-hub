@@ -23,7 +23,7 @@ import { fetchPixCode } from "@/lib/integrations/ixc/write-client";
 import { DbTicketRepository, ixcDiagnose, ixcInvoiceLookup, startTriage, type TicketRow } from "@/lib/platform/triage-service";
 import { DbIncidentsRepository } from "@/lib/platform/incidents-service";
 import { hasRecentProtectedTechnicalAnchor, publicGreeting, publicTechnicalQuestion } from "@/lib/platform/meta-technical-emergency";
-import { extractCurrentTechnicalPilot, matchesProtectedTechnicalConversation, technicalConversationRelease, technicalPilotRoute } from "@/lib/platform/technical-conversation-pilot";
+import { extractCurrentTechnicalPilot, matchesProtectedTechnicalConversation, protectedLaneEnabled, technicalConversationRelease, technicalPilotRoute } from "@/lib/platform/technical-conversation-pilot";
 import { currentTechnicalComplaint, currentTicketGates } from "@/lib/platform/current-support-tone";
 import { trustScopeStage, trustStageMarker, type TrustActionStage } from "@/lib/platform/trust-unlock-stage";
 import { botMayReply, windowOpen } from "@/lib/platform/conversation-state-shared";
@@ -242,10 +242,13 @@ export async function POST(request: Request) {
         claimAnchor: (anchor: string) => claimTechnicalFollowup(db, CHANNEL_NAME, message.phone, anchor),
       } : undefined,
     });
+    // Cliente agressivo ou ameaçando fica sempre na faixa protegida; cumprimento, "sem internet" e o piloto de
+    // perguntas fixas só enquanto a chave estiver ligada (padrão). Desligada, eles seguem o caminho normal da IA.
+    const publicLane = protectedLaneEnabled(process.env);
     const baselineProtected = message.kind === "text" && Boolean(
-      publicGreeting(message.text) || currentTechnicalComplaint(message.text) || publicTechnicalQuestion(message.text),
+      currentTechnicalComplaint(message.text) || (publicLane && (publicGreeting(message.text) || publicTechnicalQuestion(message.text))),
     );
-    const pilotCandidate = matchesProtectedTechnicalConversation(message.text, isOptIn(message.text) || isOptOut(message.text), release);
+    const pilotCandidate = publicLane && matchesProtectedTechnicalConversation(message.text, isOptIn(message.text) || isOptOut(message.text), release);
     if (baselineProtected || pilotCandidate) {
       // Handle bounded current openings/reports before inherited intent and any
       // IXC lookup. Actual conversation ownership is checked regardless of ticket age.
