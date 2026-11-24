@@ -4,6 +4,7 @@ import { getIxcRuntime } from "@/lib/integrations/ixc/runtime";
 import { authorize, authEnforced } from "@/lib/platform/session-guard";
 import { getQueueSnapshot } from "@/lib/platform/queue-service";
 import { llmConfigFromEnv } from "@/lib/agent/llm-classifier";
+import { protectedLaneEnabled } from "@/lib/platform/technical-conversation-pilot";
 
 /**
  * Estado real de cada integração, resolvido no servidor.
@@ -54,6 +55,13 @@ export async function GET(request: Request) {
 
   return NextResponse.json({
     environment: process.env.LZR_ENV ?? "local",
+    // O que o servidor está lendo agora: tira a dúvida "o deploy subiu? a variável pegou?" sem adivinhar. Só valores não secretos.
+    runtime: {
+      commit: process.env.RAILWAY_GIT_COMMIT_SHA?.slice(0, 7) ?? null,
+      deployedAt: process.env.RAILWAY_DEPLOYMENT_CREATED_AT ?? null,
+      protectedTechnicalLane: protectedLaneEnabled(process.env) ? "ligada (a IA só faz as perguntas fixas)" : "desligada (a IA conversa normalmente)",
+      protectedTechnicalLaneRaw: process.env.FEATURE_PROTECTED_TECHNICAL_LANE === undefined ? "(variável não existe neste serviço)" : JSON.stringify(process.env.FEATURE_PROTECTED_TECHNICAL_LANE),
+    },
     auth: { enforced: authEnforced(), detail: authEnforced() ? "Login obrigatório e RBAC ativos" : "Rotas abertas: FEATURE_AUTH desligada" },
     services: [
       { name: "IXC (ERP)", state: ixc.state, mode: `${ixc.mode} • ${ixc.scope}`, detail: ixc.detail },
