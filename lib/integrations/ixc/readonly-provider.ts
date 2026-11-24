@@ -680,6 +680,25 @@ export class IxcReadonlyProvider {
       throw new IxcReadonlyError("IXC_CONTRACT_UNCONFIRMED");
     return {id:contractId,customerId,status:"A" as const};
   }
+  /**
+   * Contratos ATIVOS do cliente, com a prova de que a lista veio inteira. O diagnóstico lê só 5
+   * contratos (os mais antigos primeiro): no cadastro 24088 os 5 eram inativos e o ativo ficou de fora.
+   * Abrir OS no contrato errado é pior que não abrir — por isso `complete`.
+   */
+  async listActiveContracts(customerId:string,correlationId:string){
+    const page=await this.readPage("listContracts",endpoints.listContracts,"id_cliente",customerId,correlationId,10,customerId,
+      {oper:"=",gridParam:[{TB:"cliente_contrato.status",OP:"=",P:"A"}]});
+    const ids=page.records.filter((raw)=>String(raw.id_cliente)===customerId&&raw.status==="A").map((raw)=>String(raw.id??"")).filter(Boolean);
+    return {ids,complete:page.coverage.complete&&page.coverage.total===page.records.length&&ids.length===page.records.length};
+  }
+  /** Logins de UM contrato (o diagnóstico lê só 5 do cliente inteiro). Só id e se está online. */
+  async listContractLogins(customerId:string,contractId:string,correlationId:string){
+    if(!/^[1-9]\d{0,31}$/.test(contractId))throw new IxcReadonlyError("IXC_CONTRACT_UNCONFIRMED");
+    const page=await this.readPage("getConnection",endpoints.getConnection,"id_cliente",customerId,correlationId,20,customerId,
+      {oper:"=",gridParam:[{TB:"radusuarios.id_contrato",OP:"=",P:contractId}]});
+    const logins=page.records.filter((raw)=>String(raw.id_contrato)===contractId).map((raw)=>({id:String(raw.id??""),online:raw.online==="S"?true:raw.online==="N"?false:null})).filter((login)=>login.id);
+    return {logins,complete:page.coverage.complete&&page.coverage.total===page.records.length&&logins.length===page.records.length};
+  }
   /** Reconcile a known OS only; a missing/ambiguous response never releases a reservation. */
   async reconcileServiceOrder(customerId:string,contractId:string,orderId:string,correlationId:string){
     if(![customerId,contractId,orderId].every(id=>/^[1-9]\d{0,31}$/.test(id)))throw new IxcReadonlyError("IXC_OS_UNCONFIRMED");
