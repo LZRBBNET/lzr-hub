@@ -69,7 +69,7 @@ export async function aiTrustUnlock(deps: AiTrustUnlockDeps, input: AiTrustUnloc
       return { status: "skipped", text: TRUST_UNLOCK_TEXT.refused, reason: "FEATURE_IXC_WRITE desligada" };
     }
     // Reserva antes do IXC: reentrega do webhook não libera duas vezes.
-    if (!await deps.ledger.claim({ ...ledgerEntry, status: "pending", detail: `Reservado (${decision.reason}${input.promisedDate ? `, pagamento prometido para ${input.promisedDate}` : ""}).` })) {
+    if (!await deps.ledger.claim({ ...ledgerEntry, status: "pending", detail: `Reservado (${decision.reason}).` })) {
       return { status: "refused", text: TRUST_UNLOCK_TEXT.refused, reason: "Reserva já existente." };
     }
     try {

@@ -25,6 +25,7 @@ import { DbIncidentsRepository } from "@/lib/platform/incidents-service";
 import { hasRecentProtectedTechnicalAnchor, publicGreeting, publicTechnicalQuestion } from "@/lib/platform/meta-technical-emergency";
 import { extractCurrentTechnicalPilot, matchesProtectedTechnicalConversation, technicalConversationRelease, technicalPilotRoute } from "@/lib/platform/technical-conversation-pilot";
 import { currentTechnicalComplaint, currentTicketGates } from "@/lib/platform/current-support-tone";
+import { trustScopeStage, trustStageMarker, type TrustActionStage } from "@/lib/platform/trust-unlock-stage";
 import { botMayReply, windowOpen } from "@/lib/platform/conversation-state-shared";
 import { ownerFinanceAnchor, ownerFinanceInbound, ownerFinancePilotScope, ownerFinancePilotTraffic, OWNER_FINANCE_REPLY, planOwnerFinancePilot,
   reserveOwnerFinanceInbound, ownerFinanceScopeMaySpeak } from "@/lib/platform/owner-finance-pilot";
@@ -290,10 +291,9 @@ export async function POST(request: Request) {
     const botSpeaks = !!agentConfig || autoReplyEnabled() || (offHoursAutoReplyEnabled() && offHours);
     // Robô de dúvidas (n8n): no modo autônomo, sempre; senão, só no horário comercial e só quando a IA não fala por outro caminho.
     const doubtBotConfig = agentConfig ?? (!botSpeaks && !offHours ? doubtBotConfigFromEnv() : undefined);
-    const officialTrustMessage = message.kind === "text" && !storedText && !!sendConfig &&
-      message.canonicalSender === true && message.phoneNumberId === sendConfig.phoneNumberId &&
-      /^wamid\.[A-Za-z0-9_=+\/-]{1,240}$/.test(message.messageId) &&
-      !!message.sentAt && Date.parse(message.sentAt) <= Date.now() && windowOpen(message.sentAt, Date.now());
+    const trustScope = trustScopeStage({kind:message.kind,transcribed:!!storedText,senderVerified:message.canonicalSender===true,
+      receiver:message.phoneNumberId,expectedReceiver:sendConfig?.phoneNumberId,id:message.messageId,sentAt:message.sentAt},Date.now());
+    const officialTrustMessage = trustScope === "eligible";
     const triage = await startTriage(tickets, {
       offHours: offHours && botSpeaks,
       // Modo autônomo: o diagnóstico vira dado para a IA conduzir o suporte, antes da resposta.
@@ -394,6 +394,9 @@ export async function POST(request: Request) {
             : undefined,
           templates,
           triage: triage?.hooks,
+          trustActionUnavailable: trustScope !== "eligible" ? trustScope : !provider ? "ixc_provider_missing"
+            : !triage ? "triage_missing" : triage.handedOff ? "ticket_handoff" : undefined,
+          onTrustActionStage: (stage:TrustActionStage) => console.info(trustStageMarker(stage)),
           technicalEmergency: protectedOptions(auto, triage?.ticket),
         },
         (input) => captureLeadFromContact(new DbCrmRepository(db), input, triage?.knownCustomer ?? lookupCustomer),

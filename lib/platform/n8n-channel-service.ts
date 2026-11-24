@@ -1,3 +1,4 @@
+import { trustOutcomeStage, type TrustActionStage } from "./trust-unlock-stage.ts";
 import { ambiguousTechnicalReference, explicitUnverifiedOrderFollowup, previousTechnicalAssertion, processProtectedTechnicalTurn, protectedTechnicalIntent, publicGreeting, publicTechnicalQuestion, safeTechnicalModelQuestion, technicalContinuity, type TechnicalEmergencyOptions, type TechnicalQuestionStage } from "./meta-technical-emergency.ts";
 import { choosePilotStep, extractCurrentTechnicalPilot, isPossiblePilotAnswer, type ApprovedTechnicalStep } from "./technical-conversation-pilot.ts";
 import { currentTechnicalComplaint } from "./current-support-tone.ts";
@@ -99,6 +100,8 @@ export type AutoReplyDelivery =
 export type AutoReplySender = (input: { conversationId: string; text: string; inboundMessageId: string; interactive?: InteractiveList }) => Promise<AutoReplyDelivery>;
 
 export interface ChannelOptions {
+  trustActionUnavailable?: TrustActionStage;
+  onTrustActionStage?: (stage:TrustActionStage) => void;
   technicalEmergency?: TechnicalEmergencyOptions;
   autoReply: boolean;
   /** Injected clock for deterministic local courtesy; no session reset. */
@@ -602,8 +605,19 @@ async function doubtBotTurn(
   // A resposta pode prometer um atendente mesmo sem pedido completo: isso também deixa a conversa na fila.
   const handoff = !trustAction && !!bot.agent && (request || already || promisesHuman(result.text));
   // Pedido de desbloqueio: o desfecho real (liberou, negou pela regra, falta o CPF) vem do sistema, não do modelo.
-  const unlock = trustAction ? await options.triage?.trustUnlock?.(result.promisedDate, input.text).catch(() => undefined) : undefined;
-  if (trustAction) result = { ...result, text: unlock?.text ?? "Não consegui confirmar a liberação por aqui.", sources: [] };
+  if (trustAction) {
+    let text: string | undefined;
+    let stage: TrustActionStage = options.trustActionUnavailable ?? "hook_missing";
+    if (options.triage?.trustUnlock) {
+      try {
+        const unlock = await options.triage.trustUnlock(result.promisedDate, input.text);
+        text = unlock?.text;
+        stage = unlock ? trustOutcomeStage(unlock.status) : options.trustActionUnavailable ?? "no_outcome";
+      } catch { stage = "hook_error"; }
+    }
+    try { options.onTrustActionStage?.(stage); } catch { /* diagnostics do not change the response */ }
+    result = { ...result, text: text ?? "Não consegui verificar a solicitação de liberação. Não tenho uma confirmação do sistema.", sources: [] };
+  }
   const footer = options.triage?.footer(request ? { request: classified.intent, serviceOrder } : bot.agent ? { handoff } : undefined);
   const text = footer ? `${result.text}
 

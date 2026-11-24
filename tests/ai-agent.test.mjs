@@ -53,7 +53,7 @@ const n8nPadrao = async (body) => {
   return "NAO_SEI";
 };
 
-async function montar({ n8n = n8nPadrao, lookup = async () => undefined, diagnose, serviceOrder, trustUnlock, invoice, trustIdentity, trustPromptDelivered, trustSentAt } = {}) {
+async function montar({ n8n = n8nPadrao, lookup = async () => undefined, diagnose, serviceOrder, trustUnlock, invoice, trustIdentity, trustPromptDelivered, trustSentAt, trustActionUnavailable, onTrustActionStage } = {}) {
   const docs = new MemoryKnowledgeRepository();
   for (const [title, content] of DOCS) { const doc = await docs.create({ title, category: "geral", content }); await docs.publish(doc.id); }
   const channel = new MemoryChannelRepository();
@@ -76,7 +76,7 @@ async function montar({ n8n = n8nPadrao, lookup = async () => undefined, diagnos
       conversational: true,
     }, CLIENTE);
     return processChannelMessage(channel, { externalConversationId: CLIENTE, text, idempotencyKey: wamid, correlationId: `c-${wamid}` }, new MemorySupportMetricsRepository(), {
-      ...auto, triage: triage?.hooks,
+      ...auto, triage: triage?.hooks, trustActionUnavailable, onTrustActionStage,
       doubtBot: auto.autoReply && auto.send ? { send: auto.send, answer: doubtBotAnswerer(botConfig, () => docs.list(200)), agent: true, handedOff: triage?.handedOff } : undefined,
     });
   };
@@ -401,5 +401,26 @@ test("a solicitação anterior ao comprovante, sem entrega ou com titular altera
     assert.equal(approved,false,mode);
     assert.equal(reads,0,mode);
     assert.doesNotMatch(f.textos().join(" "),/Já liberei/);
+  }
+});
+
+test("falha de contexto da liberação tem motivo técnico fixo e não fala em recusa nem repete a data",async()=>{
+  const sent=[];
+  const n8n=async body=>/25\/11/.test(body.question)?{answer:"Pode confirmar a data exata mais uma vez?",state:"ongoing",action:"trust_unlock"}:n8nPadrao(body);
+  const f=await montar({n8n,lookup:async()=>({id:"80"}), trustActionUnavailable:"sender_unverified", onTrustActionStage:stage=>sent.push(stage)});
+  await f.receber("oi");
+  await f.receber("25/11");
+  assert.deepEqual(sent,["sender_unverified"]);
+  assert.match(f.textos().at(-1),/Não tenho uma confirmação do sistema/);
+  assert.doesNotMatch(f.textos().at(-1),/recus|data exata|25\/11/);
+});
+
+test("roteiro de desbloqueio aceita intenção relativa sem transformar promessa em consentimento",()=>{
+  for (const intent of ["financial_unlock","financial_payment"]) {
+    const task=agentTask(intent);
+    assert.match(task,/amanhã.*sexta.*outro dia/);
+    assert.match(task,/campo é opcional/);
+    assert.match(task,/Sem pedido explícito no contexto, não use a ação/);
+    assert.doesNotMatch(task,/em que data vai pagar/);
   }
 });

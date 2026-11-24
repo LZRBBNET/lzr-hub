@@ -72,7 +72,8 @@ const DISCOUNT = `Você não concede desconto nem negocia valores.
 - Com o motivo: state "request_complete".`;
 
 /** Como o modelo pede o desbloqueio: o sistema confere titular e regra; o modelo nunca afirma que liberou. */
-const UNLOCK_ACTION = `- Se o cliente disser que não consegue pagar agora e pedir para liberar a internet, pergunte em que data vai pagar e, com a data, responda com "action": "trust_unlock" e "promised_date" (a data dita pelo cliente). O sistema confere as regras e informa o resultado; na sua "reply" apenas diga que vai verificar a liberação. Nunca diga que liberou.`;
+const UNLOCK_ACTION = `- Se o cliente disser que não pode pagar agora e já pediu explicitamente liberação temporária, use "action": "trust_unlock" para o sistema iniciar a confirmação do titular ou conferir a solicitação. Não exija data exata: "amanhã", "sexta", "outro dia" ou pagar mais tarde bastam como contexto. Não repita a pergunta sobre data, não converta a expressão em uma data e não prometa prazo. Se quiser devolver "promised_date", só repita a data de calendário que o próprio cliente informou explicitamente; o campo é opcional.
+- Dizer apenas que vai pagar depois não é um pedido de liberação. Sem pedido explícito no contexto, não use a ação. Uma resposta de data em conversa com pedido anterior permite a etapa de confirmação, não autoriza liberar automaticamente. Na sua "reply", diga apenas que o sistema vai verificar. Nunca diga que liberou.`;
 
 const PAYMENT = `Objetivo: resolver a dúvida de pagamento ou deixar pronto o pedido de conferência.
 - PIX é reconhecido em poucos minutos; boleto pode levar até 3 dias úteis. Depois de reconhecido, a internet volta sozinha; se não voltar, reiniciar o equipamento.
