@@ -1,7 +1,7 @@
 import { trustOutcomeStage, type TrustActionStage } from "./trust-unlock-stage.ts";
 import { ambiguousTechnicalReference, explicitUnverifiedOrderFollowup, previousTechnicalAssertion, processProtectedTechnicalTurn, protectedTechnicalIntent, publicGreeting, publicTechnicalQuestion, safeTechnicalModelQuestion, technicalContinuity, type TechnicalEmergencyOptions, type TechnicalQuestionStage } from "./meta-technical-emergency.ts";
 import { choosePilotStep, extractCurrentTechnicalPilot, isPossiblePilotAnswer, type ApprovedTechnicalStep } from "./technical-conversation-pilot.ts";
-import { currentTechnicalComplaint } from "./current-support-tone.ts";
+import { explicitSupportDaypart, currentTechnicalComplaint } from "./current-support-tone.ts";
 import { supportRequest as supportRequestForOpening } from "../agent/troubleshooting-context.ts";
 import { servicePreferences } from "../agent/service-preferences.ts";
 import { hasPriorOutput, serviceOpening } from "./service-opening.ts";
@@ -100,6 +100,8 @@ export type AutoReplyDelivery =
 export type AutoReplySender = (input: { conversationId: string; text: string; inboundMessageId: string; interactive?: InteractiveList }) => Promise<AutoReplyDelivery>;
 
 export interface ChannelOptions {
+  /** When the ticket is with the team, preserve the inbound without repeating an old action. */
+  holdActionInbound?: (input: ChannelMessageInput) => Promise<boolean>;
   trustActionUnavailable?: TrustActionStage;
   onTrustActionStage?: (stage:TrustActionStage) => void;
   technicalEmergency?: TechnicalEmergencyOptions;
@@ -348,9 +350,18 @@ export async function processChannelMessage(
 ): Promise<ChannelResponse> {
   const existing = await repository.findIdempotent(input.idempotencyKey);
   if (existing) return existing;
+  const greeting = publicGreeting(input.text);
+  const handedOff = options.doubtBot?.handedOff || options.trustActionUnavailable === "ticket_handoff";
+  if (handedOff && (greeting || currentTrustRequest(input.text, [], options.now ?? Date.now())))
+    return holdActionTurn(repository, input, options);
   const emergency = options.technicalEmergency;
-  if (emergency && publicGreeting(input.text))
+  if (emergency && greeting)
     return processProtectedTechnicalTurn(repository, input, { ...emergency, replyKind: "greeting" });
+  if (greeting && agentMode(options)) {
+    const daypart = explicitSupportDaypart(greeting);
+    const opened = daypart ? daypart.charAt(0).toUpperCase() + daypart.slice(1) : "Olá";
+    return currentTurnClarification(repository, input, metrics, options, `${opened}! Aqui é o suporte da BBNET. Como posso ajudar?`);
+  }
   if (emergency && explicitUnverifiedOrderFollowup(input.text))
     return processProtectedTechnicalTurn(repository, input, { ...emergency, reviewReason: "guard_unverified_os_followup" });
   const complaint = emergency && currentTechnicalComplaint(input.text);
@@ -498,7 +509,7 @@ export async function processChannelMessage(
     const question = menuIntent ? TRIAGE_MENU.find((option) => option.intent === menuIntent)?.label ?? input.text : input.text;
     const answered = agent
       ? await doubtBotTurn(repository, input, metrics, options, options.doubtBot, { ...classified, intent: topic }, contextForSupport(historyRows).slice(-AGENT_HISTORY_TURNS), question,
-        { task: agentTask(topic, { identified: context?.identified }), facts: context?.facts ?? [] })
+        { task: agentTask(topic, { identified: context?.identified }), facts: context?.facts ?? [], rows: historyRows })
       : await doubtBotTurn(repository, input, metrics, options, options.doubtBot, classified, contextForClassifier(historyRows), question);
     if (answered) return answered;
   }
@@ -564,6 +575,49 @@ ${footer}` : opened;
   return response;
 }
 
+const normalizedActionText = (text: string) => text.normalize("NFD").replace(/\p{M}/gu, "").toLowerCase().trim().replace(/\s+/g, " ");
+const trustRequestVerb = /\b(?:pode(?:riam?|m)?\s+(?:desbloquear|liberar)|consegue\s+(?:desbloquear|liberar)|quero\s+(?:desbloquear|liberar|o desbloqueio|a liberacao)|preciso\s+(?:desbloquear|liberar|do desbloqueio|da liberacao)|(?:libera|libere|desbloqueia|desbloqueie))\b/;
+const trustTarget = /\b(?:internet|conexao|sinal|(?:por|de|em) confianca|(?:liberacao|desbloqueio) temporari[oa])\b/;
+const unrelatedAction = /\b(?:nao|nem)\s+(?:(?:quero|pode|precisa|tente)\s+)?(?:me\s+)?(?:desbloquear|liberar|desbloqueie|libere|libera|desbloqueia)\b|\b(?:se eu pedir|como faco para|como funciona|o que significa|esquece|desisti|na verdade (?:quero|preciso)|era (?:so|um teste)|nao (?:e|era) para|(?:quero|manda|envie|me passa)\s+(?:(?:o|a|um|uma|meu|minha)\s+)?(?:pix|boleto|segunda via))\b/;
+
+export function currentTrustRequest(text: string, rows: ChannelMessageRow[], now: number): boolean {
+  const current = normalizedActionText(text);
+  const explicit = (value: string) => !unrelatedAction.test(value) && trustRequestVerb.test(value) && trustTarget.test(value);
+  if (explicit(current)) return true;
+  // A bare date only continues the last explicit request and a recent visible question;
+  // it never substitutes the separate verified holder's authorization.
+  if (!/^(?:(?:pago|vou pagar|so consigo pagar) )?(?:amanha|depois de amanha|hoje mais tarde|outro dia|mais tarde|segunda|terca|quarta|quinta|sexta|sabado|domingo|(?:dia )?\d{1,2}\/\d{1,2}(?:\/\d{2,4})?)[.! ]*$/.test(current)) return false;
+  const [request, prompt] = rows.filter(row => row.role !== SUGGESTION_ROLE).slice(-2);
+  const recent = (row: ChannelMessageRow) => {
+    const stamp = Date.parse(row.createdAt ?? "");
+    return Number.isFinite(stamp) && stamp <= now && now - stamp <= 5 * 60_000;
+  };
+  return request?.role === "customer" && prompt?.role === "agent" && isAiSender(prompt.sentBy)
+    && recent(request) && recent(prompt) && explicit(normalizedActionText(request.content))
+    && /\b(?:quando|qual dia|que dia)\b.*\b(?:pagar|pagamento)\b[^?]*\?/i.test(normalizedActionText(prompt.content));
+}
+
+async function holdActionTurn(repository: ChannelRepository, input: ChannelMessageInput, options: ChannelOptions): Promise<ChannelResponse> {
+  const response = { response: null, autoReply: false, status: "human_queue_held", handoff: true, correlationId: input.correlationId };
+  if (options.holdActionInbound) {
+    if (!await options.holdActionInbound(input)) return await repository.findIdempotent(input.idempotencyKey) ?? response;
+  } else await repository.saveMessages(CHANNEL_NAME, input.externalConversationId, [{
+    role: "customer", content: input.storedText ?? input.text, correlationId: input.correlationId, externalMessageId: input.idempotencyKey,
+  }]);
+  await repository.saveIdempotency(input.idempotencyKey, CHANNEL_NAME, input.externalConversationId, response);
+  return response;
+}
+
+async function currentTurnClarification(repository: ChannelRepository, input: ChannelMessageInput, metrics: SupportMetricsRepository | undefined, options: ChannelOptions, text: string): Promise<ChannelResponse> {
+  const delivery = await deliver(options, input, text);
+  return recordTurn(repository, input, metrics, {
+    content: delivery.sent ? delivery.text ?? text : text, delivery, status: delivery.sent ? AUTO_REPLIED_STATUS : SUGGESTED_STATUS,
+    intent: "general_information", handoff: false, handoffReason: null,
+    classified: { intent: "general_information", confidence: 1, source: "flow" },
+    label: "Resposta à mensagem atual", sender: agentSender(options, false),
+  });
+}
+
 /**
  * O turno do robô de dúvidas. `undefined` = não houve resposta do robô (sem trecho
  * na base, n8n fora, texto reprovado): o canal segue o caminho normal. Falha tem
@@ -578,10 +632,10 @@ async function doubtBotTurn(
   classified: Classification,
   history: ChatMessage[],
   question: string = input.text,
-  agentInput?: { task: string; facts: string[] },
+  agentInput?: { task: string; facts: string[]; rows: ChannelMessageRow[] },
 ): Promise<ChannelResponse | undefined> {
   let result: DoubtBotResult;
-  try { result = await bot.answer({ question, intent: classified.intent, history, ...agentInput }); } catch { result = { kind: "failed", reason: "Erro inesperado no robô de dúvidas." }; }
+  try { result = await bot.answer({ question, intent: classified.intent, history, ...(agentInput ? { task: agentInput.task, facts: agentInput.facts } : {}) }); } catch { result = { kind: "failed", reason: "Erro inesperado no robô de dúvidas." }; }
   if (result.kind === "failed") {
     await repository.audit({
       correlationId: input.correlationId, entity: `conversation:${input.externalConversationId}`,
@@ -596,6 +650,10 @@ async function doubtBotTurn(
   // "ficou registrado" do rodapé só é dito depois de gravado. Daí a conversa fica na fila da equipe.
   // Pedido já registrado neste atendimento: não registra de novo nem repete a ficha, só confirma que está anotado.
   const trustAction = !!bot.agent && result.action === "trust_unlock";
+  if (trustAction && (bot.handedOff || options.trustActionUnavailable === "ticket_handoff"))
+    return holdActionTurn(repository, input, options);
+  if (trustAction && !currentTrustRequest(input.text, agentInput?.rows ?? [], options.now ?? Date.now()))
+    return currentTurnClarification(repository, input, metrics, options, "Só para confirmar: o que você precisa agora?");
   const already = !trustAction && !!bot.agent && result.state === "request_complete" && !!options.triage?.context?.().registered;
   if (already) result = { ...result, text: "Já está anotado, tá bom? A equipe da BBNET continua por aqui. Se precisar de mais alguma coisa, é só me chamar.", state: "ongoing" };
   const request = !trustAction && !!bot.agent && result.state === "request_complete";
@@ -610,7 +668,9 @@ async function doubtBotTurn(
     let stage: TrustActionStage = options.trustActionUnavailable ?? "hook_missing";
     if (options.triage?.trustUnlock) {
       try {
-        const unlock = await options.triage.trustUnlock(result.promisedDate, input.text);
+        const promisedDate = result.promisedDate && normalizedActionText(input.text).includes(normalizedActionText(result.promisedDate))
+          ? result.promisedDate : undefined;
+        const unlock = await options.triage.trustUnlock(promisedDate, input.text);
         text = unlock?.text;
         stage = unlock ? trustOutcomeStage(unlock.status) : options.trustActionUnavailable ?? "no_outcome";
       } catch { stage = "hook_error"; }

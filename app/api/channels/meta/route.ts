@@ -398,6 +398,9 @@ export async function POST(request: Request) {
           triage: triage?.hooks,
           trustActionUnavailable: trustScope !== "eligible" ? trustScope : !provider ? "ixc_provider_missing"
             : !triage ? "triage_missing" : triage.handedOff ? "ticket_handoff" : undefined,
+          holdActionInbound: (held) => reserveTechnicalInbound(db, CHANNEL_NAME, {
+            ...held, text: held.storedText ?? held.text.replace(/(?<!\d)(?:\d[.\-/ ]*){11,14}(?!\d)/g, "[documento omitido]"),
+          }),
           onTrustActionStage: (stage:TrustActionStage) => console.info(trustStageMarker(stage)),
           // A faixa protegida tem uma segunda porta, dentro do atendimento normal: com estas opções o canal desvia
           // "oi", "sem internet" e qualquer intenção técnica para ela (e ela cala no que não reconhece). Desligada a

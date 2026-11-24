@@ -411,7 +411,7 @@ test("falha de contexto da liberação tem motivo técnico fixo e não fala em r
   const n8n=async body=>/25\/11/.test(body.question)?{answer:"Pode confirmar a data exata mais uma vez?",state:"ongoing",action:"trust_unlock"}:n8nPadrao(body);
   const f=await montar({n8n,lookup:async()=>({id:"80"}), trustActionUnavailable:"sender_unverified", onTrustActionStage:stage=>sent.push(stage)});
   await f.receber("oi");
-  await f.receber("25/11");
+  await f.receber("Pode liberar minha internet? Pago 25/11");
   assert.deepEqual(sent,["sender_unverified"]);
   assert.match(f.textos().at(-1),/Não tenho uma confirmação do sistema/);
   assert.doesNotMatch(f.textos().at(-1),/recus|data exata|25\/11/);
@@ -434,4 +434,61 @@ test("faixa protegida do fluxo técnico: ligada por padrão, desligável por cha
   assert.equal(protectedLaneEnabled({ FEATURE_PROTECTED_TECHNICAL_LANE: "false" }), false);
   for (const desligado of ["false", "False", "FALSE", " false ", "\"false\"", "'false'", "0", "off", "no"]) assert.equal(protectedLaneEnabled({ FEATURE_PROTECTED_TECHNICAL_LANE: desligado }), false, `desliga com ${JSON.stringify(desligado)}`);
   for (const ligado of ["", "true", "abc", "1", undefined]) assert.equal(protectedLaneEnabled({ FEATURE_PROTECTED_TECHNICAL_LANE: ligado }), true, `mantém ligada com ${JSON.stringify(ligado)}`);
+});
+
+
+test("uma saudação nova não herda pedido de confiança anterior na conversa autônoma", async () => {
+  let attempts = 0;
+  const f = await montar({
+    lookup: async () => ({id:"80"}),
+    trustUnlock: async () => { attempts++; return {status:"needs_cpf",text:"Confirme o titular."}; },
+    n8n: async () => ({answer:"Vou liberar.",state:"request_complete",action:"trust_unlock"}),
+  });
+  await f.receber("Pode liberar minha internet? Pago amanhã");
+  const calls = f.chamadasN8n.length;
+  assert.equal(attempts,1);
+  await f.receber("boa noite");
+  assert.equal(attempts,1);
+  assert.equal(f.chamadasN8n.length,calls);
+  assert.match(f.textos().at(-1),/^Boa noite!/);
+  assert.doesNotMatch(f.textos().at(-1),/libera|CPF|protocolo/i);
+  assert.equal(f.ticket().selfService.step,"awaiting_cpf");
+});
+
+test("um modelo que confunde resposta curta, recusa ou mudança de assunto não aciona liberação nem OS", async () => {
+  let trust = 0, orders = 0;
+  const f = await montar({
+    lookup: async () => ({id:"80"}),
+    trustUnlock: async () => { trust++; return {status:"done",text:"liberado"}; },
+    serviceOrder: async () => { orders++; return {status:"success",orderId:"42"}; },
+    n8n: async input => /lentidao/.test(input.question) ? {answer:"A luz da caixinha está vermelha?",state:"ongoing"} : {answer:"Vou verificar a liberação.",state:"request_complete",summary:"abrir ordem",action:"trust_unlock"},
+  });
+  await f.receber("estou com lentidao na minha internet");
+  for (const message of ["sim", "não quero liberar minha internet", "na verdade quero saber meu plano", "amanhã", "como funciona o desbloqueio por confiança"]) {
+    await f.receber(message);
+    assert.doesNotMatch(f.textos().at(-1),/Liberei|agendei|Vou verificar a liberação|Não tenho uma confirmação do sistema/);
+  }
+  assert.ok(f.textos().some(text => /Só para confirmar/.test(text)), "a proposta sem respaldo deve ser descartada");
+  assert.equal(trust,0);
+  assert.equal(orders,0);
+});
+
+test("fila humana: recebe a saudação e a solicitação sem reenviar fallback de liberação nem autorizar ação", async () => {
+  let trust = 0;
+  const f = await montar({
+    n8n: async input => /liberar/.test(input.question) ? { answer:"Vou liberar.",state:"request_complete",action:"trust_unlock" } : n8nPadrao(input),
+    trustUnlock: async () => { trust++; return {status:"done",text:"liberado"}; },
+  });
+  await f.receber("como troco a senha do wifi");
+  assert.equal(f.ticket().stage,"handoff");
+  const sends = f.textos().length;
+  for (const message of ["boa noite", "Pode liberar minha internet?"]) {
+    const r = await f.receber(message);
+    assert.equal(r.status,"human_queue_held");
+    assert.equal(r.response,null);
+    assert.equal((await f.historico()).at(-1).content,message);
+  }
+  assert.equal(f.textos().length,sends);
+  assert.equal(trust,0);
+  assert.equal(f.ticket().stage,"handoff");
 });
