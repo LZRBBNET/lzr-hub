@@ -22,7 +22,11 @@ export async function GET(request: Request) {
   // O limite diário de conversas iniciadas e a qualidade do número: o teto real da cobrança.
   const phone = phoneId ? await getPhoneLimits(config, phoneId) : { ok: false as const, reason: "Falta META_PHONE_NUMBER_ID" };
   // Para onde a Meta entrega as mensagens: a URL do app, a da conta e a do número. A esperada é a deste próprio LZR.
-  const expectedCallback = `${new URL(request.url).origin}/api/channels/meta`;
+  // Atrás do proxy do Railway o servidor vê http://; o endereço público é sempre https (só localhost fica como está).
+  const url = new URL(request.url);
+  const host = request.headers.get("x-forwarded-host") ?? url.host;
+  const local = /^(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$/.test(host);
+  const expectedCallback = `${local ? url.protocol : "https:"}//${host}/api/channels/meta`;
   const routing = await getWebhookRouting(config, phoneId);
   const overrides = routing.ok ? [...routing.routing.apps.map((app) => app.overrideCallbackUri), routing.routing.phoneOverrideUri].filter((uri): uri is string => !!uri) : [];
   return NextResponse.json({
