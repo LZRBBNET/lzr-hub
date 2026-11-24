@@ -75,11 +75,24 @@ export function invoiceDraft(invoices: InvoicePreviewItem[], pix?: InvoiceSelfSe
   const lines = invoices.slice(0, 5).map((invoice) => `• vence ${invoice.dueAt ? day(invoice.dueAt) : "sem data"} — ${invoice.value !== null ? money(invoice.value) : "valor não informado"}${invoice.overdue ? " (vencida)" : ""}`);
   const first = invoices[0];
   // PIX primeiro: fatura de gateway (o caso da BBNET) não tem linha digitável no IXC.
+  // No backup de Itabaiana o cliente achava que o código era link ("não consigo pagar por esse link"): a explicação
+  // vai antes do código, e o código fica por último para sair numa mensagem só dele (`splitPixCode`).
   const code = pix && pix.invoiceId === first.id
-    ? `\n\nPIX copia e cola da que vence primeiro${first.value !== null ? ` (${money(first.value)})` : ""}:\n${pix.copyPaste}`
+    ? `\n\nPara pagar, copie o código da próxima mensagem e cole no aplicativo do seu banco, na opção *Pix Copia e Cola* (não é link).\nPIX copia e cola da que vence primeiro${first.value !== null ? ` (${money(first.value)})` : ""}:\n${pix.copyPaste}`
     : first.paymentCode ? `\n\nLinha digitável da que vence primeiro:\n${first.paymentCode}` : "";
   const intro = invoices.length === 1 ? "Titular confirmado! Você tem 1 fatura em aberto:" : `Titular confirmado! Você tem ${invoices.length} faturas em aberto:`;
   return `${intro}\n${lines.join("\n")}${code}`;
+}
+
+/**
+ * Código PIX no fim do texto sai numa mensagem só dele. Copiar uma mensagem do WhatsApp copia a mensagem inteira:
+ * com o texto junto, o banco recusa o código. A atendente de Itabaiana manda o código sozinho ~3 mil vezes no backup.
+ */
+export function splitPixCode(text: string): { body: string; code: string } | undefined {
+  const match = /\n(000201\S{20,})\s*$/.exec(text);
+  if (!match) return undefined;
+  const body = text.slice(0, match.index).trim();
+  return body ? { body, code: match[1] } : undefined;
 }
 
 export const INVOICE_STEP_LABELS: Record<InvoiceStep, string> = {

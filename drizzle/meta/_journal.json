@@ -183,6 +183,13 @@
       "when": 1795529315044,
       "tag": "0025_technician_routes",
       "breakpoints": true
+    },
+    {
+      "idx": 26,
+      "version": "7",
+      "when": 1795553375740,
+      "tag": "0026_seed_knowledge_backup",
+      "breakpoints": true
     }
   ]
 }

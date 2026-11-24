@@ -16,6 +16,7 @@ import { DbReplyRepository } from "@/lib/platform/attendant-reply-service";
 import { metaAutoReplyOptions, metaAutoReplySender } from "@/lib/platform/meta-auto-reply-service";
 import { metaSendConfigFromEnv, sendTextMessage } from "@/lib/integrations/meta/cloud-client";
 import { downloadMetaMedia } from "@/lib/integrations/meta/media";
+import { AUDIO_REPLY, STICKER_GREETING, mediaReply } from "@/lib/platform/media-reply-shared";
 import { transcribeAudio, transcriptionConfigFromEnv } from "@/lib/integrations/openai/transcription";
 import { DbOutboundRepository } from "@/lib/platform/outbound-service";
 import { OPT_IN_REPLY, OPT_OUT_REPLY, canonicalPhone, isOptIn, isOptOut } from "@/lib/platform/outbound-shared";
@@ -49,10 +50,8 @@ import { logUnauthenticatedAction } from "@/lib/platform/audit-log";
  * `FEATURE_META_WHATSAPP` liga esta rota. A flag existia no `.env` desde o
  * início do projeto sem nada por trás; agora tem.
  */
-/** O cliente mandou áudio e a IA não o ouve: pede para escrever, em linguagem simples. */
 /** Marca na tela que a fala do cliente era áudio: o atendente sabe que pode haver erro de transcrição. */
 const AUDIO_TRANSCRIBED_PREFIX = "[Áudio transcrito]";
-const AUDIO_REPLY = "Recebi seu áudio, mas aqui eu só consigo ler mensagem escrita. Pode me escrever rapidinho o que está acontecendo?";
 const metaEnabled = () => process.env.FEATURE_META_WHATSAPP === "true";
 const autoReplyEnabled = () => process.env.FEATURE_N8N_AUTOREPLY === "true";
 /** A IA manda vencimento, valor e linha digitável ao cliente. Nasce desligada, como toda flag com efeito no mundo. */
@@ -412,12 +411,17 @@ export async function POST(request: Request) {
       results.push(await recordUnsupportedMessage(channel, {
         externalConversationId: message.phone, idempotencyKey: message.messageId, correlationId, kind: message.kind, caption: message.caption,
       }));
-      // Áudio: a IA ainda não o transcreve. No modo autônomo ela avisa e pede para escrever, em vez de deixar o cliente sem resposta.
-      // Só na primeira entrega do webhook e sem humano à frente da conversa.
-      if (firstDelivery && message.kind === "audio" && agentConfig && sendConfig && await botMayReplyNow(new DbConversationStateRepository(db), CHANNEL_NAME, message.phone).catch(() => false)) {
-        const reply = AUDIO_REPLY;
-        const sent = await sendTextMessage(sendConfig, { to: message.phone, text: reply });
-        if (sent.ok) await channel.saveMessages(CHANNEL_NAME, message.phone, [{ role: "agent", content: reply, correlationId, externalMessageId: sent.messageId, sentBy: "ia-agente" }]);
+      // Áudio sem transcrição, foto, vídeo, documento ou figurinha: no modo autônomo a IA responde (pede para escrever,
+      // ou cumprimenta quem abriu com figurinha) em vez de deixar o cliente sem nada. Só na primeira entrega do webhook,
+      // sem humano à frente da conversa e uma vez por rajada — a reserva cobre as fotos que chegam no mesmo segundo.
+      if (firstDelivery && agentConfig && sendConfig && await botMayReplyNow(new DbConversationStateRepository(db), CHANNEL_NAME, message.phone).catch(() => false)) {
+        const history = (await channel.getHistory(CHANNEL_NAME, message.phone).catch(() => [])).filter((row) => row.role !== "suggestion");
+        const reply = mediaReply(message.kind, history, Date.now());
+        const burst = `media-reply:${message.phone}:${reply === STICKER_GREETING ? "sticker" : reply === AUDIO_REPLY ? "audio" : "file"}:${Math.floor(Date.now() / 600000)}`;
+        if (reply && await new DbReplyRepository(db).claim(burst, CHANNEL_NAME, message.phone, "media_reply").catch(() => false)) {
+          const sent = await sendTextMessage(sendConfig, { to: message.phone, text: reply });
+          if (sent.ok) await channel.saveMessages(CHANNEL_NAME, message.phone, [{ role: "agent", content: reply, correlationId, externalMessageId: sent.messageId, sentBy: "ia-agente" }]);
+        }
       }
     }
     await rememberContactName(new DbContactsRepository(db), CHANNEL_NAME, message.phone, message.profileName);
