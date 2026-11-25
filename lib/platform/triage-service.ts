@@ -518,7 +518,7 @@ export function triageHooks(repository: TicketRepository, ticket: TicketRow, dia
     context: () => {
       const facts = !mode.internalDiagnosisOnly && diagnosisNow ? [...diagnosisNow.facts, `Leitura do sistema: ${diagnosisNow.next}`] : [];
       if (intakeNow && !mode.internalDiagnosisOnly) facts.push(`Pedido já registrado neste atendimento (${intakeNow.intent}): ${intakeNow.summary}`);
-      return { topic: ticket.intent, identified: ticket.identification === "identified" && !!ticket.ixcCustomerId, facts, registered: !!intakeNow, offHours: !!mode.offHours };
+      return { topic: ticket.intent, identified: ticket.identification === "identified" && !!ticket.ixcCustomerId, facts, registered: !!intakeNow, offHours: !!mode.offHours, protocol: ticket.protocol, resumesAt: nextOpeningText(at()) };
     },
     closeTicket: async () => {
       await repository.update(ticket.id, { status: "closed", closedAt: at().toISOString(), closedReason: "resolved" });

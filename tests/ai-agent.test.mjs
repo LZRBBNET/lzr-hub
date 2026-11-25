@@ -164,6 +164,33 @@ test("fora do horário a IA atende sozinha: o roteiro diz que não há atendente
   assert.equal(chamadas[0].task, agentTask("human_handoff"), "no horário, pode passar ao atendente se precisar");
 });
 
+test("fala de liberação sem pedido claro: a IA pergunta direto, e o 'sim' seguinte pede a liberação", async () => {
+  let attempts = 0;
+  const f = await montar({
+    lookup: async () => ({ id: "80" }),
+    trustUnlock: async () => { attempts++; return { status: "needs_cpf", text: "Confirme o CPF do titular." }; },
+    n8n: async () => ({ answer: "Vou verificar.", state: "ongoing", action: "trust_unlock" }),
+  });
+  await f.receber("e se eu pagar sexta, libera?");
+  assert.equal(attempts, 0);
+  assert.match(f.textos().at(-1), /você quer que eu peça a liberação da sua internet em confiança/);
+  await f.receber("sim");
+  assert.equal(attempts, 1, "o sim à pergunta é o pedido");
+});
+
+test("fora do horário, quem está na fila não fica sem resposta: protocolo e quando a equipe volta (25/11)", async () => {
+  const visita = async (body) => /visita/.test(body.question) ? { answer: "Anotado.", state: "request_complete", summary: "Visita técnica\nMelhor período: tarde" } : n8nPadrao(body);
+  const f = await montar({ lookup: async () => ({ id: "80" }), n8n: visita, offHours: true });
+  await f.receber("quero agendar uma visita de tarde");
+  assert.equal(f.ticket().stage, "handoff");
+  const r = await f.receber("boa noite");
+  assert.notEqual(r.status, "human_queue_held");
+  assert.match(f.textos().at(-1), /^Boa noite! Seu atendimento está registrado no protocolo \d+, e a equipe da BBNET continua .+, por aqui\./);
+  assert.equal((await f.historico()).at(-1).sentBy, AI_SENDER, "a conversa continua na fila para a equipe");
+  await f.receber("pode liberar minha internet?");
+  assert.match(f.textos().at(-1), /escreva "segunda via" que eu mando o PIX/);
+});
+
 test("pedido de atendente: a IA pergunta o assunto em vez de passar a conversa", async () => {
   const { receber, textos, chamadasN8n, ticket } = await montar();
   await receber("quero falar com um atendente");

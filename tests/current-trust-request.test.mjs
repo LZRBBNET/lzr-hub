@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { currentTrustRequest } from "../lib/platform/n8n-channel-service.ts";
+import { TRUST_CONFIRM_QUESTION, currentTrustRequest } from "../lib/platform/n8n-channel-service.ts";
 import { AI_AGENT_SENDER } from "../lib/platform/conversation-state-shared.ts";
 
 const now = Date.parse("2026-11-24T23:45:00Z");
@@ -59,4 +59,24 @@ test("reentrega simultânea na fila conserva uma fala sem chamar IA nem enviar",
   assert.equal((await repo.getHistory(CHANNEL_NAME,input.externalConversationId)).length,1);
   assert.equal(replies,0);
   assert.equal(modelCalls,0);
+});
+
+test("jeitos reais de pedir liberação (backup de Itabaiana) são reconhecidos; relato de pagamento e dúvida não", () => {
+  for (const text of ["Pode desbloquear, por favor", "Poderia liberar hoje?", "Tem como liberar aí porque tá sem internet aqui",
+    "Liberar por confiança", "libera pra mim que pago sexta", "me libera em confiança por favor", "Preciso de liberação", "Se puder o desbloqueio às 14"]) {
+    assert.equal(currentTrustRequest(text, [], now), true, text);
+  }
+  for (const text of ["Mas pagando hoje já libera né?", "Já realizei o pagamento no pix minha Internet não desbloqueou", "Já liberou aí",
+    "como funciona o desbloqueio por confiança", "não quero liberar minha internet", "Pagando agora, libera automático?", "sim", "boa noite", "amanhã"]) {
+    assert.equal(currentTrustRequest(text, [], now), false, text);
+  }
+});
+
+test("'sim' só vale como pedido quando responde à pergunta de confirmação recente da IA", () => {
+  const asked = row("agent", TRUST_CONFIRM_QUESTION, 60_000, AI_AGENT_SENDER);
+  assert.equal(currentTrustRequest("sim", [asked], now), true);
+  assert.equal(currentTrustRequest("pode sim", [asked], now), true);
+  assert.equal(currentTrustRequest("sim", [row("agent", TRUST_CONFIRM_QUESTION, 20 * 60_000, AI_AGENT_SENDER)], now), false, "pergunta velha");
+  assert.equal(currentTrustRequest("sim", [row("agent", "A luz está vermelha?", 60_000, AI_AGENT_SENDER)], now), false, "sim a outra pergunta");
+  assert.equal(currentTrustRequest("sim", [row("agent", TRUST_CONFIRM_QUESTION, 60_000, "fulana@bbnet")], now), false, "pergunta de atendente não conta");
 });

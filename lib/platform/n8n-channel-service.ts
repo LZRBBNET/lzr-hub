@@ -207,7 +207,7 @@ export interface TriageHooks {
   footer(context?: { clarifying?: boolean; handoff?: boolean; request?: string; serviceOrder?: { id: string; existing?: boolean } }): string | undefined;
   /** Modo autônomo: o assunto do atendimento, se o cliente é identificado e o que o sistema sabe (diagnóstico, pedido já feito). */
   /** `offHours`: fora do horário a IA atende sozinha (ver `OFF_HOURS` em `agent-playbook-shared.ts`). */
-  context?(): { topic: string | null; identified: boolean; facts: string[]; registered?: boolean; offHours?: boolean };
+  context?(): { topic: string | null; identified: boolean; facts: string[]; registered?: boolean; offHours?: boolean; protocol?: string | null; resumesAt?: string };
   /** Modo autônomo: a IA resolveu o assunto — fecha o atendimento, para a próxima fala abrir outro em vez de continuar um já encerrado. */
   closeTicket?(): Promise<void>;
   /** Modo autônomo: grava o pedido que a IA deixou pronto para a equipe. */
@@ -353,8 +353,20 @@ export async function processChannelMessage(
   if (existing) return existing;
   const greeting = publicGreeting(input.text);
   const handedOff = options.doubtBot?.handedOff || options.trustActionUnavailable === "ticket_handoff";
-  if (handedOff && (greeting || currentTrustRequest(input.text, [], options.now ?? Date.now())))
+  const heldTrust = handedOff && !greeting && currentTrustRequest(input.text, [], options.now ?? Date.now());
+  if (handedOff && (greeting || heldTrust)) {
+    // No horário, o atendente vê a fila e responde (silêncio de propósito, para não repetir ação antiga). Fora do
+    // horário não há ninguém: a IA atende sozinha (decisão de 25/11) e diz onde está o pedido e quando a equipe volta.
+    const context = agentMode(options) ? options.triage?.context?.() : undefined;
+    if (context?.offHours && context.resumesAt) {
+      const daypart = greeting ? explicitSupportDaypart(greeting) : undefined;
+      const hello = daypart ? `${daypart.charAt(0).toUpperCase()}${daypart.slice(1)}! ` : greeting ? "Olá! " : "";
+      const where = `Seu atendimento está registrado${context.protocol ? ` no protocolo ${context.protocol}` : ""}, e a equipe da BBNET continua ${context.resumesAt}, por aqui.`;
+      const next = heldTrust ? " Se quiser pagar agora, escreva \"segunda via\" que eu mando o PIX." : " Enquanto isso, posso ajudar em mais alguma coisa?";
+      return currentTurnClarification(repository, input, metrics, options, `${hello}${where}${next}`, true);
+    }
     return holdActionTurn(repository, input, options);
+  }
   const emergency = options.technicalEmergency;
   if (emergency && greeting)
     return processProtectedTechnicalTurn(repository, input, { ...emergency, replyKind: "greeting" });
@@ -579,12 +591,29 @@ ${footer}` : opened;
 const normalizedActionText = (text: string) => text.normalize("NFD").replace(/\p{M}/gu, "").toLowerCase().trim().replace(/\s+/g, " ");
 const trustRequestVerb = /\b(?:pode(?:riam?|m)?\s+(?:desbloquear|liberar)|consegue\s+(?:desbloquear|liberar)|quero\s+(?:desbloquear|liberar|o desbloqueio|a liberacao)|preciso\s+(?:desbloquear|liberar|do desbloqueio|da liberacao)|(?:libera|libere|desbloqueia|desbloqueie))\b/;
 const trustTarget = /\b(?:internet|conexao|sinal|(?:por|de|em) confianca|(?:liberacao|desbloqueio) temporari[oa])\b/;
-const unrelatedAction = /\b(?:nao|nem)\s+(?:(?:quero|pode|precisa|tente)\s+)?(?:me\s+)?(?:desbloquear|liberar|desbloqueie|libere|libera|desbloqueia)\b|\b(?:se eu pedir|como faco para|como funciona|o que significa|esquece|desisti|na verdade (?:quero|preciso)|era (?:so|um teste)|nao (?:e|era) para|(?:quero|manda|envie|me passa)\s+(?:(?:o|a|um|uma|meu|minha)\s+)?(?:pix|boleto|segunda via))\b/;
+const unrelatedAction = /\b(?:nao|nem)\s+(?:(?:quero|pode|precisa|tente)\s+)?(?:me\s+)?(?:desbloquear|liberar|desbloqueie|libere|libera|desbloqueia)\b|\b(?:se eu pedir|como faco para|como funciona|o que significa|esquece|desisti|na verdade (?:quero|preciso)|era (?:so|um teste)|nao (?:e|era) para|(?:quero|manda|envie|me passa)\s+(?:(?:o|a|um|uma|meu|minha)\s+)?(?:pix|boleto|segunda via))\b|\b(?:pagando|se (?:eu )?pagar|depois (?:que|de) (?:eu )?pagar|quando (?:eu )?pagar|ja paguei|paguei|fiz o pagamento|realizei o pagamento|ja libera|liberou|desbloqueou)\b/;
+/**
+ * Como o cliente pede de verdade. No backup de Itabaiana (1.018 falas com "liberar"/"desbloquear") a forma acima
+ * reconhecia 11%: "Pode desbloquear, por favor", "Poderia liberar hoje?", "Tem como liberar aí", "libera pra mim",
+ * "Liberar por confiança" ouviam "o que você precisa agora?". Aqui o verbo basta, sem "internet" junto; a negação,
+ * o "já paguei e não liberou" e a pergunta sobre como funciona continuam de fora (`unrelatedAction`).
+ */
+const trustRequestPhrase = /\b(?:(?:pode|poderia|podem|poderiam|puder|puderem|consegue|conseguem|conseguiria|da pra|da para|tem como|teria como|tinha como|quero|queria|gostaria de|preciso|precisava|precisaria)\s+(?:me\s+)?(?:desbloquear|liberar|o desbloqueio|a liberacao|do desbloqueio|da liberacao|de liberacao|de desbloqueio|uma liberacao|um desbloqueio)|(?:libera|libere|desbloqueia|desbloqueie)\s+(?:pra mim|para mim|ai|aqui|a internet|minha internet|a minha|por favor|hoje|agora|em confianca|por confianca)|(?:liberar|liberacao|desbloquear|desbloqueio)\s+(?:por|de|em)\s+confianca)\b|^(?:me\s+)?(?:libera|libere|desbloqueia|desbloqueie)\b|\bme\s+(?:libera|libere|desbloqueia|desbloqueie)\b/;
+/** A pergunta que a IA faz quando a frase fala de liberação mas não é um pedido claro. O "sim" a ela vale como pedido. */
+export const TRUST_CONFIRM_QUESTION = "Só para confirmar: você quer que eu peça a liberação da sua internet em confiança? É só responder sim ou não.";
+const confirmsTrust = /^(?:sim|isso|isso mesmo|quero|quero sim|pode|pode sim|pode ser|por favor|sim por favor|sim pode)[.! ]*$/;
 
 export function currentTrustRequest(text: string, rows: ChannelMessageRow[], now: number): boolean {
   const current = normalizedActionText(text);
-  const explicit = (value: string) => !unrelatedAction.test(value) && trustRequestVerb.test(value) && trustTarget.test(value);
+  const explicit = (value: string) => !unrelatedAction.test(value) && (trustRequestPhrase.test(value) || (trustRequestVerb.test(value) && trustTarget.test(value)));
   if (explicit(current)) return true;
+  // "Sim" só vale como resposta à pergunta de confirmação, feita há pouco e vista pelo cliente.
+  if (confirmsTrust.test(current)) {
+    const last = rows.filter(row => row.role !== SUGGESTION_ROLE).at(-1);
+    const stamp = Date.parse(last?.createdAt ?? "");
+    return last?.role === "agent" && isAiSender(last.sentBy) && last.content.startsWith(TRUST_CONFIRM_QUESTION)
+      && Number.isFinite(stamp) && stamp <= now && now - stamp <= 10 * 60_000;
+  }
   // A bare date only continues the last explicit request and a recent visible question;
   // it never substitutes the separate verified holder's authorization.
   if (!/^(?:(?:pago|vou pagar|so consigo pagar) )?(?:amanha|depois de amanha|hoje mais tarde|outro dia|mais tarde|segunda|terca|quarta|quinta|sexta|sabado|domingo|(?:dia )?\d{1,2}\/\d{1,2}(?:\/\d{2,4})?)[.! ]*$/.test(current)) return false;
@@ -609,13 +638,13 @@ async function holdActionTurn(repository: ChannelRepository, input: ChannelMessa
   return response;
 }
 
-async function currentTurnClarification(repository: ChannelRepository, input: ChannelMessageInput, metrics: SupportMetricsRepository | undefined, options: ChannelOptions, text: string): Promise<ChannelResponse> {
+async function currentTurnClarification(repository: ChannelRepository, input: ChannelMessageInput, metrics: SupportMetricsRepository | undefined, options: ChannelOptions, text: string, keepInQueue = false): Promise<ChannelResponse> {
   const delivery = await deliver(options, input, text);
   return recordTurn(repository, input, metrics, {
     content: delivery.sent ? delivery.text ?? text : text, delivery, status: delivery.sent ? AUTO_REPLIED_STATUS : SUGGESTED_STATUS,
     intent: "general_information", handoff: false, handoffReason: null,
     classified: { intent: "general_information", confidence: 1, source: "flow" },
-    label: "Resposta à mensagem atual", sender: agentSender(options, false),
+    label: "Resposta à mensagem atual", sender: agentSender(options, keepInQueue),
   });
 }
 
@@ -653,8 +682,13 @@ async function doubtBotTurn(
   const trustAction = !!bot.agent && result.action === "trust_unlock";
   if (trustAction && (bot.handedOff || options.trustActionUnavailable === "ticket_handoff"))
     return holdActionTurn(repository, input, options);
-  if (trustAction && !currentTrustRequest(input.text, agentInput?.rows ?? [], options.now ?? Date.now()))
-    return currentTurnClarification(repository, input, metrics, options, "Só para confirmar: o que você precisa agora?");
+  if (trustAction && !currentTrustRequest(input.text, agentInput?.rows ?? [], options.now ?? Date.now())) {
+    // Fala de liberação sem pedido claro ("mas pagando hoje já libera?"): pergunta direto. Sem falar disso ("sim" a outra
+    // pergunta, mudança de assunto, recusa): o modelo inventou a ação, e a pergunta é aberta.
+    const current = normalizedActionText(input.text);
+    const aboutUnlock = /liber|desbloq|confianca/.test(current) && !/\b(?:nao|nem)\b|como funciona|o que significa|esquece|desisti/.test(current);
+    return currentTurnClarification(repository, input, metrics, options, aboutUnlock ? TRUST_CONFIRM_QUESTION : "Só para confirmar: o que você precisa agora?");
+  }
   const already = !trustAction && !!bot.agent && result.state === "request_complete" && !!options.triage?.context?.().registered;
   if (already) result = { ...result, text: "Já está anotado, tá bom? A equipe da BBNET continua por aqui. Se precisar de mais alguma coisa, é só me chamar.", state: "ongoing" };
   const request = !trustAction && !!bot.agent && result.state === "request_complete";
