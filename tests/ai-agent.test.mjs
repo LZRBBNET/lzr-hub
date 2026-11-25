@@ -382,6 +382,14 @@ test("a IA fala simples e se apresenta como suporte da BBNET", () => {
   assert.match(agentTask("general_information"), /Aqui é o suporte da BBNET/);
 });
 
+test("a loja só entra no que é presencial, pelo endereço da base, nunca pelo telefone da loja", () => {
+  for (const intent of ["technical_wifi", "general_information", "sales_inquiry"]) {
+    const tarefa = agentTask(intent);
+    assert.match(tarefa, /Só indique ir à loja para o que é presencial/, intent);
+    assert.match(tarefa, /Nunca mande o cliente procurar a loja por telefone ou WhatsApp/, intent);
+  }
+});
+
 test("confirma CPF só para desbloqueio e aguarda nova solicitação antes de atuar no único contrato bloqueado", async () => {
   const customerId = "80", blockedId = "207", reads = [], writes = [];
   const deps = {
