@@ -190,6 +190,13 @@
       "when": 1795553375740,
       "tag": "0026_seed_knowledge_backup",
       "breakpoints": true
+    },
+    {
+      "idx": 27,
+      "version": "7",
+      "when": 1795609467486,
+      "tag": "0027_kb_senha_wifi",
+      "breakpoints": true
     }
   ]
 }

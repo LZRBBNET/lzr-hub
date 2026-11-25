@@ -55,7 +55,7 @@ const n8nPadrao = async (body) => {
   return "NAO_SEI";
 };
 
-async function montar({ n8n = n8nPadrao, lookup = async () => undefined, diagnose, serviceOrder, trustUnlock, invoice, trustIdentity, trustPromptDelivered, trustSentAt, trustActionUnavailable, onTrustActionStage } = {}) {
+async function montar({ n8n = n8nPadrao, lookup = async () => undefined, diagnose, serviceOrder, trustUnlock, invoice, trustIdentity, trustPromptDelivered, trustSentAt, trustActionUnavailable, onTrustActionStage, offHours = false } = {}) {
   const docs = new MemoryKnowledgeRepository();
   for (const [title, content] of DOCS) { const doc = await docs.create({ title, category: "geral", content }); await docs.publish(doc.id); }
   const channel = new MemoryChannelRepository();
@@ -70,7 +70,7 @@ async function montar({ n8n = n8nPadrao, lookup = async () => undefined, diagnos
   // Reproduz a rota da Meta com FEATURE_AI_AGENT: a IA fala sempre, em modo conversa.
   const receber = async (text) => {
     const wamid = `wamid.A${++n}`;
-    const triage = await startTriage(tickets, { channel: CHANNEL_NAME, conversationId: CLIENTE, lookup, diagnose, serviceOrder, trustUnlock, invoice, trustIdentity, trustPromptDelivered, trustInboundAt:trustSentAt ? trustSentAt(n) : new Date(Date.now() + n * 1000 - 500).toISOString(), now:Date.now() + n * 1000, offHours: false, agent: true });
+    const triage = await startTriage(tickets, { channel: CHANNEL_NAME, conversationId: CLIENTE, lookup, diagnose, serviceOrder, trustUnlock, invoice, trustIdentity, trustPromptDelivered, trustInboundAt:trustSentAt ? trustSentAt(n) : new Date(Date.now() + n * 1000 - 500).toISOString(), now:Date.now() + n * 1000, offHours, agent: true });
     const auto = await metaAutoReplyOptions({
       enabled: true, states, messages: channel, claims, config: metaConfig, channel: CHANNEL_NAME,
       delivery: { begin: async () => "t", finish: async () => {}, settleUncertain: async () => {} },
@@ -148,6 +148,20 @@ test("recusa não cala a IA: pedido não autorizado e, em seguida, ajuda com a i
   await receber("minha internet ta muito lenta");
   assert.equal(textos().length, 2, "a IA respondeu a pergunta seguinte");
   assert.match(textos()[1], /teste de velocidade/);
+});
+
+test("fora do horário a IA atende sozinha: o roteiro diz que não há atendente e proíbe prometer um (25/11)", async () => {
+  assert.doesNotMatch(agentTask("cancellation_risk"), /FORA DO HORÁRIO/, "no horário, o roteiro de sempre");
+  const fora = agentTask("cancellation_risk", { offHours: true });
+  assert.match(fora, /FORA DO HORÁRIO/);
+  assert.match(fora, /Nunca diga que vai chamar, transferir ou passar para um atendente/);
+  assert.match(fora, /request_complete/, "o que só a equipe executa continua registrado");
+  const { receber, chamadasN8n } = await montar({ offHours: true });
+  await receber("quero falar com um atendente");
+  assert.equal(chamadasN8n[0].task, agentTask("human_handoff", { offHours: true }), "a instrução chega ao modelo");
+  const { receber: noHorario, chamadasN8n: chamadas } = await montar({ offHours: false });
+  await noHorario("quero falar com um atendente");
+  assert.equal(chamadas[0].task, agentTask("human_handoff"), "no horário, pode passar ao atendente se precisar");
 });
 
 test("pedido de atendente: a IA pergunta o assunto em vez de passar a conversa", async () => {

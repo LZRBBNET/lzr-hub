@@ -310,8 +310,14 @@ async function transcribe() {
   if (!key) { console.error("Falta OPENAI_API_KEY."); process.exit(1); }
   const who = flag("quem", "cliente");
   const done = new Set(readJsonl(TRANSCRICOES).map((row) => row.id));
-  const todo = readJsonl(AUDIOS).filter((a) => (who === "todos" || !a.atendente) && !done.has(a.id)).slice(0, Number(flag("limite", "1000000")));
-  console.log(`Áudios a transcrever: ${todo.length} (${who}) | já feitos: ${done.size}`);
+  // `--desde`: só os áudios das conversas a partir dessa data (o resto do backup fica para depois, se valer).
+  const since = flag("desde");
+  const startedAt = new Map(readJsonl(CONVERSAS).map((c) => [c.id, c.startedAt]));
+  const todo = readJsonl(AUDIOS)
+    .filter((a) => (who === "todos" || !a.atendente) && !done.has(a.id) && (!since || (startedAt.get(a.conversa) ?? "") >= since))
+    .slice(0, Number(flag("limite", "1000000")));
+  const minutes = Math.round(todo.reduce((sum, a) => sum + (a.segundos ?? 0), 0) / 60);
+  console.log(`Áudios a transcrever: ${todo.length} (${who}${since ? `, desde ${since}` : ""}, ${minutes} min) | já feitos: ${done.size}`);
   let index = 0;
   let ok = 0;
   const workers = Array.from({ length: Number(flag("paralelo", "4")) }, async () => {
@@ -341,7 +347,7 @@ async function transcribe() {
       }
       // Falha não vira linha: a próxima rodada tenta de novo. Arquivo ausente vira, para não tentar para sempre.
       if (record.texto !== null || record.motivo === "arquivo não está na cópia") appendFileSync(TRANSCRICOES, `${JSON.stringify(record)}\n`);
-      if ((ok + 1) % 200 === 0) console.log(`  ${ok} transcritos`);
+      if (record.texto !== null && ok % 200 === 0) console.log(`  ${ok}/${todo.length} transcritos`);
     }
   });
   await Promise.all(workers);
