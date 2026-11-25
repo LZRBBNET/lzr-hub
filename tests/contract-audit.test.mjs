@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { classifyAddressNumber, evaluateContact } from "../lib/platform/contract-audit-shared.ts";
+import { classifyAddressNumber, evaluateContact, contractAuditRecheckFeedback } from "../lib/platform/contract-audit-shared.ts";
 import {
   BASELINE_CONTRACTS, MAX_IXC_CALLS_PER_RUN, MemoryContractAuditRepository, RECHECK_WINDOW_DAYS,
   contractFromRow, nextRecord, recheckContract, runContractAudit, stopReason,
@@ -114,6 +114,7 @@ test("o registro não guarda telefone nem e-mail do cliente", () => {
 function ixcFalso({ contracts = [], customers = {}, creators = {} } = {}) {
   const calls = { latest: 0, after: [], customer: [], creator: [] };
   const provider = {
+    async getContractForAudit(customerId, contractId) { return contracts.find((row) => row.id === contractId && row.id_cliente === customerId); },
     async getRecordCreator(table, recordId, authorizedCustomerId) {
       calls.creator.push({ table, recordId, authorizedCustomerId });
       const value = creators[recordId];
@@ -126,7 +127,7 @@ function ixcFalso({ contracts = [], customers = {}, creators = {} } = {}) {
       calls.customer.push(id);
       const value = customers[id];
       if (value instanceof Error) throw value;
-      return value;
+      return value ? { ...value, id } : undefined;
     },
   };
   return { provider, calls, contracts, customers, creators };
@@ -197,12 +198,12 @@ test("pendência é reconferida sozinha e vira 'corrigido' quando o cadastro é 
 });
 
 test("contrato certo não é reconferido, e pendência velha só pelo botão", async () => {
-  const ixc = ixcFalso({ customers: { 5: cliente({ email: "" }), 6: cliente() } });
+  const ixc = ixcFalso({ contracts: [contratoIxc(40, 5), contratoIxc(41, 6)], customers: { 5: cliente({ email: "" }), 6: cliente() } });
   const repository = new MemoryContractAuditRepository();
-  repository.cursor = 1;
+  repository.cursor = 41;
   const velho = new Date(Date.parse("2026-10-05T10:00:00Z") - (RECHECK_WINDOW_DAYS + 1) * 86_400_000).toISOString();
-  repository.records.set("40", nextRecord(undefined, { ...contrato, id: "40", customerId: "5" }, cliente({ email: "" }), velho));
-  repository.records.set("41", nextRecord(undefined, { ...contrato, id: "41", customerId: "6" }, cliente(), "2026-10-05T09:00:00Z"));
+  repository.records.set("40", nextRecord(undefined, { ...contrato, id: "40", customerId: "5" }, cliente({ id: "5", email: "" }), velho));
+  repository.records.set("41", nextRecord(undefined, { ...contrato, id: "41", customerId: "6" }, cliente({ id: "6" }), "2026-10-05T09:00:00Z"));
   const resultado = await runContractAudit({ repository, provider: ixc.provider, now: relogio("2026-10-05T10:00:00Z") }, { trigger: "tela" });
   assert.equal(resultado.rechecked, 0);
   assert.deepEqual(ixc.calls.customer, []);
@@ -344,4 +345,37 @@ test("o limitador do IXC diz quanto sobra sem consumir", async () => {
   assert.equal(limiter.remaining(), 1, "perguntar não gasta");
   agora = 61_000;
   assert.equal(limiter.remaining(), 3, "a janela anda e as consultas antigas saem");
+});
+
+test("reconferência sem vínculo atual não consulta cadastro nem sinaliza correção", async () => {
+  const ixc = ixcFalso({ contracts: [contratoIxc(100, 8)], customers: { 7: cliente() } });
+  const repository = new MemoryContractAuditRepository();
+  repository.records.set("100", nextRecord(undefined, contrato, cliente({ email: "" }), "2026-10-05T10:00:00.000Z"));
+  const record = await recheckContract({ repository, provider: ixc.provider }, "100");
+  assert.equal(record.status, "unverified");
+  assert.deepEqual(ixc.calls.customer, []);
+  assert.deepEqual(record.firstIssues.map((i) => i.code), ["sem_email"]);
+  assert.equal(contractAuditRecheckFeedback("100", record).tone, "warn");
+});
+
+test("resultado de outro titular não valida nem traz seus dados", () => {
+  const original = nextRecord(undefined, contrato, cliente({ email: "" }), "2026-10-05T10:00:00.000Z");
+  const rejected = nextRecord(original, contrato, cliente({ id: "8", razao: "OUTRO TITULAR" }), "2026-10-06T10:00:00.000Z");
+  assert.equal(rejected.status, "unverified");
+  assert.equal(rejected.customerName, original.customerName);
+  assert.deepEqual(rejected.firstIssues, original.firstIssues);
+  const corrected = nextRecord(rejected, contrato, cliente(), "2026-10-07T10:00:00.000Z");
+  assert.equal(corrected.status, "resolved");
+  const changed = nextRecord(original, { ...contrato, customerId: "8" }, undefined, "2026-10-07T10:00:00.000Z");
+  assert.equal(changed.customerName, null);
+  assert.deepEqual(changed.firstIssues, []);
+});
+
+test("campos omitidos não viram pendência confirmada em registros persistidos", () => {
+  const fields = cliente();
+  delete fields.email;
+  const record = nextRecord(undefined, contrato, fields, "2026-10-05T10:00:00.000Z");
+  assert.equal(record.status, "unverified");
+  assert.deepEqual(record.issues, []);
+  assert.deepEqual(record.firstIssues, []);
 });

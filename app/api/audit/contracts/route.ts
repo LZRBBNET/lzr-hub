@@ -39,6 +39,7 @@ export async function GET(request: Request) {
   const requested = new URL(request.url).searchParams.get("status") as AuditFilter | null;
   const filter: AuditFilter = requested && FILTERS.includes(requested) ? requested : "pending";
   const provider = getIxcRuntime().provider;
+  if (provider?.health().scope === "allowlist") return NextResponse.json({ available: true, items: [], ixc: "allowlist" });
   try {
     const repository = new DbContractAuditRepository(await getDb());
     const [items, counts, lastRun, byCreator] = await Promise.all([repository.list(filter, LIST_LIMIT), repository.counts(), repository.latestRun(), repository.pendingByCreator()]);
@@ -57,6 +58,10 @@ export async function POST(request: Request) {
   const provider = getIxcRuntime().provider;
   if (!provider) return NextResponse.json({ error: "A integração com o IXC está desligada neste ambiente." }, { status: 503 });
 
+  // Não iniciar lote nesta instalação. A prévia tem rota distinta.
+  if (body.action !== "recheck" && provider.health().scope !== "full-base") {
+    return NextResponse.json({ error: "Verificação em lote indisponível neste ambiente." }, { status: 403 });
+  }
   try {
     const repository = new DbContractAuditRepository(await getDb());
 

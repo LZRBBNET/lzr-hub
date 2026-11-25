@@ -684,6 +684,16 @@ export class IxcReadonlyProvider {
       this.cache.set(customerId,snapshot);this.emit("ixc.snapshot",correlationId,this.now()-started,"success",{partial:settled.some((item)=>item.status==="rejected")});return snapshot;
     }catch(error){this.emit("ixc.snapshot",correlationId,this.now()-started,"failed",{error:error instanceof Error?error.name:"unknown"});throw error;}
   }
+  /** Consulta cadastral exata: não exige contrato ativo e nunca reatribui o titular esperado. */
+  async getContractForAudit(customerId:string,contractId:string,correlationId:string){
+    if(!/^[1-9]\d{0,31}$/.test(customerId)||! /^[1-9]\d{0,31}$/.test(contractId))return undefined;
+    const page=await this.readPage("listContracts",endpoints.listContracts,"cliente_contrato.id",contractId,correlationId,2,customerId,
+      {oper:"=",gridParam:[{TB:"cliente_contrato.id_cliente",OP:"=",P:customerId}]});
+    const row=page.records[0];
+    if(!page.coverage.complete||page.coverage.total!==1||page.records.length!==1||String(row.id)!==contractId||String(row.id_cliente)!==customerId)return undefined;
+    return row;
+  }
+
   /** Fresh, exact read; never use a partial/cached snapshot to authorize a write. */
   async getServiceOrderContract(customerId:string,contractId:string,correlationId:string){
     if(!/^[1-9]\d{0,31}$/.test(contractId))throw new IxcReadonlyError("IXC_CONTRACT_UNCONFIRMED");

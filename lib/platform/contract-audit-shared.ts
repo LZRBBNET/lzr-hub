@@ -36,6 +36,12 @@ export const ISSUE_TEXT: Record<ContractIssueCode, { label: string; hint: string
   numero_fora_do_padrao: { label: "Número fora do padrão", hint: "Use só o número da casa, ou SN quando não houver." },
 };
 
+export function contractAuditRecheckFeedback(contractId: string, record: { status: string; issues: readonly unknown[]; detail: string | null }) {
+  if (record.status === "unverified") return { message: `Contrato ${contractId}: ${record.detail ?? "cadastro não verificado."}`, tone: "warn" } as const;
+  if (record.issues.length) return { message: `Contrato ${contractId}: ${record.issues.length} pendência(s) ainda no cadastro.`, tone: "warn" } as const;
+  return { message: `Contrato ${contractId}: cadastro sem pendência agora.`, tone: "ok" } as const;
+}
+
 export interface CustomerContactFields {
   mobile?: string;
   whatsapp?: string;
@@ -85,4 +91,22 @@ export function evaluateContact(fields: CustomerContactFields): ContractIssue[] 
   if (shape === "fora_do_padrao") issues.push({ code: "numero_fora_do_padrao", found });
 
   return issues;
+}
+
+const field = (row: Record<string, unknown>, key: string) => {
+  if (!Object.prototype.hasOwnProperty.call(row, key)) return undefined;
+  const value = row[key];
+  return typeof value === "string" || typeof value === "number" ? String(value) : value === null ? "" : undefined;
+};
+
+/** Campo omitido não equivale a valor vazio no IXC. */
+export function readAuditContact(customer: Record<string, unknown>): CustomerContactFields | undefined {
+  const mobile = field(customer, "telefone_celular");
+  const whatsapp = field(customer, "whatsapp");
+  const email = field(customer, "email");
+  const addressNumber = field(customer, "numero");
+  // Um canal de contato conhecido e válido é suficiente mesmo se o outro campo tiver sido omitido.
+  const phones = evaluateContact({ mobile, whatsapp }).filter(({code}) => code === "sem_celular" || code === "celular_invalido");
+  if ((phones.length && (mobile === undefined || whatsapp === undefined)) || email === undefined || addressNumber === undefined) return undefined;
+  return { mobile, whatsapp, email, addressNumber };
 }

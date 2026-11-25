@@ -1,6 +1,6 @@
 "use client";
 import { useEffect, useRef, useState } from "react";
-import { ISSUE_TEXT, type ContractIssue } from "@/lib/platform/contract-audit-shared";
+import { ISSUE_TEXT, contractAuditRecheckFeedback, type ContractIssue, type ContractIssueCode } from "@/lib/platform/contract-audit-shared";
 import { Icon } from "@/components/ui/icons";
 import { Badge, Card, Empty, InfoTip, Limits, Loading, Notice, Segmented, Stat, Stats, Toolbar, count, dateTime, useToast } from "@/components/ui/kit";
 
@@ -62,6 +62,7 @@ export function ContractAuditModule() {
   const [creator, setCreator] = useState<string | null | undefined>(undefined);
   const filterRef = useRef<AuditFilter>("pending");
   const toast = useToast();
+  const ixcScope = useRef<Payload["ixc"]>(undefined);
 
   async function load(target: AuditFilter = filterRef.current) {
     try {
@@ -69,11 +70,13 @@ export function ContractAuditModule() {
       const payload = await response.json().catch(() => ({ available: false, items: [] })) as Payload;
       if (target !== filterRef.current) return;
       if (!response.ok) { setMessage(payload.error ?? "Não foi possível carregar a auditoria."); setState("error"); return; }
+      ixcScope.current = payload.ixc;
       setData(payload); setState("ready");
     } catch { setState("error"); }
   }
 
   async function run(trigger: "manual" | "tela") {
+    if (ixcScope.current !== "full-base") return;
     if (trigger === "manual") { setRunning(true); setMessage(null); }
     try {
       const response = await fetch("/api/audit/contracts", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ action: "run", trigger }) });
@@ -91,7 +94,10 @@ export function ContractAuditModule() {
     try {
       const response = await fetch("/api/audit/contracts", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ action: "recheck", contractId }) });
       const payload = await response.json().catch(() => ({})) as { record?: AuditRecord; error?: string };
-      if (response.ok && payload.record) toast(`Contrato ${contractId}: ${payload.record.issues.length ? `${payload.record.issues.length} pendência(s) ainda no cadastro.` : "cadastro sem pendência agora."}`, payload.record.issues.length ? "warn" : "ok");
+      if (response.ok && payload.record) {
+        const feedback = contractAuditRecheckFeedback(contractId, payload.record);
+        toast(feedback.message, feedback.tone);
+      }
       else toast(payload.error ?? "Não foi possível reconferir.", "bad");
       await load();
     } catch { toast("Não foi possível reconferir.", "bad"); }
@@ -112,6 +118,8 @@ export function ContractAuditModule() {
   if (state === "error") return <Notice tone="bad">{message ?? "Não foi possível carregar a auditoria."}</Notice>;
   if (!data?.available) return <Notice tone="bad">{data?.detail}</Notice>;
 
+  if (data.ixc === "allowlist") return <SingleContractPreview />;
+
   const counts = data.counts;
   const lastRun = data.lastRun;
   const items = data.items.filter((item) => creator === undefined || item.createdBy === creator);
@@ -128,7 +136,7 @@ export function ContractAuditModule() {
       </InfoTip>
     </Toolbar>
     {data.ixc === null && <Notice tone="bad">A integração com o IXC está desligada neste ambiente: nenhum contrato é conferido.</Notice>}
-    {data.ixc === "allowlist" && <Notice tone="bad">A auditoria precisa ler a base inteira do IXC (<code>FEATURE_IXC_FULL_BASE</code>). Com a lista de homologação ela não alcança os contratos novos.</Notice>}
+
     {lastRun?.stoppedReason && <Notice tone="warn" title="A última verificação parou antes do fim:">{lastRun.stoppedReason}</Notice>}
     {message && <Notice tone="info" action={<button className="icon-button" aria-label="Dispensar" onClick={() => setMessage(null)}><Icon name="x" size={16} /></button>}>{message}</Notice>}
     <Stats>
@@ -174,4 +182,41 @@ export function ContractAuditModule() {
       ["Quando roda", "Ao abrir esta tela, pelo botão e de hora em hora (07h às 20h) pelo agendamento. Cada passada é pequena e para antes se o IXC estiver muito consultado — o atendimento tem prioridade."],
     ]} />
   </>;
+}
+
+function SingleContractPreview() {
+  const [customerId, setCustomerId] = useState("");
+  const [contractId, setContractId] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [result, setResult] = useState<{ status: "ok" | "pending" | "unverified"; issues?: ContractIssueCode[]; detail?: string; checkedAt?: string } | null>(null);
+  return <Card title="Conferir um contrato">
+    <form className="card-content" onSubmit={async (event) => {
+      event.preventDefault();
+      if (busy) return;
+      setBusy(true);
+      setResult(null);
+      try {
+        const response = await fetch("/api/audit/contracts/preview", {
+          method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ contractId, customerId }),
+        });
+        const payload = await response.json();
+        setResult(response.ok ? payload : { status: "unverified", detail: payload.error });
+      } catch {
+        setResult({ status: "unverified", detail: "Não foi possível consultar neste momento." });
+      } finally {
+        setBusy(false);
+      }
+    }}>
+      <p>Consulta no IXC apenas para cadastros liberados na homologação. Não grava resultado nem abre uma verificação em lote.</p>
+      <label> ID do cliente <input required inputMode="numeric" pattern="[1-9][0-9]{0,31}" maxLength={32} value={customerId} disabled={busy} onChange={(e) => { setCustomerId(e.target.value); setResult(null); }} /></label>
+      <label> ID do contrato <input required inputMode="numeric" pattern="[1-9][0-9]{0,31}" maxLength={32} value={contractId} disabled={busy} onChange={(e) => { setContractId(e.target.value); setResult(null); }} /></label>
+      <button type="submit" className="button" disabled={busy}>{busy ? "Consultando…" : "Consultar no IXC"}</button>
+      {result && <div aria-live="polite">
+        {result.status === "ok" ? "Sem divergência nas regras cadastrais avaliadas." : result.status === "pending" ? "Divergência cadastral encontrada." : "Não verificável."}
+        {result.checkedAt && <> Consulta: {dateTime(result.checkedAt)}.</>}
+        {result.detail && <p>{result.detail}</p>}
+        {!!result.issues?.length && <IssueChips issues={result.issues.map((code) => ({ code }))} />}
+      </div>}
+    </form>
+  </Card>;
 }

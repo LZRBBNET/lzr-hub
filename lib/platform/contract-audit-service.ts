@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { and, asc, desc, eq, gte, inArray, isNull, lt, sql } from "drizzle-orm";
 import { contractAuditRuns, contractAudits, syncCheckpoints } from "../../db/schema.ts";
-import { evaluateContact, type ContractIssue } from "./contract-audit-shared.ts";
+import { evaluateContact, readAuditContact, type ContractIssue } from "./contract-audit-shared.ts";
 
 /**
  * Auditoria de contratos: confere, em cada contrato novo do IXC, se o cadastro
@@ -80,6 +80,7 @@ export interface AuditRun {
 }
 
 export interface ContractAuditProvider {
+  getContractForAudit(customerId: string, contractId: string, correlationId: string): Promise<Record<string, unknown> | undefined>;
   listContractsAfter(afterId: number, limit: number, correlationId: string): Promise<Record<string, unknown>[]>;
   listLatestContracts(limit: number, correlationId: string): Promise<Record<string, unknown>[]>;
   getCustomerRecord(customerId: string, correlationId: string): Promise<Record<string, unknown> | undefined>;
@@ -155,6 +156,10 @@ export function nextRecord(
   nowIso: string,
   creator?: { operator: string } | null,
 ): ContractAuditRecord {
+  const matchingCustomer = customer && String(customer.id ?? "").trim() === contract.customerId ? customer : undefined;
+  const history = previous?.customerId === contract.customerId ? previous : undefined;
+  customer = matchingCustomer;
+  previous = history;
   const base = {
     contractId: contract.id, customerId: contract.customerId, plan: contract.plan, contractStatus: contract.status,
     contractCreatedAt: contract.createdAt, sellerId: contract.sellerId,
@@ -167,17 +172,16 @@ export function nextRecord(
     lastCheckedAt: nowIso,
   };
   if (!customer) {
-    return { ...base, status: "unverified", issues: [], firstIssues: previous?.firstIssues ?? [], detail: "O cadastro do cliente não foi encontrado no IXC.", resolvedAt: previous?.resolvedAt ?? null };
+    return { ...base, status: "unverified", issues: [], firstIssues: previous?.firstIssues ?? [], detail: "Não foi possível confirmar o vínculo do cadastro retornado pelo IXC.", resolvedAt: previous?.resolvedAt ?? null };
   }
-  const issues = evaluateContact({
-    mobile: String(customer.telefone_celular ?? ""),
-    whatsapp: String(customer.whatsapp ?? ""),
-    email: String(customer.email ?? ""),
-    addressNumber: String(customer.numero ?? ""),
-  });
+  const contact = readAuditContact(customer);
+  if (!contact) {
+    return { ...base, status: "unverified", issues: [], firstIssues: previous?.firstIssues ?? [], detail: "O IXC não forneceu todos os campos necessários para a conferência.", resolvedAt: previous?.resolvedAt ?? null };
+  }
+  const issues = evaluateContact(contact);
   // O retrato da primeira conferência é fato de auditoria e não muda mais — exceto
   // se ela não chegou a ver o cadastro, aí a primeira conferência de verdade é esta.
-  const firstIssues = previous && previous.status !== "unverified" ? previous.firstIssues : issues;
+  const firstIssues = previous && (previous.status !== "unverified" || previous.firstIssues.length > 0) ? previous.firstIssues : issues;
   const hadIssues = firstIssues.length > 0 || previous?.status === "pending" || previous?.status === "resolved";
   const status: AuditStatus = issues.length > 0 ? "pending" : hadIssues ? "resolved" : "ok";
   return {
@@ -272,7 +276,11 @@ export async function runContractAudit(
 
     const since = new Date(now().getTime() - RECHECK_WINDOW_DAYS * 86_400_000).toISOString();
     for (const previous of await repository.listForRecheck(input.recheckLimit ?? RECHECK_PER_RUN, since, startedAt)) {
-      const record = nextRecord(previous, contractFromRecord(previous), await customer(previous.customerId), now().toISOString());
+      spend();
+      const current = await provider.getContractForAudit(previous.customerId, previous.contractId, correlationId);
+      const contract = current ? contractFromRow(current) : undefined;
+      const linked = contract?.id === previous.contractId && contract.customerId === previous.customerId;
+      const record = nextRecord(previous, linked ? contract : contractFromRecord(previous), linked ? await customer(previous.customerId) : undefined, now().toISOString());
       await repository.save(record);
       outcome.rechecked += 1;
       if (record.status === "resolved" && previous.status !== "resolved") outcome.resolved += 1;
@@ -301,10 +309,17 @@ export async function recheckContract(
   const previous = await deps.repository.get(contractId);
   if (!previous) return undefined;
   const correlationId = randomUUID();
+  const current = await deps.provider.getContractForAudit(previous.customerId, previous.contractId, correlationId);
+  const contract = current ? contractFromRow(current) : undefined;
+  if (!contract || contract.id !== previous.contractId || contract.customerId !== previous.customerId) {
+    const record = nextRecord(previous, contractFromRecord(previous), undefined, (deps.now ?? (() => new Date()))().toISOString());
+    await deps.repository.save(record);
+    return record;
+  }
   const fields = await deps.provider.getCustomerRecord(previous.customerId, correlationId);
   // Quem criou não muda: só procura se ainda não procurou.
   const creator = previous.creatorCheckedAt ? undefined : (await deps.provider.getRecordCreator(CONTRACT_TABLE, previous.contractId, previous.customerId, correlationId)) ?? null;
-  const record = nextRecord(previous, contractFromRecord(previous), fields, (deps.now ?? (() => new Date()))().toISOString(), creator);
+  const record = nextRecord(previous, contract, fields, (deps.now ?? (() => new Date()))().toISOString(), creator);
   await deps.repository.save(record);
   return record;
 }
