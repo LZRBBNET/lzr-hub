@@ -112,14 +112,24 @@ const TASKS: Record<string, string> = {
   financial_unlock: UNLOCK,
 };
 
-/** A instrução da tarefa para o assunto do atendimento. Fatura com titular não conferível tem roteiro próprio. */
-export function agentTask(intent: string, context: { identified?: boolean } = {}): string {
-  if ((intent === "financial_invoice" || intent === "financial_pix") && !context.identified) return `${STYLE}
+/**
+ * Fora do horário a IA atende sozinha e não passa a conversa para ninguém (Vinícius, 25/11/2026: "24/7; se houver
+ * necessidade, no horário de atendimento de seg a sexta até as 18; porém após o horário ela atende só e não repassa
+ * pra ninguém"). O que só a equipe executa continua sendo registrado — o rodapé diz quando ela dá continuidade.
+ */
+export const OFF_HOURS = `AGORA É FORA DO HORÁRIO DE ATENDIMENTO (segunda a sexta, 8h às 12h e 14h às 18h). Não há atendente agora e você não passa a conversa para ninguém: resolva você mesmo.
+- Nunca diga que vai chamar, transferir ou passar para um atendente, nem que alguém vai falar com o cliente agora.
+- O que só a equipe pode executar (visita técnica, cancelamento, mudança de plano, conferência de pagamento, desconto), deixe pronto e registrado com state "request_complete": o sistema informa o protocolo e quando a equipe dá continuidade.
+- Se o cliente pedir para falar com uma pessoa, explique com gentileza que agora o atendimento é por aqui e pergunte o assunto.`;
 
-${INVOICE_UNVERIFIED}`;
+/** A instrução da tarefa para o assunto do atendimento. Fatura com titular não conferível tem roteiro próprio. */
+export function agentTask(intent: string, context: { identified?: boolean; offHours?: boolean } = {}): string {
+  const task = (intent === "financial_invoice" || intent === "financial_pix") && !context.identified ? INVOICE_UNVERIFIED : TASKS[intent] ?? GENERAL;
   return `${STYLE}
 
-${TASKS[intent] ?? GENERAL}`;
+${task}${context.offHours ? `
+
+${OFF_HOURS}` : ""}`;
 }
 
 /** O que o modelo devolve no modo autônomo. `request_complete` = o pedido está pronto para a equipe executar. */

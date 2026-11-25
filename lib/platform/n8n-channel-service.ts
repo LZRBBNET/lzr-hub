@@ -206,7 +206,8 @@ export interface TriageHooks {
    */
   footer(context?: { clarifying?: boolean; handoff?: boolean; request?: string; serviceOrder?: { id: string; existing?: boolean } }): string | undefined;
   /** Modo autônomo: o assunto do atendimento, se o cliente é identificado e o que o sistema sabe (diagnóstico, pedido já feito). */
-  context?(): { topic: string | null; identified: boolean; facts: string[]; registered?: boolean };
+  /** `offHours`: fora do horário a IA atende sozinha (ver `OFF_HOURS` em `agent-playbook-shared.ts`). */
+  context?(): { topic: string | null; identified: boolean; facts: string[]; registered?: boolean; offHours?: boolean };
   /** Modo autônomo: a IA resolveu o assunto — fecha o atendimento, para a próxima fala abrir outro em vez de continuar um já encerrado. */
   closeTicket?(): Promise<void>;
   /** Modo autônomo: grava o pedido que a IA deixou pronto para a equipe. */
@@ -509,7 +510,7 @@ export async function processChannelMessage(
     const question = menuIntent ? TRIAGE_MENU.find((option) => option.intent === menuIntent)?.label ?? input.text : input.text;
     const answered = agent
       ? await doubtBotTurn(repository, input, metrics, options, options.doubtBot, { ...classified, intent: topic }, contextForSupport(historyRows).slice(-AGENT_HISTORY_TURNS), question,
-        { task: agentTask(topic, { identified: context?.identified }), facts: context?.facts ?? [], rows: historyRows })
+        { task: agentTask(topic, { identified: context?.identified, offHours: context?.offHours }), facts: context?.facts ?? [], rows: historyRows })
       : await doubtBotTurn(repository, input, metrics, options, options.doubtBot, classified, contextForClassifier(historyRows), question);
     if (answered) return answered;
   }
