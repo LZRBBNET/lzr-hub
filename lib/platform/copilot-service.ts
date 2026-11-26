@@ -38,7 +38,10 @@ export interface CopilotSource { id: string; title: string; category: string; ve
 export interface CopilotAnswer { answer: string; written: "llm" | "excerpt" | "none"; caveat: string | null; sources: CopilotSource[] }
 
 const normalize = (text: string) => text.normalize("NFD").replace(/[̀-ͯ]/g, "").toLowerCase();
-const terms = (query: string) => normalize(query).split(/\s+/).filter((term) => term.length > 2);
+// Pontuação na ponta sai: "capela?" nunca casava "Capela", e toda pergunta perdia a última palavra e ainda a
+// contava no divisor. Só na ponta — "wi-fi" continua uma palavra.
+const edges = /^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu;
+const terms = (query: string) => normalize(query).split(/\s+/).map((term) => term.replace(edges, "")).filter((term) => term.length > 2);
 
 /**
  * Palavras que aparecem em quase todo documento e por isso não distinguem nada.
