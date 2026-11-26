@@ -204,6 +204,13 @@
       "when": 1795636082338,
       "tag": "0028_kb_lojas_por_cidade",
       "breakpoints": true
+    },
+    {
+      "idx": 29,
+      "version": "7",
+      "when": 1795699775607,
+      "tag": "0029_kb_lojas_onze_cidades",
+      "breakpoints": true
     }
   ]
 }

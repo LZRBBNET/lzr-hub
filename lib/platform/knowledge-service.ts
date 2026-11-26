@@ -52,7 +52,8 @@ export function parseKnowledgeInput(body: Record<string, unknown>) {
  * `FEATURE_PGVECTOR` está desligada e não há embedding gerado.
  */
 export function searchDocuments(documents: KnowledgeDoc[], query: string): KnowledgeSearchHit[] {
-  const terms = normalize(query).split(/\s+/).filter((term) => term.length > 2);
+  // Pontuação na ponta sai ("loja?" casa "loja"); no meio fica ("wi-fi").
+  const terms = normalize(query).split(/\s+/).map((term) => term.replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, "")).filter((term) => term.length > 2);
   if (terms.length === 0) return [];
   return documents
     .filter((document) => document.status === "published")
