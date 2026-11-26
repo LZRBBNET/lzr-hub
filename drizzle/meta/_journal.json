@@ -211,6 +211,13 @@
       "when": 1795699775607,
       "tag": "0029_kb_lojas_onze_cidades",
       "breakpoints": true
+    },
+    {
+      "idx": 30,
+      "version": "7",
+      "when": 1795700230327,
+      "tag": "0030_kb_lojas_itabaiana",
+      "breakpoints": true
     }
   ]
 }

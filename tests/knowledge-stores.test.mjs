@@ -9,13 +9,20 @@ import { findSources, intentTerms } from "../lib/platform/copilot-service.ts";
 const sql = (file) => readFileSync(new URL(`../drizzle/${file}`, import.meta.url), "utf8").replace(/\r\n/g, "\n");
 const literal = (text, pattern) => pattern.exec(text)?.[1].replace(/''/g, "'");
 const original = literal(sql("0028_kb_lojas_por_cidade.sql"), /'Atendimento', '((?:[^']|'')*)', 'published'/);
-const update = sql("0029_kb_lojas_onze_cidades.sql");
-const content = literal(update, /"content" = '((?:[^']|'')*)',\n/);
-const expected = literal(update, /AND "content" = '((?:[^']|'')*)';/);
+// Cada atualização só troca o texto se ele ainda for o da migração anterior; a última é o que o cliente vê.
+const updates = ["0029_kb_lojas_onze_cidades.sql", "0030_kb_lojas_itabaiana.sql"].map((file) => {
+  const text = sql(file);
+  return { file, content: literal(text, /"content" = '((?:[^']|'')*)',\n/), expected: literal(text, /AND "content" = '((?:[^']|'')*)';/) };
+});
+const content = updates.at(-1).content;
 
-test("a atualização das lojas só troca o documento que ainda é o de 0028", () => {
-  assert.ok(original && expected);
-  assert.equal(expected, original, "o WHERE precisa casar com o texto exato de 0028, senão a migração não muda nada");
+test("cada atualização das lojas só troca o documento que ainda é o da migração anterior", () => {
+  let current = original;
+  for (const update of updates) {
+    assert.ok(current && update.expected && update.content, update.file);
+    assert.equal(update.expected, current, `${update.file}: o WHERE precisa casar com o texto exato anterior, senão não muda nada`);
+    current = update.content;
+  }
 });
 
 test("o documento das lojas cabe inteiro no que o modo autônomo manda e não tem telefone", () => {
@@ -23,6 +30,7 @@ test("o documento das lojas cabe inteiro no que o modo autônomo manda e não te
   assert.equal(sanitizeHandoffText(content), content, "telefone de loja não entra: o robô recusaria a resposta");
   for (const city of ["Areia Branca", "Campo do Brito", "Capela", "Frei Paulo", "Macambira", "Moita Bonita", "Nossa Senhora Aparecida",
     "Nossa Senhora da Glória", "Nossa Senhora das Dores", "Ribeirópolis", "São Domingos"]) assert.match(content, new RegExp(`^${city}: `, "m"), city);
+  assert.match(content, /^Itabaiana: não tem loja/m, "sem a linha, quem é de Itabaiana podia ir parar na loja de Frei Paulo (Rua Itabaiana)");
 });
 
 test("quem diz a cidade ou pergunta onde fica a loja recebe o documento das lojas", () => {
