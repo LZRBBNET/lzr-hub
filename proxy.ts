@@ -8,7 +8,7 @@ declare const __LZR_SYNTHETIC_WEB_BUILD__: boolean | undefined;
 const protectedBuild = typeof __LZR_SYNTHETIC_WEB_BUILD__ !== 'undefined' && __LZR_SYNTHETIC_WEB_BUILD__ === true;
 
 const headers = { 'cache-control': 'private, no-store', 'x-robots-tag': 'noindex, nofollow', 'referrer-policy': 'no-referrer' };
-const publicReads = new Set(['/login', '/api/auth/me', '/favicon.svg']);
+const publicReads = new Set(['/login', '/privacidade', '/api/auth/me', '/favicon.svg']);
 const ownAccount = new Set(['/api/auth/password', '/api/auth/logout']);
 
 /** Full request boundary; individual handlers still enforce their own RBAC. */
