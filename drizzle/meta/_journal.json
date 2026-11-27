@@ -218,6 +218,13 @@
       "when": 1795700230327,
       "tag": "0030_kb_lojas_itabaiana",
       "breakpoints": true
+    },
+    {
+      "idx": 31,
+      "version": "7",
+      "when": 1795703830327,
+      "tag": "0031_kb_planos_valores",
+      "breakpoints": true
     }
   ]
 }
