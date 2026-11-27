@@ -249,3 +249,21 @@ test("reserva cliente+assunto: OS anterior fechada no IXC libera; aberta mantém
   assert.equal(retired.length, 1, "a reserva antiga continua no ledger, renomeada");
   assert.match(retired[0].detail, /o IXC confirmou a OS anterior fechada/);
 }));
+
+test("visita técnica e chamado técnico também viram OS, com o assunto tirado da ficha (conversa de 27/11)", () => {
+  const ficha = "Assunto: falta de internet / visita técnica\nO cliente relatou que não tem internet mesmo após reiniciar os equipamentos.\nJá foi tentado: reinício da caixinha da internet e do roteador.\nDados coletados: período manhã; há adulto no local; precisa subir em poste ou telhado: não sei.";
+  assert.equal(aiServiceOrderSubject("technical_visit", ficha), AI_OS_SUBJECTS.noConnection, "em 27/11 esta ficha não abriu OS nenhuma");
+  assert.equal(aiServiceOrderSubject("technical_ticket", ficha), AI_OS_SUBJECTS.noConnection);
+  assert.equal(aiServiceOrderSubject("technical_visit", "Pediu visita: internet muito lenta à noite"), AI_OS_SUBJECTS.slow);
+  assert.equal(aiServiceOrderSubject("technical_ticket", "A internet cai toda hora"), AI_OS_SUBJECTS.drops);
+  assert.equal(aiServiceOrderSubject("technical_visit", "Quer mudar o roteador de lugar"), AI_OS_SUBJECTS.equipment);
+  assert.equal(aiServiceOrderSubject("technical_visit", "Pediu visita técnica, não soube explicar"), AI_OS_SUBJECTS.noConnection);
+  assert.equal(aiServiceOrderSubject("technical_visit", "Internet parou depois que reiniciei o roteador"), AI_OS_SUBJECTS.noConnection, "\"parou\" é a internet, não troca de roteador");
+});
+
+test("pedido técnico sem OS automática deixa o motivo na ficha", async () => {
+  const result = await openAiServiceOrder({ enabled: true, provider: provider(), ledger: new MemoryIxcWriteOperationsRepository(), open: async () => ({ raw: {} }), correlationId: "c" },
+    { customerId: "21857", ticketId: "t", intent: "technical_visit", summary: "Mudança de endereço para a Rua B", protocol: null });
+  assert.equal(result?.status, "skipped");
+  assert.match(result.detail, /mudança de endereço/);
+});

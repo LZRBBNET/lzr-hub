@@ -47,12 +47,15 @@ export function aiServiceOrderSubject(intent: string, summary: string): string |
   const drops = /\bqueda|\bcai\b|caindo|cai e volta|desconect|oscila/.test(text);
   if (intent === "technical_no_connection" || intent === "technical_restart") return drops ? AI_OS_SUBJECTS.drops : AI_OS_SUBJECTS.noConnection;
   if (intent === "technical_slow" || intent === "technical_wifi") return drops ? AI_OS_SUBJECTS.drops : AI_OS_SUBJECTS.slow;
-  if (intent === "technical_visit" || intent === "technical_ticket") {
-    // Mudança de endereço também chega como visita: não é troca de equipamento.
-    if (/endereco|mudanca|mudar de casa|transferenc/.test(text)) return undefined;
-    if (/roteador|onu\b|modem|equipamento/.test(text) && /troc|config|defeit|queim|novo|parou|nao liga|quebr/.test(text)) return AI_OS_SUBJECTS.equipment;
-  }
-  return undefined;
+  // Visita técnica, chamado técnico e qualquer outro assunto técnico: pedido técnico pronto é OS (Vinícius, 27/11/2026 —
+  // em 27/11 "sem internet, LOS vermelha, fio no poste" fechou como visita e nenhuma OS saiu). O assunto vem da ficha.
+  if (!intent.startsWith("technical_")) return undefined;
+  // Mudança de endereço também chega como visita: não é OS de suporte, a equipe trata.
+  if (/mudanca de endereco|mudar de endereco|mudar de casa|mudei de casa|novo endereco|transferenc/.test(text)) return undefined;
+  if (/roteador|onu\b|modem|equipamento/.test(text) && /troc|config|defeit|queim|novo|nao liga|quebr|de lugar/.test(text)) return AI_OS_SUBJECTS.equipment;
+  if (drops) return AI_OS_SUBJECTS.drops;
+  if (/lent|devagar|velocidade|travando|trava\b/.test(text)) return AI_OS_SUBJECTS.slow;
+  return AI_OS_SUBJECTS.noConnection;
 }
 
 export type AiServiceOrderResult =
@@ -89,7 +92,9 @@ export interface AiServiceOrderInput { customerId: string; ticketId: string; int
 
 export async function openAiServiceOrder(deps: AiServiceOrderDeps, input: AiServiceOrderInput): Promise<AiServiceOrderResult | undefined> {
   const baseSubject = aiServiceOrderSubject(input.intent, input.summary);
-  if (!baseSubject) return undefined;
+  // Pedido técnico sem OS automática deixa o motivo na ficha: em 27/11 a OS "sumiu" sem rastro nenhum.
+  if (!baseSubject) return input.intent.startsWith("technical_")
+    ? { status: "skipped", detail: "Pedido técnico de mudança de endereço: não abre OS automática, a equipe trata." } : undefined;
   if (!deps.enabled) return { status: "skipped", detail: "FEATURE_AI_SERVICE_ORDER desligada: a ficha fica para a equipe abrir a OS." };
   const corr = deps.correlationId;
   try {
