@@ -55,3 +55,14 @@ test("pontuação na ponta da palavra não esconde o termo; hífen no meio conti
   assert.equal(findSources(docs, "segunda via da fatura?")[0]?.id, "b");
   assert.equal(findSources(docs, "como troco a senha do wi-fi?!")[0]?.id, "a");
 });
+
+test("planos e valores: a atualização casa com o texto da 0022, cabe no limite, sem telefone, com os 5 planos", () => {
+  const text = sql("0031_kb_planos_valores.sql");
+  const seed = literal(sql("0022_seed_knowledge_base.sql"), /\('kb-padrao-planos', '[^']*', 'Comercial', '((?:[^']|'')*)', 'published'/);
+  const plans = literal(text, /"content" = '((?:[^']|'')*)',\n/);
+  assert.equal(literal(text, /AND "content" = '((?:[^']|'')*)';/), seed, "o WHERE precisa casar com o texto exato da 0022");
+  assert.ok(plans.length <= AGENT_SOURCE_LIMIT, `${plans.length} caracteres`);
+  assert.equal(sanitizeHandoffText(plans), plans, "telefone do folheto não entra");
+  for (const price of ["69,90", "99,90", "119,90", "139,90", "79,90"]) assert.ok(plans.includes(`R$ ${price}`), price);
+  assert.doesNotMatch(plans, /promocion|indeterminad/i, "a BBNET pediu para não dizer ao cliente que é promocional");
+});
