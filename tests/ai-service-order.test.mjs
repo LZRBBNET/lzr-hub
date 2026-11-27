@@ -24,15 +24,15 @@ test("assunto da OS: sem internet, lenta, quedas e roteador; endereço e cancela
 });
 
 const FORMATO = "#uf# #cidade# #cep# #bairro# - #endereco#, #numero#";
-function provider({ openOrders = [], contracts = [{ id: "48882", status: "A", internetStatus: "A", trustUnlockActive: false }], activeComplete = true, logins = [{ id: "32844", online: false }], loginsComplete = true, readBack = true, loginFlag = "N", loads = {}, closedOrders = [], fiber = [] } = {}) {
+function provider({ openOrders = [], contracts = [{ id: "48882", status: "A", internetStatus: "A", trustUnlockActive: false }], activeComplete = true, logins = [{ id: "32844", online: false }], loginsComplete = true, readBack = true, loginFlag = "N", loads = {}, closedOrders = [], fiber = [], loginsByContract = {} } = {}) {
   return {
     getServiceDiagnosis: async () => ({ logins: [{ id: "32844", contractId: "48882", online: false }], contracts, openServiceOrders: openOrders, fiber }),
     listActiveContracts: async () => ({ ids: contracts.filter((c) => c.status === "A").map((c) => c.id), complete: activeComplete }),
-    listContractLogins: async () => ({ logins, complete: loginsComplete }),
+    listContractLogins: async (_customerId, contractId) => ({ logins: loginsByContract[contractId] ?? logins, complete: loginsComplete }),
     reconcileServiceOrder: async (customerId, contractId, orderId) => { if (!readBack) throw new Error("IXC_OS_UNCONFIRMED"); return { id: orderId, customerId, contractId, status: closedOrders.includes(orderId) ? "F" : "A" }; },
-    getServiceOrderAddressSources: async () => ({
+    getServiceOrderAddressSources: async (_customerId, contractId = "48882") => ({
       customer: { id: "21857", endereco: "Rua do Cliente", numero: "1", bairro: "Centro", cep: "49500-000", cidade: "1771" },
-      contract: { id: "48882", endereco: "Rua do Contrato", numero: "2", bairro: "Bairro C", cep: "49500-222", cidade: "1771" },
+      contract: { id: contractId, endereco: contractId === "48882" ? "Rua do Contrato" : `Rua ${contractId}`, numero: "2", bairro: "Bairro C", cep: "49500-222", cidade: "1771" },
       login: { id: "32844", endereco_padrao_cliente: loginFlag, endereco: "Rua do Login", numero: "7", bairro: "Bairro L", cep: "49500-111", cidade: "1771", latitude: "-10.7", longitude: "-37.4" },
     }),
     getCityAndState: async () => ({ name: "Campo do Brito", state: "SE" }),
@@ -136,21 +136,48 @@ test("lista de contratos incompleta: não abre (o ativo pode estar fora da pági
   assert.equal(sent.length, 0);
 }));
 
-test("dois contratos ativos: não escolhe por palpite", async () => withWrite(async () => {
+test("dois contratos ativos sem como saber qual e sem poder perguntar: não escolhe por palpite", async () => withWrite(async () => {
   const sent = [];
   const contracts = [{ id: "36058", status: "A" }, { id: "48901", status: "A" }];
   const result = await openAiServiceOrder({ enabled: true, provider: provider({ contracts }), ledger: new MemoryIxcWriteOperationsRepository(), open: opener(sent), correlationId: "c" }, INPUT);
   assert.equal(result.status, "blocked");
-  assert.match(result.detail, /2 ativos/);
+  assert.match(result.detail, /2 contratos ativos e 2 conexões caídas/);
   assert.equal(sent.length, 0);
 }));
 
-test("vários logins no contrato: usa o único online; sem um claro, não abre o assunto que exige login", async () => withWrite(async () => {
+test("casa e escritório: sem internet vai para o contrato cuja conexão caiu (Vinícius, 27/11)", async () => withWrite(async () => {
+  const sent = [];
+  const contracts = [{ id: "36058", status: "A" }, { id: "48901", status: "A" }];
+  const loginsByContract = { "36058": [{ id: "500", online: true }], "48901": [{ id: "600", online: false }] };
+  const result = await openAiServiceOrder({ enabled: true, provider: provider({ contracts, loginsByContract }), ledger: new MemoryIxcWriteOperationsRepository(), open: opener(sent), correlationId: "c" }, INPUT);
+  assert.equal(result.status, "success");
+  assert.equal(sent[0].contractId, "48901", "o escritório funciona: a OS é da casa");
+  assert.equal(sent[0].loginId, "600");
+}));
+
+test("dois contratos e a conexão não diz qual: pergunta o endereço; com a escolha, abre nele", async () => withWrite(async () => {
+  const contracts = [{ id: "36058", status: "A" }, { id: "48901", status: "A" }];
+  const deps = (sent) => ({ enabled: true, provider: provider({ contracts, loginFlag: "C" }), ledger: new MemoryIxcWriteOperationsRepository(), open: opener(sent), correlationId: "c" });
+  const sent = [];
+  const ask = await openAiServiceOrder(deps(sent), { ...INPUT, allowChoice: true });
+  assert.equal(ask.status, "choose");
+  assert.deepEqual(ask.options, [{ contractId: "36058", label: "Rua 36058, 2 - Bairro C" }, { contractId: "48901", label: "Rua 48901, 2 - Bairro C" }]);
+  assert.equal(sent.length, 0);
+  const lenta = await openAiServiceOrder(deps(sent), { ...INPUT, intent: "technical_slow", summary: "Internet lenta", ticketId: "t-lenta", allowChoice: true });
+  assert.equal(lenta.status, "choose", "lentidão não aparece no login: pergunta mesmo com uma conexão caída só");
+  const escolhido = await openAiServiceOrder(deps(sent), { ...INPUT, contractId: "48901", ticketId: "t-escolha" });
+  assert.equal(escolhido.status, "success");
+  assert.equal(sent[0].contractId, "48901");
+  const inativo = await openAiServiceOrder(deps(sent), { ...INPUT, contractId: "99999", ticketId: "t-inativo" });
+  assert.equal(inativo.status, "blocked");
+}));
+
+test("vários logins no contrato: sem internet usa o único que caiu; sem um claro, não abre o assunto que exige login", async () => withWrite(async () => {
   const sent = [];
   const umOnline = [{ id: "41895", online: true }, { id: "39938", online: false }];
   const ok = await openAiServiceOrder({ enabled: true, provider: provider({ logins: umOnline }), ledger: new MemoryIxcWriteOperationsRepository(), open: opener(sent), correlationId: "c" }, INPUT);
   assert.equal(ok.status, "success");
-  assert.equal(sent[0].loginId, "41895");
+  assert.equal(sent[0].loginId, "39938", "o login sem conexão é o do problema");
   const ambiguos = [{ id: "41895", online: true }, { id: "42926", online: true }];
   const blocked = await openAiServiceOrder({ enabled: true, provider: provider({ logins: ambiguos }), ledger: new MemoryIxcWriteOperationsRepository(), open: opener(sent), correlationId: "c" }, { ...INPUT, ticketId: "t-amb" });
   assert.equal(blocked.status, "blocked");

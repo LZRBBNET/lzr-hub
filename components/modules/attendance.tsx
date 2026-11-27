@@ -689,6 +689,9 @@ function TicketPanel({ ticket, now, onUse }: { ticket:TicketSummary|null; now:nu
       <h4>Pedido registrado pela IA <Badge tone="warn">{intentLabel(ticket.intake.intent)}</Badge>
         <InfoTip>O que a IA perguntou ao cliente antes de passar o pedido à equipe, para ninguém precisar perguntar de novo. Registrado há {relativeTime(ticket.intake.at, now)}.</InfoTip></h4>
       <p className="intake-summary">{ticket.intake.summary}</p>
+      {ticket.intake.serviceOrderStatus && <p><strong>Ordem de serviço:</strong>{" "}
+        {ticket.intake.serviceOrderId ? <><code>nº {ticket.intake.serviceOrderId}</code>{ticket.intake.serviceOrderStatus==="existing" ? " (já estava aberta)" : ticket.intake.serviceOrderStatus==="success" ? " aberta pela IA" : ""} · </> : null}
+        {ticket.intake.serviceOrderDetail}</p>}
     </div>}
     <InvoiceBlock ticket={ticket} onUse={onUse} />
   </section>;
@@ -701,6 +704,8 @@ function TicketPanel({ ticket, now, onUse }: { ticket:TicketSummary|null; now:nu
  */
 function InvoiceBlock({ ticket, onUse }: { ticket:TicketSummary; onUse?:(text:string)=>void }) {
   const self = ticket.selfService;
+  // CPF ou endereço pedidos para a OS: o desfecho aparece na linha "Ordem de serviço" do pedido, não aqui.
+  if (self?.purpose === "service_order") return null;
   if (!self) {
     if (!ticket.intent || !INVOICE_INTENTS.has(ticket.intent)) return null;
     return <div className="diagnosis-block"><h4>Segunda via</h4>

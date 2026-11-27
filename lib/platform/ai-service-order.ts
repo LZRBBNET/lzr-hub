@@ -62,7 +62,14 @@ export type AiServiceOrderResult =
   | { status: "success"; orderId: string; detail: string; technicianId?: string; vehicle?: Vehicle }
   /** Já havia OS aberta: a IA informa o número e não abre outra (roteiro da BBNET). */
   | { status: "existing"; orderId: string; detail: string }
+  /** Vários contratos ativos e a conexão não diz qual: a IA pergunta ao cliente em qual endereço está o problema. */
+  | { status: "choose"; detail: string; options: ContractOption[] }
   | { status: "skipped" | "blocked" | "failed" | "unknown"; detail: string };
+
+/** Um contrato ativo oferecido ao cliente: o endereço dele, como o cliente o reconhece. */
+export interface ContractOption { contractId: string; label: string }
+/** Mais contratos que isso viram ficha para a equipe: lista longa no WhatsApp ninguém lê, e cada um custa consultas ao IXC. */
+export const MAX_CONTRACT_OPTIONS = 5;
 
 export interface AiServiceOrderDeps {
   enabled: boolean;
@@ -88,7 +95,36 @@ export interface AiServiceOrderDeps {
   correlationId: string;
 }
 
-export interface AiServiceOrderInput { customerId: string; ticketId: string; intent: string; summary: string; protocol: string | null }
+export interface AiServiceOrderInput {
+  customerId: string; ticketId: string; intent: string; summary: string; protocol: string | null;
+  /** O contrato que o cliente escolheu na lista de endereços. */
+  contractId?: string;
+  /**
+   * Pode perguntar ao cliente em qual endereço é: só com o titular provado pelo telefone (e o CPF, quando houve).
+   * Identificado só pelo CPF, a lista de endereços iria para um número que não é do cadastro.
+   */
+  allowChoice?: boolean;
+}
+
+/**
+ * O endereço de cada contrato, como o cliente reconhece ("Rua X, 120 - Centro"). Mesma fonte que a OS usa (cliente,
+ * contrato ou login, pelo que o login manda). Endereços iguais ganham o número do contrato, senão a escolha seria cega.
+ */
+async function contractOptions(deps: AiServiceOrderDeps, customerId: string, contractIds: string[]): Promise<ContractOption[] | undefined> {
+  try {
+    const options = await Promise.all(contractIds.map(async (contractId) => {
+      const sources = await deps.provider.getServiceOrderAddressSources(customerId, contractId, undefined, deps.correlationId);
+      const which = addressSourceOf(sources.login?.endereco_padrao_cliente as string | undefined);
+      const source = which === "customer" ? sources.customer : which === "contract" ? sources.contract : (sources.login ?? sources.customer);
+      const parts = addressPartsFrom(source, sources.login, undefined);
+      const label = [parts.street && `${parts.street}${parts.number ? `, ${parts.number}` : ""}`, parts.neighborhood].filter(Boolean).join(" - ");
+      return { contractId, label: label || `contrato ${contractId}` };
+    }));
+    const seen = new Map<string, number>();
+    for (const option of options) seen.set(option.label, (seen.get(option.label) ?? 0) + 1);
+    return options.map((option) => (seen.get(option.label) ?? 0) > 1 ? { ...option, label: `${option.label} (contrato ${option.contractId})` } : option);
+  } catch { return undefined; }
+}
 
 export async function openAiServiceOrder(deps: AiServiceOrderDeps, input: AiServiceOrderInput): Promise<AiServiceOrderResult | undefined> {
   const baseSubject = aiServiceOrderSubject(input.intent, input.summary);
@@ -106,11 +142,37 @@ export async function openAiServiceOrder(deps: AiServiceOrderDeps, input: AiServ
     if (open) return { status: "existing", orderId: open.id, detail: `Já existe OS técnica aberta (nº ${open.id}); não abri outra.` };
     // Contrato e login lidos com prova de lista completa — o diagnóstico só traz 5 de cada.
     const active = await deps.provider.listActiveContracts(input.customerId, corr);
-    if (!active.complete || active.ids.length !== 1) return { status: "blocked", detail: `Contrato ativo único não confirmado (${active.complete ? `${active.ids.length} ativos` : "lista incompleta"}): a equipe abre a OS no contrato certo.` };
-    const contract = { id: active.ids[0] };
-    const ofContract = await deps.provider.listContractLogins(input.customerId, contract.id, corr);
+    if (!active.complete || active.ids.length === 0) return { status: "blocked", detail: `Contrato ativo não confirmado (${active.complete ? "nenhum ativo" : "lista incompleta"}): a equipe abre a OS no contrato certo.` };
+    // Sem internet: a conexão que caiu diz onde é o problema. Lenta, quedas, Wi-Fi e roteador não aparecem no login.
+    const noConnection = baseSubject === AI_OS_SUBJECTS.noConnection;
+    let chosen: { id: string; logins: Array<{ id: string; online: boolean | null }>; complete: boolean } | undefined;
+    if (input.contractId) {
+      if (!active.ids.includes(input.contractId)) return { status: "blocked", detail: `O contrato escolhido (${input.contractId}) não está mais ativo: a equipe abre a OS.` };
+      chosen = { id: input.contractId, ...await deps.provider.listContractLogins(input.customerId, input.contractId, corr) };
+    } else if (active.ids.length === 1) {
+      chosen = { id: active.ids[0], ...await deps.provider.listContractLogins(input.customerId, active.ids[0], corr) };
+    } else {
+      // Cliente com dois endereços (casa e escritório): OS no contrato errado manda o técnico para o lugar onde a internet
+      // funciona (Vinícius, 27/11). Escolhe pela conexão caída; sem como saber, pergunta ao cliente.
+      if (active.ids.length > MAX_CONTRACT_OPTIONS) return { status: "blocked", detail: `${active.ids.length} contratos ativos: a equipe abre a OS no contrato certo.` };
+      const all = await Promise.all(active.ids.map(async (id) => ({ id, ...await deps.provider.listContractLogins(input.customerId, id, corr) })));
+      const down = all.filter((item) => item.logins.some((login) => login.online === false));
+      if (noConnection && all.every((item) => item.complete) && down.length === 1) chosen = down[0];
+      else {
+        const why = noConnection ? (down.length === 0 ? "nenhuma conexão aparece caída" : `${down.length} conexões caídas`) : "o problema não aparece na conexão";
+        if (!input.allowChoice) return { status: "blocked", detail: `${active.ids.length} contratos ativos e ${why}: a equipe abre a OS no contrato certo.` };
+        const options = await contractOptions(deps, input.customerId, all.map((item) => item.id));
+        if (!options) return { status: "blocked", detail: `${active.ids.length} contratos ativos e ${why}; não consegui ler os endereços: a equipe abre a OS no contrato certo.` };
+        return { status: "choose", detail: `${active.ids.length} contratos ativos e ${why}: a IA perguntou ao cliente em qual endereço é.`, options };
+      }
+    }
+    const contract = { id: chosen.id };
+    const ofContract = chosen;
     const online = ofContract.logins.filter((item) => item.online === true);
-    const login = !ofContract.complete ? undefined : ofContract.logins.length === 1 ? ofContract.logins[0] : online.length === 1 ? online[0] : undefined;
+    const offline = ofContract.logins.filter((item) => item.online === false);
+    // Sem internet, com mais de um login no contrato: o que caiu é o do problema.
+    const login = !ofContract.complete ? undefined : ofContract.logins.length === 1 ? ofContract.logins[0]
+      : noConnection && offline.length === 1 ? offline[0] : online.length === 1 ? online[0] : undefined;
 
     // Moto ou carro: poste/telhado (ou fibra sem sinal) é carro; dentro de casa é moto; sem saber, carro.
     const fiberRx = data.fiber?.find((item) => item.loginId === login?.id)?.rxDbm ?? null;

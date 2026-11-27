@@ -345,6 +345,12 @@ export async function POST(request: Request) {
         return outcome;
       } : undefined,
       channel: CHANNEL_NAME, conversationId: message.phone, lookup: lookupCustomer,
+      // O mesmo, dizendo quando o número está em mais de um cadastro: a IA pede o CPF para abrir a OS em vez de desistir.
+      identify: provider ? async (phone) => {
+        const match = await provider.matchCustomerByPhone(phone, correlationId);
+        return match.kind === "one" ? { id: match.customer.id } : match.kind === "many" ? { ambiguous: true } : undefined;
+      } : undefined,
+      customerByDocument: agentConfig && provider ? (document, phone) => provider.customerByDocumentWithPhone(document, phone, correlationId) : undefined,
       // Atendimento técnico de cliente identificado ganha diagnóstico (contrato, login, massiva, OS aberta).
       diagnose: provider ? ixcDiagnose(provider, new DbIncidentsRepository(db), correlationId) : undefined,
       // Segunda via: confere o titular pelo CPF. Os dados da fatura só saem pela IA com FEATURE_AI_INVOICE.

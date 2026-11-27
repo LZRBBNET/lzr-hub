@@ -22,7 +22,7 @@ import {
   extractDocument, invoiceDraft, type InvoiceSelfService,
 } from "./invoice-self-service-shared.ts";
 import {
-  CLARIFY_BELOW, CLARIFY_TEXT, DIAGNOSABLE_INTENTS, QUEUE_LABELS, TRIAGE_LIST, isBusinessHours, nextOpeningText, offHoursMenuText, offHoursNote, formatProtocol, menuChoice, protocolFooter, queueForIntent,
+  CLARIFY_BELOW, CLARIFY_TEXT, DIAGNOSABLE_INTENTS, IDENTIFICATION_LABELS, QUEUE_LABELS, TRIAGE_LIST, isBusinessHours, nextOpeningText, offHoursMenuText, offHoursNote, formatProtocol, menuChoice, protocolFooter, queueForIntent,
   type TriageQueue,
   type TicketIdentification, type TicketStage, type TicketSummary,
 } from "./triage-shared.ts";
@@ -122,6 +122,10 @@ export async function markProtocolQuoted(repository: TicketRepository, channel: 
 
 /** Busca no IXC pelo telefone. Lança quando o IXC não responde; `undefined` = nenhum ou mais de um cadastro. */
 export type CustomerLookup = (phone: string) => Promise<{ id: string } | undefined>;
+/** A identificação pelo telefone dizendo se o número está em mais de um cadastro (`ambiguous`). */
+export type PhoneIdentify = (phone: string) => Promise<{ id: string } | { ambiguous: true } | undefined>;
+/** O cadastro de um CPF/CNPJ e se o telefone da conversa está nele. `undefined` = documento sem cadastro. */
+export type DocumentLookup = (document: string, phone: string) => Promise<{ id: string; phoneMatches: boolean } | undefined>;
 
 /**
  * Quem é o cliente, uma vez por atendimento. O IXC tem limite de consultas por
@@ -129,12 +133,13 @@ export type CustomerLookup = (phone: string) => Promise<{ id: string } | undefin
  * campo): repetir a cada mensagem gastaria o limite que o atendente precisa.
  * Só tenta de novo quando o IXC não respondeu da última vez.
  */
-export async function identifyTicketCustomer(repository: TicketRepository, ticket: TicketRow, lookup: CustomerLookup): Promise<TicketRow> {
-  if (ticket.identification === "identified" || ticket.identification === "not_found") return ticket;
+export async function identifyTicketCustomer(repository: TicketRepository, ticket: TicketRow, lookup: CustomerLookup | PhoneIdentify): Promise<TicketRow> {
+  if (ticket.identification !== "pending" && ticket.identification !== "unavailable") return ticket;
   let patch: TicketPatch;
   try {
     const customer = await lookup(ticket.conversationId);
-    patch = customer ? { identification: "identified", ixcCustomerId: customer.id } : { identification: "not_found", ixcCustomerId: null };
+    patch = customer && "id" in customer ? { identification: "identified", ixcCustomerId: customer.id }
+      : customer ? { identification: "ambiguous", ixcCustomerId: null } : { identification: "not_found", ixcCustomerId: null };
   } catch {
     patch = { identification: "unavailable" };
   }
@@ -149,8 +154,9 @@ export async function identifyTicketCustomer(repository: TicketRepository, ticke
  */
 export function knownCustomer(ticket: TicketRow): CustomerLookup {
   return async () => {
-    if (ticket.identification === "identified" && ticket.ixcCustomerId) return { id: ticket.ixcCustomerId };
+    if ((ticket.identification === "identified" || ticket.identification === "cpf_only") && ticket.ixcCustomerId) return { id: ticket.ixcCustomerId };
     if (ticket.identification === "not_found") return undefined;
+    // Número em mais de um cadastro é de cliente: não vira lead (cai no "na dúvida, não cria").
     throw new Error("IXC indisponível");
   };
 }
@@ -308,7 +314,7 @@ export function ixcInvoiceLookup(
 /** A IA pediu o CPF e ainda espera — a resposta a isso não pode cair na regra "uma por espera". */
 export function awaitingCpf(ticket: TicketRow): boolean {
   const step = ticket.selfService?.step;
-  return step === "awaiting_cpf" || (step === "invalid_cpf" && (ticket.selfService?.attempts ?? 0) < MAX_CPF_ATTEMPTS);
+  return step === "awaiting_cpf" || step === "awaiting_choice" || (step === "invalid_cpf" && (ticket.selfService?.attempts ?? 0) < MAX_CPF_ATTEMPTS);
 }
 
 /**
@@ -412,19 +418,35 @@ export interface TriageMode {
   /** Modo autônomo: desbloqueio de confiança pedido na conversa (`FEATURE_AI_TRUST_UNLOCK`). */
   trustUnlock?: TrustUnlocker;
   trustIdentity?: CustomerLookup;
+  /**
+   * Modo autônomo, OS: o telefone não identificou um cadastro (nenhum ou mais de um) — a IA pede o CPF e este é o
+   * cadastro dele. Pedido do Vinícius (27/11): "o que ela não conseguir resolver gera OS, custe o que custar".
+   */
+  customerByDocument?: DocumentLookup;
   trustInboundAt?: string;
   trustPromptDelivered?: (messageId: string) => Promise<boolean>;
   now?: () => number;
 }
 
+/** O que a abertura da OS diz à resposta: o número, a que já existia, ou que falta o CPF para saber em quem abrir. */
+export type ServiceOrderReply = { id: string; existing?: boolean } | { needsCpf: true } | { chooseFrom: Array<{ contractId: string; label: string }> };
+/** A pergunta do endereço, numerada como o menu: o cliente responde o número. */
+export function contractChoiceText(options: Array<{ label: string }>): string {
+  return `Você tem mais de um endereço com a BBNET. Em qual deles está o problema? Responda com o número:\n${options.map((option, index) => `${index + 1}. ${option.label}`).join("\n")}`;
+}
+export const SERVICE_ORDER_CPF_TEXT = "Para eu abrir a ordem de serviço no cadastro certo, me diga o CPF (ou CNPJ) do titular do contrato, só os números.";
+
 /**
  * Quando a equipe dá continuidade a um pedido registrado: no horário, ainda hoje; fora, a
  * próxima abertura. Com OS aberta pela IA, diz o número — só o que o IXC devolveu com número.
  */
-export function requestFooter(protocol: string | null, queue: string | null, at: Date, order?: { id: string; existing?: boolean }): string {
+export function requestFooter(protocol: string | null, queue: string | null, at: Date, order?: ServiceOrderReply): string {
   const team = queue && queue in QUEUE_LABELS ? `a equipe de ${QUEUE_LABELS[queue as TriageQueue].toLowerCase()}` : "a equipe";
   const when = isBusinessHours(at) ? "ainda hoje, por aqui" : `${nextOpeningText(at)}, por aqui`;
   const proto = protocol ? ` (protocolo ${protocol})` : "";
+  // Sem cadastro certo pelo telefone, a OS não tem em quem nascer: a IA pede o CPF e abre na resposta seguinte.
+  if (order && "needsCpf" in order) return `${protocol ? `Seu pedido ficou registrado no protocolo ${protocol}. ` : ""}${SERVICE_ORDER_CPF_TEXT}`;
+  if (order && "chooseFrom" in order) return `${protocol ? `Seu pedido ficou registrado no protocolo ${protocol}. ` : ""}${contractChoiceText(order.chooseFrom)}`;
   if (order?.existing) return `Você já tem uma ordem de serviço aberta, nº ${order.id}${proto}: ${team} segue com ela e retorna ${when}.`;
   // Pedido da operação (24/11): o técnico liga antes de sair, para não ir à toa a uma casa vazia.
   if (order) return `Abri a ordem de serviço nº ${order.id}${proto}. Antes de sair para o atendimento, o técnico vai entrar em contato para confirmar se tem alguém em casa.`;
@@ -457,8 +479,93 @@ export function triageHooks(repository: TicketRepository, ticket: TicketRow, dia
   // O diagnóstico desta fala (a linha do atendimento em memória não é atualizada pelo `update`).
   let diagnosisNow: ConnectionDiagnosis | null = ticket.diagnosis;
   let intakeNow: TicketIntake | null = ticket.intake ?? null;
+  // Cadastro certo para a OS: pelo telefone, ou pelo CPF quando o telefone não bastou.
+  const known = () => (ticket.identification === "identified" || ticket.identification === "cpf_only") && !!ticket.ixcCustomerId;
+  /** O desfecho da OS fica na ficha, qualquer que seja: em 27/11 a OS "sumiu" sem deixar motivo. */
+  const saveOutcome = async (status: string, detail: string, selfService?: InvoiceSelfService) => {
+    if (intakeNow) intakeNow = { ...intakeNow, serviceOrderStatus: status, serviceOrderDetail: detail };
+    if (selfService) ticket.selfService = selfService;
+    await repository.update(ticket.id, { ...(intakeNow ? { intake: intakeNow } : {}), ...(selfService ? { selfService } : {}) }).catch(() => undefined);
+  };
+  const runServiceOrder = async (intent: string, contractId?: string): Promise<ServiceOrderReply | undefined> => {
+    if (!mode.serviceOrder || !intakeNow || !ticket.ixcCustomerId) return undefined;
+    let result: AiServiceOrderResult | undefined;
+    try {
+      result = await mode.serviceOrder({ customerId: ticket.ixcCustomerId, ticketId: ticket.id, intent, summary: intakeNow.summary, protocol: ticket.protocol,
+        contractId, allowChoice: ticket.identification === "identified" });
+    } catch { result = { status: "failed", detail: "Erro inesperado ao abrir a OS." }; }
+    if (!result) { await saveOutcome("skipped", "Assunto sem OS automática: a equipe trata."); return undefined; }
+    if (result.status === "choose") {
+      await saveOutcome("awaiting_choice", result.detail, { purpose: "service_order", step: "awaiting_choice", at: at().toISOString(), attempts: 0, options: result.options });
+      return { chooseFrom: result.options };
+    }
+    intakeNow = { ...intakeNow, serviceOrderStatus: result.status, serviceOrderDetail: result.detail, ...("orderId" in result ? { serviceOrderId: result.orderId } : {}) };
+    await repository.update(ticket.id, { intake: intakeNow }).catch(() => undefined);
+    return result.status === "success" || result.status === "existing" ? { id: result.orderId, existing: result.status === "existing" } : undefined;
+  };
+  /**
+   * A resposta ao "me diga o CPF" da OS. O CPF acha o cadastro; se o telefone da conversa está nele, é a mesma prova da
+   * 2ª via (`identified`); se não, vale só para a OS (`cpf_only`) — fatura e desbloqueio continuam exigindo os dois.
+   * O documento não é gravado: a fala fica como "[documento omitido]".
+   */
+  /** A resposta à pergunta do endereço: o número da lista (ou o nome da rua). Outra coisa segue a conversa. */
+  const contractChoice = async (text: string): Promise<TriageTurn | undefined> => {
+    const options = ticket.selfService?.options ?? [];
+    const plain = text.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().trim();
+    const number = /^\s*(?:o\s+|op[cç][aã]o\s+|n[uú]mero\s+)?(\d)\s*[.)!]?\s*$/i.exec(plain)?.[1];
+    const byNumber = number ? options[Number(number) - 1] : undefined;
+    const byStreet = byNumber ? undefined : options.filter((option) => {
+      const street = option.label.split(/[,-]/)[0].normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().trim();
+      return street.length > 3 && plain.includes(street);
+    });
+    const picked = byNumber ?? (byStreet?.length === 1 ? byStreet[0] : undefined);
+    if (!picked) return undefined;
+    const intent = (intakeNow?.intent ?? ticket.intent ?? "technical_visit") as Intent;
+    ticket.selfService = { ...ticket.selfService!, step: "verified", at: at().toISOString() };
+    await repository.update(ticket.id, { selfService: ticket.selfService }).catch(() => undefined);
+    const order = await runServiceOrder(intent, picked.contractId);
+    return { text: `Certo, ${picked.label}. ${requestFooter(ticket.protocol, queueForIntent(intent), at(), order)}`, status: "replied", intent,
+      label: "Endereço escolhido para a OS", handoff: true, keepInQueue: true };
+  };
+  const serviceOrderCpf = async (text: string): Promise<TriageTurn | undefined> => {
+    if (ticket.selfService?.step === "awaiting_choice") return contractChoice(text);
+    if (!awaitingCpf(ticket) || !mode.customerByDocument) return undefined;
+    const found = extractDocument(text);
+    if (!found.digits && !found.invalid) return undefined;
+    const attempts = (ticket.selfService?.attempts ?? 0) + 1;
+    const intent = (intakeNow?.intent ?? ticket.intent ?? "technical_visit") as Intent;
+    const stamp = at().toISOString();
+    const turn = (body: string, waiting = false): TriageTurn => ({
+      text: body, status: waiting ? "waiting_customer" : "replied", intent, label: "CPF do titular para a OS",
+      storedCustomerText: "[documento omitido]", handoff: !waiting, clarifying: waiting, keepInQueue: true,
+    });
+    const team = "A equipe abre a ordem de serviço e fala com você por aqui.";
+    if (!found.digits) {
+      const last = attempts >= MAX_CPF_ATTEMPTS;
+      await saveOutcome(last ? "skipped" : "awaiting_cpf", last ? "CPF inválido duas vezes: a equipe abre a OS." : "CPF inválido: a IA pediu de novo.",
+        { purpose: "service_order", step: "invalid_cpf", at: stamp, attempts });
+      return turn(last ? `Não consegui confirmar o CPF. ${team}` : INVALID_CPF_TEXT, !last);
+    }
+    let match: { id: string; phoneMatches: boolean } | undefined;
+    try { match = await withinBudget(mode.customerByDocument(found.digits, ticket.conversationId), DIAGNOSIS_BUDGET_MS); }
+    catch {
+      await saveOutcome("failed", "O IXC não respondeu à consulta do CPF: a equipe abre a OS.", { purpose: "service_order", step: "unavailable", at: stamp, attempts });
+      return turn(`Não consegui consultar o cadastro agora. ${team}`);
+    }
+    if (!match) {
+      await saveOutcome("skipped", "Nenhum cadastro no IXC com o CPF informado: a equipe confere e abre a OS.", { purpose: "service_order", step: "mismatch", at: stamp, attempts });
+      return turn(`Não encontrei cadastro com esse documento. ${team}`);
+    }
+    const identification: TicketIdentification = match.phoneMatches ? "identified" : "cpf_only";
+    ticket.identification = identification; ticket.ixcCustomerId = match.id;
+    ticket.selfService = { purpose: "service_order", step: "verified", at: stamp, attempts };
+    await repository.update(ticket.id, { identification, ixcCustomerId: match.id, selfService: ticket.selfService }).catch(() => undefined);
+    const order = await runServiceOrder(intent);
+    return turn(`Cadastro confirmado, obrigado! ${requestFooter(ticket.protocol, queueForIntent(intent), at(), order)}`);
+  };
   return {
     intercept: async (text, context) => {
+      if (ticket.selfService?.purpose === "service_order") return serviceOrderCpf(text);
       if (!trustState) return invoiceHooks.intercept?.(text, context);
       if (!awaitingCpf(ticket)) return undefined;
       const found = extractDocument(text);
@@ -550,14 +657,19 @@ export function triageHooks(repository: TicketRepository, ticket: TicketRow, dia
       return outcome;
     },
     openServiceOrder: async (intent) => {
-      if (!mode.serviceOrder || !intakeNow || ticket.identification !== "identified" || !ticket.ixcCustomerId) return undefined;
-      let result: AiServiceOrderResult | undefined;
-      try { result = await mode.serviceOrder({ customerId: ticket.ixcCustomerId, ticketId: ticket.id, intent, summary: intakeNow.summary, protocol: ticket.protocol }); }
-      catch { result = { status: "failed", detail: "Erro inesperado ao abrir a OS." }; }
-      if (!result) return undefined;
-      intakeNow = { ...intakeNow, serviceOrderStatus: result.status, serviceOrderDetail: result.detail, ...("orderId" in result ? { serviceOrderId: result.orderId } : {}) };
-      await repository.update(ticket.id, { intake: intakeNow }).catch(() => undefined);
-      return result.status === "success" || result.status === "existing" ? { id: result.orderId, existing: result.status === "existing" } : undefined;
+      if (!mode.serviceOrder || !intakeNow) return undefined;
+      if (!known()) {
+        if (!intent.startsWith("technical_")) return undefined;
+        // Sem cadastro certo pelo telefone a OS não tem em quem nascer: a IA pede o CPF e abre na resposta seguinte.
+        if (mode.customerByDocument) {
+          await saveOutcome("awaiting_cpf", `${IDENTIFICATION_LABELS[ticket.identification] ?? ticket.identification}: a IA pediu o CPF do titular para abrir a OS.`,
+            { purpose: "service_order", step: "awaiting_cpf", at: at().toISOString(), attempts: 0 });
+          return { needsCpf: true };
+        }
+        await saveOutcome("skipped", `${IDENTIFICATION_LABELS[ticket.identification] ?? ticket.identification}: sem cadastro para abrir a OS, a equipe abre.`);
+        return undefined;
+      }
+      return runServiceOrder(intent);
     },
     footer: (context) => {
       const lines: string[] = [];
@@ -589,13 +701,13 @@ export function triageHooks(repository: TicketRepository, ticket: TicketRow, dia
  */
 export async function startTriage(
   repository: TicketRepository,
-  input: { channel: string; conversationId: string; lookup: CustomerLookup; diagnose?: Diagnose; invoice?: InvoiceOptions; offHours?: boolean; internalDiagnosisOnly?: boolean; agent?: boolean; serviceOrder?: ServiceOrderOpener; trustUnlock?: TrustUnlocker; trustIdentity?: CustomerLookup; trustInboundAt?: string; trustPromptDelivered?: (messageId: string) => Promise<boolean>; now?: number },
+  input: { channel: string; conversationId: string; lookup: CustomerLookup; identify?: PhoneIdentify; customerByDocument?: DocumentLookup; diagnose?: Diagnose; invoice?: InvoiceOptions; offHours?: boolean; internalDiagnosisOnly?: boolean; agent?: boolean; serviceOrder?: ServiceOrderOpener; trustUnlock?: TrustUnlocker; trustIdentity?: CustomerLookup; trustInboundAt?: string; trustPromptDelivered?: (messageId: string) => Promise<boolean>; now?: number },
 ): Promise<{ ticket: TicketRow; hooks: TriageHooks; knownCustomer: CustomerLookup; awaitingAnswer: boolean; handedOff: boolean } | undefined> {
   try {
     const { ticket: opened } = await openOrContinueTicket(repository, input);
-    const ticket = await identifyTicketCustomer(repository, opened, input.lookup);
+    const ticket = await identifyTicketCustomer(repository, opened, input.identify ?? input.lookup);
     return {
-      ticket, hooks: triageHooks(repository, ticket, input.diagnose, input.invoice, { offHours: input.offHours, internalDiagnosisOnly: input.internalDiagnosisOnly, agent: input.agent, serviceOrder: input.serviceOrder, trustUnlock: input.trustUnlock, trustIdentity: input.trustIdentity, trustInboundAt: input.trustInboundAt, trustPromptDelivered: input.trustPromptDelivered, now: input.now === undefined ? undefined : () => input.now as number }), knownCustomer: knownCustomer(ticket),
+      ticket, hooks: triageHooks(repository, ticket, input.diagnose, input.invoice, { offHours: input.offHours, internalDiagnosisOnly: input.internalDiagnosisOnly, agent: input.agent, serviceOrder: input.serviceOrder, customerByDocument: input.customerByDocument, trustUnlock: input.trustUnlock, trustIdentity: input.trustIdentity, trustInboundAt: input.trustInboundAt, trustPromptDelivered: input.trustPromptDelivered, now: input.now === undefined ? undefined : () => input.now as number }), knownCustomer: knownCustomer(ticket),
       // A IA perguntou algo (assunto ou CPF): a resposta do cliente merece resposta.
       awaitingAnswer: ticket.stage === "clarifying" || awaitingCpf(ticket),
       // A IA passou para o atendente neste atendimento: no modo autônomo, ela não volta a falar sozinha.

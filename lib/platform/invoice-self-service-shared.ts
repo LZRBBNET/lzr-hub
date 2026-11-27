@@ -18,7 +18,7 @@ export const INVOICE_INTENTS = new Set(["financial_invoice", "financial_pix"]);
 /** Tentativas de CPF antes de passar para o atendente. */
 export const MAX_CPF_ATTEMPTS = 2;
 
-export type InvoiceStep = "awaiting_cpf" | "invalid_cpf" | "verified" | "mismatch" | "unavailable";
+export type InvoiceStep = "awaiting_cpf" | "invalid_cpf" | "verified" | "mismatch" | "unavailable" | "awaiting_choice";
 
 export interface InvoicePreviewItem { id: string; dueAt: string | null; value: number | null; overdue: boolean; paymentCode: string | null }
 
@@ -26,9 +26,12 @@ export interface InvoiceSelfService {
   step: InvoiceStep;
   at: string;
   attempts: number;
-  purpose?: "trust_unlock";
+  /** `service_order`: o CPF pedido para achar o cadastro da OS quando o telefone não bastou. */
+  purpose?: "trust_unlock" | "service_order";
   verifiedHolderId?: string;
   unlockPromptMessageId?: string;
+  /** OS de cliente com mais de um contrato: os endereços oferecidos, na ordem em que o cliente os viu. */
+  options?: Array<{ contractId: string; label: string }>;
   /** Faturas em aberto do titular confirmado. Ausente antes da confirmação. */
   invoices?: InvoicePreviewItem[];
   /** PIX copia-e-cola da fatura que vence primeiro. Nulo = o IXC não devolveu (o rascunho segue sem ele). */
@@ -101,4 +104,5 @@ export const INVOICE_STEP_LABELS: Record<InvoiceStep, string> = {
   verified: "Titular confirmado pelo CPF",
   mismatch: "CPF não confere com o cadastro do número",
   unavailable: "IXC não respondeu à conferência",
+  awaiting_choice: "IA perguntou em qual endereço é o problema",
 };

@@ -55,7 +55,7 @@ const n8nPadrao = async (body) => {
   return "NAO_SEI";
 };
 
-async function montar({ n8n = n8nPadrao, lookup = async () => undefined, diagnose, serviceOrder, trustUnlock, invoice, trustIdentity, trustPromptDelivered, trustSentAt, trustActionUnavailable, onTrustActionStage, offHours = false } = {}) {
+async function montar({ n8n = n8nPadrao, lookup = async () => undefined, identify, customerByDocument, diagnose, serviceOrder, trustUnlock, invoice, trustIdentity, trustPromptDelivered, trustSentAt, trustActionUnavailable, onTrustActionStage, offHours = false } = {}) {
   const docs = new MemoryKnowledgeRepository();
   for (const [title, content] of DOCS) { const doc = await docs.create({ title, category: "geral", content }); await docs.publish(doc.id); }
   const channel = new MemoryChannelRepository();
@@ -70,7 +70,7 @@ async function montar({ n8n = n8nPadrao, lookup = async () => undefined, diagnos
   // Reproduz a rota da Meta com FEATURE_AI_AGENT: a IA fala sempre, em modo conversa.
   const receber = async (text) => {
     const wamid = `wamid.A${++n}`;
-    const triage = await startTriage(tickets, { channel: CHANNEL_NAME, conversationId: CLIENTE, lookup, diagnose, serviceOrder, trustUnlock, invoice, trustIdentity, trustPromptDelivered, trustInboundAt:trustSentAt ? trustSentAt(n) : new Date(Date.now() + n * 1000 - 500).toISOString(), now:Date.now() + n * 1000, offHours, agent: true });
+    const triage = await startTriage(tickets, { channel: CHANNEL_NAME, conversationId: CLIENTE, lookup, identify, customerByDocument, diagnose, serviceOrder, trustUnlock, invoice, trustIdentity, trustPromptDelivered, trustInboundAt:trustSentAt ? trustSentAt(n) : new Date(Date.now() + n * 1000 - 500).toISOString(), now:Date.now() + n * 1000, offHours, agent: true });
     const auto = await metaAutoReplyOptions({
       enabled: true, states, messages: channel, claims, config: metaConfig, channel: CHANNEL_NAME,
       delivery: { begin: async () => "t", finish: async () => {}, settleUncertain: async () => {} },
@@ -540,4 +540,90 @@ test("fila humana: recebe a saudação e a solicitação sem reenviar fallback d
   assert.equal(f.textos().length,sends);
   assert.equal(trust,0);
   assert.equal(f.ticket().stage,"handoff");
+});
+
+test("número em mais de um cadastro: a IA pede o CPF e abre a OS no cadastro do CPF (conversa da Estefany, 27/11)", async () => {
+  const pedidos = [];
+  const serviceOrder = async (input) => { pedidos.push(input); return { status: "success", orderId: "301500", detail: "ok" }; };
+  const consultas = [];
+  const customerByDocument = async (document, phone) => { consultas.push([document, phone]); return { id: "13909", phoneMatches: true }; };
+  const { receber, textos, ticket, historico } = await montar({ identify: async () => ({ ambiguous: true }), customerByDocument, serviceOrder });
+  await receber("estou sem internet");
+  assert.equal(ticket().identification, "ambiguous");
+  await receber("a luz LOS ta vermelha");
+  await receber("de tarde");
+  assert.equal(pedidos.length, 0, "sem cadastro certo ainda não abre");
+  assert.match(textos()[2], /me diga o CPF/);
+  assert.equal(ticket().intake.serviceOrderStatus, "awaiting_cpf");
+  await receber("529.982.247-25");
+  assert.deepEqual(consultas[0], ["52998224725", CLIENTE]);
+  assert.equal(pedidos.length, 1);
+  assert.equal(pedidos[0].customerId, "13909");
+  assert.match(textos()[3], /Abri a ordem de serviço nº 301500/);
+  assert.equal(ticket().identification, "identified", "CPF e telefone do mesmo cadastro");
+  assert.equal(ticket().intake.serviceOrderId, "301500");
+  assert.ok((await historico()).some((row) => row.content === "[documento omitido]"), "o CPF não fica no histórico");
+});
+
+test("número fora do IXC: o CPF acha o cadastro e a OS sai, mas a identificação vale só para a OS", async () => {
+  const pedidos = [];
+  const serviceOrder = async (input) => { pedidos.push(input); return { status: "success", orderId: "301501", detail: "ok" }; };
+  const { receber, textos, ticket } = await montar({ identify: async () => undefined, customerByDocument: async () => ({ id: "555", phoneMatches: false }), serviceOrder });
+  await receber("estou sem internet");
+  await receber("a luz LOS ta vermelha");
+  await receber("de tarde");
+  await receber("52998224725");
+  assert.equal(pedidos[0]?.customerId, "555");
+  assert.match(textos()[3], /Abri a ordem de serviço nº 301501/);
+  assert.equal(ticket().identification, "cpf_only");
+});
+
+test("CPF sem cadastro: a IA diz que a equipe abre a OS e o motivo fica na ficha", async () => {
+  const serviceOrder = async () => { throw new Error("não devia abrir"); };
+  const { receber, textos, ticket } = await montar({ identify: async () => ({ ambiguous: true }), customerByDocument: async () => undefined, serviceOrder });
+  await receber("estou sem internet");
+  await receber("a luz LOS ta vermelha");
+  await receber("de tarde");
+  await receber("52998224725");
+  assert.match(textos()[3], /Não encontrei cadastro com esse documento/);
+  assert.equal(ticket().intake.serviceOrderStatus, "skipped");
+  assert.match(ticket().intake.serviceOrderDetail, /Nenhum cadastro/);
+});
+
+test("pedido técnico já registrado: \"vai vir amanhã?\" ganha o próximo passo, não só \"já está anotado\"", async () => {
+  const n8n = async (body) => /amanh/i.test(body.question) ? { answer: "Certo.", state: "request_complete", summary: "de novo" } : n8nPadrao(body);
+  const { receber, textos } = await montar({ n8n, lookup: async () => ({ id: "21857" }) });
+  await receber("estou sem internet");
+  await receber("a luz LOS ta vermelha");
+  await receber("de tarde");
+  await receber("vai vir amanhã de manhã?");
+  assert.match(textos()[3], /O técnico entra em contato antes de ir/);
+});
+
+test("dois endereços: a IA pergunta em qual é o problema e abre a OS no escolhido", async () => {
+  const pedidos = [];
+  const options = [{ contractId: "36058", label: "Rua A, 10 - Centro" }, { contractId: "48901", label: "Rua B, 20 - Centro" }];
+  const serviceOrder = async (input) => { pedidos.push(input); return input.contractId ? { status: "success", orderId: "301600", detail: "ok" } : { status: "choose", detail: "2 contratos", options }; };
+  const { receber, textos, ticket } = await montar({ lookup: async () => ({ id: "21857" }), serviceOrder });
+  await receber("estou sem internet");
+  await receber("a luz LOS ta vermelha");
+  await receber("de tarde");
+  assert.equal(pedidos[0].allowChoice, true, "titular pelo telefone: pode ver os próprios endereços");
+  assert.match(textos()[2], /mais de um endereço/);
+  assert.match(textos()[2], /1\. Rua A, 10 - Centro\n2\. Rua B, 20 - Centro/);
+  assert.equal(ticket().intake.serviceOrderStatus, "awaiting_choice");
+  await receber("2");
+  assert.equal(pedidos[1].contractId, "48901");
+  assert.match(textos()[3], /Certo, Rua B, 20 - Centro\. Abri a ordem de serviço nº 301600/);
+});
+
+test("identificado só pelo CPF: a IA não lista endereços para o número", async () => {
+  const pedidos = [];
+  const serviceOrder = async (input) => { pedidos.push(input); return { status: "blocked", detail: "2 contratos" }; };
+  const { receber } = await montar({ identify: async () => undefined, customerByDocument: async () => ({ id: "555", phoneMatches: false }), serviceOrder });
+  await receber("estou sem internet");
+  await receber("a luz LOS ta vermelha");
+  await receber("de tarde");
+  await receber("52998224725");
+  assert.equal(pedidos[0].allowChoice, false);
 });
