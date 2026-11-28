@@ -204,7 +204,7 @@ export interface TriageHooks {
    * O que vai no fim da resposta: o protocolo (na primeira) e, fora do horário, quando o
    * atendimento com pessoas volta. Com `request` (o assunto do pedido), a linha de pedido registrado.
    */
-  footer(context?: { clarifying?: boolean; handoff?: boolean; request?: string; serviceOrder?: { id: string; existing?: boolean } }): string | undefined;
+  footer(context?: { clarifying?: boolean; handoff?: boolean; request?: string; serviceOrder?: { id: string; existing?: boolean } | { needsCpf: true } | { chooseFrom: Array<{ contractId: string; label: string }> } }): string | undefined;
   /** Modo autônomo: o assunto do atendimento, se o cliente é identificado e o que o sistema sabe (diagnóstico, pedido já feito). */
   /** `offHours`: fora do horário a IA atende sozinha (ver `OFF_HOURS` em `agent-playbook-shared.ts`). */
   context?(): { topic: string | null; identified: boolean; facts: string[]; registered?: boolean; offHours?: boolean; protocol?: string | null; resumesAt?: string };
@@ -216,7 +216,7 @@ export interface TriageHooks {
    * Modo autônomo: abre a OS no IXC para o pedido técnico pronto. Devolve o número só quando o
    * IXC criou (ou já havia uma aberta); qualquer outro desfecho deixa a ficha para a equipe.
    */
-  openServiceOrder?(intent: string): Promise<{ id: string; existing?: boolean } | undefined>;
+  openServiceOrder?(intent: string): Promise<{ id: string; existing?: boolean } | { needsCpf: true } | { chooseFrom: Array<{ contractId: string; label: string }> } | undefined>;
   /** Modo autônomo: o modelo pediu o desbloqueio de confiança; a triagem confere tudo e devolve o texto do desfecho. */
   trustUnlock?(promisedDate?: string, currentText?: string): Promise<{ status: string; text: string } | undefined>;
   record(entry: { intent: string; source: string; confidence: number; clarifying: boolean; delivered: boolean; protocolIncluded: boolean; handoff?: boolean }): Promise<void>;
@@ -690,7 +690,12 @@ async function doubtBotTurn(
     return currentTurnClarification(repository, input, metrics, options, aboutUnlock ? TRUST_CONFIRM_QUESTION : "Só para confirmar: o que você precisa agora?");
   }
   const already = !trustAction && !!bot.agent && result.state === "request_complete" && !!options.triage?.context?.().registered;
-  if (already) result = { ...result, text: "Já está anotado, tá bom? A equipe da BBNET continua por aqui. Se precisar de mais alguma coisa, é só me chamar.", state: "ongoing" };
+  // Pedido técnico: o cliente quer saber quando vem o técnico ("vai vim amanhã de manhã?", 27/11) — a data não é da IA,
+  // mas o próximo passo é: o técnico liga antes de ir. Sem isso, "já está anotado" não respondia a pergunta.
+  const technical = (options.triage?.context?.().topic ?? classified.intent).startsWith("technical_");
+  if (already) result = { ...result, text: technical
+    ? "Já está anotado, com o período que você escolheu. O técnico entra em contato antes de ir, para combinar o dia e confirmar se tem alguém em casa. Se precisar de mais alguma coisa, é só me chamar."
+    : "Já está anotado, tá bom? A equipe da BBNET continua por aqui. Se precisar de mais alguma coisa, é só me chamar.", state: "ongoing" };
   const request = !trustAction && !!bot.agent && result.state === "request_complete";
   if (request) await options.triage?.registerRequest?.(result.summary ?? result.text, classified.intent).catch(() => undefined);
   // Pedido técnico pronto: a OS sai no IXC antes da confirmação — o "abri a OS nº X" só é dito com o número na mão.

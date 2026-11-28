@@ -214,7 +214,12 @@ export const protocolFooter = (protocol: string) => `Protocolo do atendimento: $
 
 /** `handoff`: a IA (modo autônomo) passou para o atendente e se cala até alguém devolver a conversa a ela. */
 export type TicketStage = "new" | "clarifying" | "routed" | "handoff";
-export type TicketIdentification = "pending" | "identified" | "not_found" | "unavailable";
+/**
+ * `ambiguous`: o telefone está em mais de um cadastro (em 27/11, o celular de uma cliente estava em 7). `cpf_only`: o
+ * telefone não identificou e o CPF que o cliente mandou achou o cadastro — vale para abrir a OS, **não** para fatura nem
+ * desbloqueio, que continuam exigindo telefone e CPF do mesmo cadastro.
+ */
+export type TicketIdentification = "pending" | "identified" | "not_found" | "ambiguous" | "cpf_only" | "unavailable";
 
 /** O que a tela mostra do atendimento. */
 export interface TicketSummary {
@@ -252,6 +257,8 @@ export const STAGE_LABELS: Record<TicketStage, string> = {
 export const IDENTIFICATION_LABELS: Record<TicketIdentification, string> = {
   pending: "Consultando o IXC",
   identified: "Cliente identificado pelo telefone",
-  not_found: "Telefone sem cadastro único no IXC",
+  not_found: "Telefone sem cadastro no IXC",
+  ambiguous: "Telefone em mais de um cadastro do IXC",
+  cpf_only: "Cliente identificado pelo CPF (só para a OS)",
   unavailable: "IXC não respondeu",
 };

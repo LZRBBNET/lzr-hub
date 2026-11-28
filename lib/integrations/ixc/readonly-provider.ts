@@ -240,8 +240,17 @@ export class IxcReadonlyProvider {
    * WhatsApp do cadastro.
    */
   async findCustomerByPhone(phone:string,correlationId:string):Promise<IxcCustomerDto|undefined>{
+    const match=await this.matchCustomerByPhone(phone,correlationId);
+    return match.kind==="one"?match.customer:undefined;
+  }
+  /**
+   * O mesmo que `findCustomerByPhone`, dizendo **por que** não identificou: nenhum cadastro ou mais de um.
+   * Em 27/11 o celular de uma cliente estava em 7 cadastros (o dela e órgãos municipais de que ela é contato):
+   * "não encontrado" na tela escondia isso, e a IA não tinha como pedir o CPF para desempatar.
+   */
+  async matchCustomerByPhone(phone:string,correlationId:string):Promise<{kind:"one";customer:IxcCustomerDto}|{kind:"many"|"none"}>{
     const candidates=phoneCandidates(phone);
-    if(candidates.length===0)return undefined;
+    if(candidates.length===0)return {kind:"none"};
     for(const fields of PHONE_FIELD_TIERS){
       // Junta o que cada formato achou antes de decidir. Devolver o primeiro
       // acerto faria a resposta depender da ordem da busca — e se dois formatos
@@ -255,19 +264,32 @@ export class IxcReadonlyProvider {
           // antemão para checar contra a allowlist — depende da base liberada.
           // rp=2 de propósito: só precisamos saber se é um ou mais de um.
           const {records}=await this.readPage("listCustomers","cliente",`cliente.${field}`,masked,correlationId,2,"",{oper:"=",sortname:"cliente.id"});
-          if(records.length>1)return undefined;
+          if(records.length>1)return {kind:"many"};
           if(records.length===1){
             const customer=IxcCustomerMapper.map(records[0]);
             found.set(customer.id,customer);
           }
         }
       }
-      if(found.size===1)return [...found.values()][0];
+      if(found.size===1)return {kind:"one",customer:[...found.values()][0]};
       // Achou mais de um cadastro distinto: é ambíguo, e o próximo campo não
       // desempata — só acrescentaria mais um palpite.
-      if(found.size>1)return undefined;
+      if(found.size>1)return {kind:"many"};
     }
-    return undefined;
+    return {kind:"none"};
+  }
+  /**
+   * O cadastro deste CPF/CNPJ tem este telefone em algum dos campos de telefone? É o desempate do número que está em
+   * mais de um cadastro: o CPF diz qual, o telefone prova que é do mesmo cadastro. Devolve `undefined` sem cadastro
+   * com o documento.
+   */
+  async customerByDocumentWithPhone(document:string,phone:string,correlationId:string):Promise<{id:string;phoneMatches:boolean}|undefined>{
+    const customer=await this.findCustomerByDocument(document,correlationId);
+    if(!customer)return undefined;
+    const record=await this.getCustomerRecord(customer.id,correlationId);
+    const wanted=new Set(phoneCandidates(phone).map((value)=>value.replace(/\D/g,"")));
+    const fields=PHONE_FIELD_TIERS.flat().map((field)=>String(record?.[field]??"").replace(/\D/g,"")).filter(Boolean);
+    return {id:customer.id,phoneMatches:fields.some((value)=>wanted.has(value))};
   }
   /**
    * UFs e cidades do IXC, para cadastrar cliente.
